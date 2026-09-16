@@ -3,5 +3,5 @@ plugins {
 }
 
 dependencies {
-    api(libs.micrometer.core)
+    api(libs.slf4j.api)
 }
