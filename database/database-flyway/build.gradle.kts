@@ -1,0 +1,13 @@
+plugins {
+    id("io.koraframework.kora-java-lib")
+}
+
+dependencies {
+    annotationProcessor(projects.config.configAnnotationProcessor)
+
+    api(projects.database.databaseJdbc)
+    api(libs.flyway)
+
+    testImplementation(projects.internal.testPostgres)
+    testImplementation(libs.flyway.postgres)
+}

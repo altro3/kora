@@ -1,0 +1,14 @@
+plugins {
+    id("io.koraframework.kora-java-lib")
+}
+
+dependencies {
+    annotationProcessor(projects.config.configAnnotationProcessor)
+
+    api(projects.core.common)
+    api(projects.telemetry.telemetryCommon)
+    implementation(projects.config.configCommon)
+
+    testImplementation(projects.internal.testLogging)
+    testImplementation(libs.awaitility)
+}

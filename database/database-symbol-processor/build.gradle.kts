@@ -1,0 +1,28 @@
+plugins {
+    id("io.koraframework.kora-kotlin-lib")
+    id("io.koraframework.kora-in-test-generated")
+}
+
+dependencies {
+    api(projects.core.symbolProcessorCommon)
+    implementation(projects.core.koraAppSymbolProcessor)
+
+    implementation(libs.ksp.api)
+    implementation(libs.kotlinpoet)
+    implementation(libs.kotlinpoet.ksp)
+
+    testImplementation(libs.mockito.kotlin)
+
+    testImplementation(testFixtures(projects.core.symbolProcessorCommon))
+    testImplementation(testFixtures(projects.core.annotationProcessorCommon))
+    testImplementation(projects.config.configCommon)
+    testImplementation(projects.logging.loggingLogback)
+    testImplementation(projects.aop.aopSymbolProcessor)
+    testImplementation(projects.config.configSymbolProcessor)
+    testImplementation(projects.logging.loggingSymbolProcessor)
+
+    testImplementation(projects.database.databaseCommon)
+    testImplementation(projects.database.databaseJdbc)
+    testImplementation(projects.database.databaseCassandra)
+    testImplementation(libs.kotlin.stdlib.lib)
+}
