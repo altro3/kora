@@ -5,7 +5,7 @@ plugins {
     id("io.koraframework.kora-in-test-generated")
 }
 
-val cxf: Configuration by configurations.creating
+val cxf = configurations.create("cxf")
 
 dependencies {
     api(libs.javapoet)

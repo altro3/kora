@@ -1,5 +1,5 @@
 plugins {
-    id("io.koraframework.kora-java-lib")
+    id("io.koraframework.kora-kotlin-lib")
     id("io.koraframework.kora-in-test-generated")
     alias(libs.plugins.jmh)
 }

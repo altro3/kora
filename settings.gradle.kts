@@ -31,7 +31,7 @@ enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 rootProject.name = "kora"
 
 include(
-//    "kora-bom",
+    "kora-bom",
     "core:common",
     "core:application-graph",
     "core:kora-app-annotation-processor",

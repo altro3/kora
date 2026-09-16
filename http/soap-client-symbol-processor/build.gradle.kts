@@ -7,7 +7,7 @@ plugins {
     `java-test-fixtures`
 }
 
-val cxf: Configuration by configurations.creating
+val cxf = configurations.create("cxf")
 
 dependencies {
     api(projects.core.symbolProcessorCommon)
