@@ -20,5 +20,5 @@ dependencies {
     api(projects.logging.loggingAnnotationProcessor)
     api(projects.grpc.grpcClientAnnotationProcessor)
     api(projects.experimental.s3ClientAnnotationProcessor)
-    api projects.experimental.camundaZeebeWorkerAnnotationProcessor)
+    api(projects.experimental.camundaZeebeWorkerAnnotationProcessor)
 }

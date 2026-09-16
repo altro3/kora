@@ -1,6 +1,7 @@
 plugins {
     id("io.koraframework.kora-java-lib")
-    id("io.koraframework.kora-in-test-generated") }
+    id("io.koraframework.kora-in-test-generated")
+}
 
 dependencies {
     api(projects.core.common)
