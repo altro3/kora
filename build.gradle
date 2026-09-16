@@ -1,10 +1,9 @@
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
+    id("io.koraframework.kora-publishing")
     id 'jacoco'
 }
 
-
-import io.koraframework.gradle.SonatypePublishTask
 
 if (hasProperty('buildScan')) {
     buildScan {
@@ -196,13 +195,6 @@ def createPublishArchive = tasks.register("createPublishArchive", Zip) {
     group = 'publishing'
     getArchiveFile().set(rootProject.layout.buildDirectory.file('deployment.zip'))
     dependsOn(':kora-bom:publishMavenPublicationToBuildRepository')
-}
-
-tasks.register('uploadPublishArchive', SonatypePublishTask) {
-    dependsOn(createPublishArchive)
-    archive = rootProject.layout.buildDirectory.file('deployment.zip')
-    username = System.getenv().getOrDefault("SONATYPE_KORA_IO_USERNAME", "")
-    password = System.getenv().getOrDefault("SONATYPE_KORA_IO_PASSWORD", "")
 }
 
 // config published libraries
