@@ -26,27 +26,34 @@ abstract class MergeHintsTask : DefaultTask() {
         val partsDirFile = partsDirectory.get().asFile
         val targetFile = resultFile.get().asFile
 
-        println("=== [MergeHintsTask] Начинаем сборку финального kora-hints.json ===")
+        logger.info("=== [MergeHintsTask] Starting configuration of final kora-hints.json ===")
 
+        var filesProcessed = 0
         if (partsDirFile.exists()) {
             partsDirFile.walkTopDown()
                 .filter { it.isFile && it.extension == "json" }
                 .forEach { file ->
-                    println("-> Мерджим файл: ${file.name}")
+                    filesProcessed++
                     val node = mapper.readTree(file)
+
                     if (node.isArray) {
+                        logger.info("-> Merging array from file: ${file.name} (elements: ${node.size()})")
                         node.forEach { rootArray.add(it) }
                     } else {
+                        logger.info("-> Merging object from file: ${file.name}")
                         rootArray.add(node)
                     }
                 }
         }
 
+        logger.info("=== [MergeHintsTask] Total chunk files processed: $filesProcessed ===")
+        logger.info("=== [MergeHintsTask] Final array contains elements: ${rootArray.size()} ===")
+
         val jsonString = mapper.writeValueAsString(rootArray)
 
         if (targetFile.exists()) {
             if (targetFile.readText() == jsonString) {
-                println("=== [MergeHintsTask] Контент не изменился, пропускаем запись ===")
+                logger.info("=== [MergeHintsTask] Content has not changed, skipping write ===")
                 return
             }
             targetFile.delete()
@@ -56,6 +63,6 @@ abstract class MergeHintsTask : DefaultTask() {
         targetFile.createNewFile()
         targetFile.writeText(jsonString)
 
-        println("=== [MergeHintsTask] Финальный файл успешно записан! ===")
+        logger.info("=== [MergeHintsTask] Final file successfully written to: ${targetFile.absolutePath} ===")
     }
 }
