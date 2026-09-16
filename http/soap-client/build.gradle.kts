@@ -1,0 +1,14 @@
+plugins {
+    id("io.koraframework.kora-java-lib")
+}
+
+dependencies {
+    annotationProcessor(projects.config.configAnnotationProcessor)
+
+    api(projects.http.httpClientCommon)
+    api(projects.telemetry.telemetryCommon)
+    api(libs.glassfish.jaxb.jakarta)
+    api(libs.commons.codec)
+    api(libs.jakarta.xml.ws.api)
+    api(libs.jakarta.xml.bind.api)
+}
