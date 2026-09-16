@@ -1,0 +1,12 @@
+plugins {
+    id("io.koraframework.kora-java-lib")
+}
+
+dependencies {
+    annotationProcessor(projects.config.configAnnotationProcessor)
+
+    api(projects.resilient.resilientKora)
+    api(projects.config.configCommon)
+
+    testImplementation(projects.internal.testLogging)
+}
