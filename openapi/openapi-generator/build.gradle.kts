@@ -41,10 +41,6 @@ dependencies {
     testImplementation(testFixtures(projects.core.symbolProcessorCommon))
 }
 
-tasks.withType<Test>().configureEach {
-    maxParallelForks = 5
-}
-
 val openapiPaths = listOf(
     "petstoreV2",
     "petstoreV2_implicit_headers",

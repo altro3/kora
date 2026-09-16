@@ -1,7 +1,5 @@
-import tools.jackson.databind.ObjectMapper
-import tools.jackson.databind.SerializationFeature
-import tools.jackson.databind.json.JsonMapper
-import java.nio.file.Files
+import io.koraframework.gradle.hint.CopyHintsTask
+import io.koraframework.gradle.hint.MergeHintsTask
 
 plugins {
     id("io.koraframework.kora-kotlin-lib")
@@ -17,66 +15,33 @@ dependencies {
     testImplementation(testFixtures(projects.core.annotationProcessorCommon))
 }
 
-val copyHints = tasks.register<Copy>("copyHints") {
-    var counter = 0
-    from(project.rootDir) {
-        includeEmptyDirs = false
-        include("**/src/main/resources/kora-module-hints.json")
-        exclude("**/build/**/*")
-        rename {
-            counter++
-            "module-hint-$counter.json"
-        }
-        eachFile {
-            path = name
-        }
-    }
-    into(layout.buildDirectory.dir("kora-hints/parts"))
-}
-
-val buildHints = tasks.register("buildHints") {
-    dependsOn(copyHints)
-
-    val buildDir = layout.buildDirectory
-    val outputDir = buildDir.dir("kora-hints")
-    val resultFile = outputDir.get().file("kora-hints.json").asFile
-    val partsDir = buildDir.dir("kora-hints/parts").get().asFile
-
-    inputs.dir(partsDir)
-    outputs.dir(outputDir)
-
-    doLast {
-        val mapper = JsonMapper.builder().enable(SerializationFeature.INDENT_OUTPUT).build()
-        val combinedList = mutableListOf<Any>()
-
-        fileTree(partsDir).matching { include("*.json") }.forEach { file ->
-            val parsedJson = mapper.readValue(file, Any::class.java)
-            if (parsedJson is List<*>) {
-                combinedList.addAll(parsedJson.filterNotNull())
-            } else {
-                combinedList.add(parsedJson)
-            }
-        }
-
-        val jsonString = mapper.writeValueAsString(combinedList)
-
-        if (resultFile.exists()) {
-            if (resultFile.readText() == jsonString) {
-                return@doLast
-            }
-            resultFile.delete()
-        }
-
-        Files.createDirectories(resultFile.parentFile.toPath())
-        resultFile.createNewFile()
-        resultFile.writeText(jsonString)
-    }
-}
-
 sourceSets {
     main {
         resources {
-            srcDir(buildHints)
+            srcDir(layout.buildDirectory.dir("kora-hints-generated"))
         }
     }
+}
+
+val copyHints = tasks.register<CopyHintsTask>("copyHints") {
+    repositoryRoot.set(layout.projectDirectory.dir("../.."))
+    outputDirectory.set(layout.buildDirectory.dir("kora-hints/parts"))
+}
+val buildHints = tasks.register<MergeHintsTask>("buildHints") {
+    dependsOn(copyHints)
+    partsDirectory.set(layout.buildDirectory.dir("kora-hints/parts"))
+    resultFile.set(layout.buildDirectory.file("kora-hints/kora-hints.json"))
+}
+tasks.named<ProcessResources>("processResources") {
+    dependsOn(buildHints)
+    from(buildHints.flatMap { it.resultFile })
+}
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    dependsOn(buildHints)
+}
+tasks.withType<JavaCompile>().configureEach {
+    dependsOn(buildHints)
+}
+tasks.matching { it.name.startsWith("kspKotlin") || it.name.startsWith("kspJava") }.configureEach {
+    dependsOn(buildHints)
 }
