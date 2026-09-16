@@ -12,7 +12,6 @@ class KoraCiTestingPlugin : Plugin<Project> {
         }
 
         val nonOtherModules = hashSetOf(
-            "internal",
             "internal:test-cassandra",
             "internal:test-kafka",
             "internal:test-logging",

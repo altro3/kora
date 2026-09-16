@@ -13,6 +13,8 @@ import org.gradle.api.tasks.testing.Test
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.kotlin.dsl.getByType
+import org.gradle.kotlin.dsl.withType
 
 class KoraJavaConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
@@ -32,7 +34,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             withJavadocJar()
         }
 
-        project.tasks.withType(JavaCompile::class.java).configureEach {
+        project.tasks.withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
             options.isDebug = true
             options.compilerArgs.addAll(listOf("-parameters", "-XprintRounds"))
@@ -41,7 +43,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        project.tasks.withType(Javadoc::class.java).configureEach {
+        project.tasks.withType<Javadoc>().configureEach {
             val options = options as StandardJavadocDocletOptions
             options.encoding = "UTF-8"
             options.addBooleanOption("html5", true)
@@ -50,8 +52,9 @@ class KoraJavaConventionPlugin : Plugin<Project> {
         }
 
         if (project.childProjects.isEmpty()) {
-            if (!project.file("src/main/java/module-info.java").exists()) {
-                project.tasks.withType(Jar::class.java).configureEach {
+            val moduleInfo = project.layout.projectDirectory.file("src/main/java/module-info.java")
+            if (!moduleInfo.asFile.exists()) {
+                project.tasks.withType<Jar>().configureEach {
                     manifest {
                         attributes(mapOf("Automatic-Module-Name" to "kora." + project.name.replace('-', '.')))
                     }
@@ -59,7 +62,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        project.tasks.withType(Test::class.java).configureEach {
+        project.tasks.withType<Test>().configureEach {
             jvmArgs(
                 "-XX:+TieredCompilation",
                 "-XX:TieredStopAtLevel=1",
@@ -86,11 +89,11 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        val catalogs = project.extensions.getByType(VersionCatalogsExtension::class.java)
+        val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
 
         project.dependencies.add("api", libs.findLibrary("jspecify").get())
-        project.dependencies.add("testImplementation", project.project(":internal:test-logging"))
+        project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
         project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())
         project.dependencies.add("testImplementation", libs.findLibrary("mockito.core").get())
         project.dependencies.add("testImplementation", libs.findLibrary("assertj").get())

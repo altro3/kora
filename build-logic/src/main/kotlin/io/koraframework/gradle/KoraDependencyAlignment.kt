@@ -4,7 +4,7 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.artifacts.VersionCatalogsExtension
 
-class KoraDependencyAlignmentPlugin : Plugin<Project> {
+class KoraDependencyAlignment : Plugin<Project> {
     override fun apply(project: Project) {
         val catalogs = project.extensions.getByType(VersionCatalogsExtension::class.java)
         val libs = catalogs.named("libs")
@@ -19,7 +19,14 @@ class KoraDependencyAlignmentPlugin : Plugin<Project> {
                         group.startsWith("io.netty") -> libs.findVersion("netty")
                         group.startsWith("io.grpc") -> libs.findVersion("grpc-java")
                         group.startsWith("com.google.protobuf") -> libs.findVersion("protobuf-java")
-                        group.startsWith("com.fasterxml.jackson") -> libs.findVersion("jackson2-coreline")
+                        group.startsWith("com.fasterxml.jackson") -> {
+                            if (name == "jackson-annotations") {
+                                libs.findVersion("jackson2-annotations")
+                            } else {
+                                libs.findVersion("jackson2-coreline")
+                            }
+                        }
+
                         group.startsWith("io.prometheus") -> libs.findVersion("prometheus-metrics")
                         group.startsWith("io.swagger.core.v3") -> libs.findVersion("swagger-coreline")
                         group.startsWith("io.swagger.parser.v3") -> libs.findVersion("swagger-parser")
