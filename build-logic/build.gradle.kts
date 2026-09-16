@@ -39,6 +39,10 @@ gradlePlugin {
             id = "io.koraframework.kora-java-convention"
             implementationClass = "io.koraframework.gradle.KoraJavaConventionPlugin"
         }
+        register("kora-kotlin-convention") {
+            id = "io.koraframework.kora-kotlin-convention"
+            implementationClass = "io.koraframework.gradle.KoraKotlinConventionPlugin"
+        }
         register("kora-test-convention") {
             id = "io.koraframework.kora-test-convention"
             implementationClass = "io.koraframework.gradle.KoraTestConventionPlugin"
@@ -47,9 +51,9 @@ gradlePlugin {
             id = "io.koraframework.kora-experimental-convention"
             implementationClass = "io.koraframework.gradle.KoraExperimentalConventionPlugin"
         }
-        register("kora-test-generated") {
-            id = "io.koraframework.kora-test-generated"
-            implementationClass = "io.koraframework.gradle.KoraTestGeneratedPlugin"
+        register("kora-in-test-generated") {
+            id = "io.koraframework.kora-in-test-generated"
+            implementationClass = "io.koraframework.gradle.KoraInTestGeneratedPlugin"
         }
         register("kora-dependency-alignment") {
             id = "io.koraframework.kora-dependency-alignment"
