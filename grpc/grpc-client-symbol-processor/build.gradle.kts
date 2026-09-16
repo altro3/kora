@@ -1,4 +1,4 @@
-import com.google.protobuf.gradle.*
+import com.google.protobuf.gradle.id
 
 plugins {
     id("io.koraframework.kora-kotlin-lib")
@@ -12,6 +12,7 @@ dependencies {
     implementation(projects.core.koraAppSymbolProcessor)
 
     testImplementation(libs.grpc.kotlin.stub)
+    testImplementation(libs.protobuf.kotlin)
     testImplementation(libs.grpc.protobuf)
     testImplementation(projects.grpc.grpcClient)
     testImplementation(projects.config.configSymbolProcessor)
@@ -21,14 +22,14 @@ dependencies {
 
 protobuf {
     protoc {
-        artifact = libs.protobuf.protoc.get().dependencyNotation
+        artifact = libs.protobuf.protoc.get().toString()
     }
     plugins {
         id("grpc") {
-            artifact = libs.grpc.java.gen.get().dependencyNotation
+            artifact = libs.grpc.java.gen.get().toString()
         }
         id("grpckt") {
-            artifact = "${libs.grpc.kotlin.gen.get().dependencyNotation}:jdk8@jar"
+            artifact = "${libs.grpc.kotlin.gen.get()}:jdk8@jar"
         }
     }
     generateProtoTasks {

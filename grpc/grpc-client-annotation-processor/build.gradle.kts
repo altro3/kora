@@ -1,4 +1,4 @@
-import com.google.protobuf.gradle.*
+import com.google.protobuf.gradle.id
 
 plugins {
     id("io.koraframework.kora-java-lib")
@@ -22,11 +22,11 @@ dependencies {
 
 protobuf {
     protoc {
-        artifact = libs.protobuf.protoc.get().dependencyNotation
+        artifact = libs.protobuf.protoc.orNull?.toString()
     }
     plugins {
         id("grpc") {
-            artifact = libs.grpc.java.gen.get().dependencyNotation
+            artifact = libs.grpc.java.gen.orNull?.toString()
         }
     }
     generateProtoTasks {

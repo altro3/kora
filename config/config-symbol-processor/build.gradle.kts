@@ -11,8 +11,8 @@ dependencies {
     implementation(libs.kotlinpoet.ksp)
 
     testImplementation(projects.config.configCommon)
-//    testImplementation(projects.validation.validationCommon)
-//    testImplementation(projects.validation.validationSymbolProcessor)
+    testImplementation(projects.validation.validationCommon)
+    testImplementation(projects.validation.validationSymbolProcessor)
     testImplementation(libs.mockito.kotlin)
     testImplementation(testFixtures(projects.core.symbolProcessorCommon))
     testImplementation(testFixtures(projects.core.annotationProcessorCommon))
