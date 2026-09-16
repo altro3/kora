@@ -5,11 +5,32 @@ import org.gradle.api.Project
 import org.gradle.api.component.AdhocComponentWithVariants
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.tasks.Delete
+import org.gradle.api.tasks.bundling.Zip
 import org.gradle.plugins.signing.SigningExtension
 import java.net.URI
 
 class KoraMavenPublishingPlugin : Plugin<Project> {
     override fun apply(project: Project) {
+        if (project == project.rootProject) {
+            val cleanPublishDir = project.tasks.register("cleanPublishDir", Delete::class.java) {
+                delete(project.layout.buildDirectory.dir("publishing-repository"))
+                group = "publishing"
+            }
+
+            project.tasks.register("createPublishArchive", Zip::class.java) {
+                from(project.layout.buildDirectory.dir("publishing-repository"))
+                include("*/**")
+                exclude("*/**/maven-metadata.*")
+                group = "publishing"
+                archiveFileName.set("deployment.zip")
+                destinationDirectory.set(project.layout.buildDirectory)
+                dependsOn(cleanPublishDir)
+                dependsOn(":kora-bom:publishMavenPublicationToBuildRepository")
+            }
+            return
+        }
+
         if (!isPublishedLibrary(project)) {
             return
         }
@@ -118,8 +139,10 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
             }
         }
 
-        project.rootProject.tasks.named("createPublishArchive").configure {
-            dependsOn(project.tasks.named("publishMavenPublicationToBuildRepository"))
+        project.rootProject.tasks.withType(Zip::class.java).configureEach {
+            if (name == "createPublishArchive") {
+                dependsOn(project.tasks.named("publishMavenPublicationToBuildRepository"))
+            }
         }
 
         project.tasks.named("publishMavenPublicationToBuildRepository").configure {
