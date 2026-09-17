@@ -3,7 +3,7 @@ package io.koraframework.gradle
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 
-class KoraJavaLib : Plugin<Project> {
+class KoraJavaModule : Plugin<Project> {
     override fun apply(project: Project) {
         val pluginManager = project.pluginManager
 

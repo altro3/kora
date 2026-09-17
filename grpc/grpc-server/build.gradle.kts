@@ -1,7 +1,7 @@
 import com.google.protobuf.gradle.id
 
 plugins {
-    id("io.koraframework.kora-java-lib")
+    id("io.koraframework.kora-java-module")
     alias(libs.plugins.protobuf)
 }
 

@@ -24,12 +24,18 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         project.plugins.apply("java-library")
 
+        val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
+        val libs = catalogs.named("libs")
+        val javaVersionStr = libs.findVersion("java").get().requiredVersion
+        val javaVersionAsInt = javaVersionStr.toInt()
+        val javaVersionEnum = JavaVersion.toVersion(javaVersionStr)
+
         project.extensions.configure(JavaPluginExtension::class.java) {
             toolchain {
-                languageVersion.set(JavaLanguageVersion.of(25))
+                languageVersion.set(JavaLanguageVersion.of(javaVersionAsInt))
             }
-            sourceCompatibility = JavaVersion.VERSION_25
-            targetCompatibility = JavaVersion.VERSION_25
+            sourceCompatibility = javaVersionEnum
+            targetCompatibility = javaVersionEnum
             withSourcesJar()
             withJavadocJar()
         }
@@ -37,7 +43,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
         project.tasks.withType<JavaCompile>().configureEach {
             options.encoding = "UTF-8"
             options.isDebug = true
-            options.compilerArgs.addAll(listOf("-parameters", "-XprintRounds"))
+            options.compilerArgs.addAll(listOf("-parameters", "-XprintRounds", "--enable-preview"))
             if (name == "compileJava" && !project.name.contains("internal")) {
                 options.compilerArgs.addAll(listOf("-Xlint:all", "-Xlint:-serial,-processing,-missing-explicit-ctor"))
             }
@@ -90,9 +96,6 @@ class KoraJavaConventionPlugin : Plugin<Project> {
         }
 
         project.plugins.withId("java-library") {
-            val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
-            val libs = catalogs.named("libs")
-
             project.dependencies.add("api", libs.findLibrary("jspecify").get())
             project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
             project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())

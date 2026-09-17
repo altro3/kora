@@ -20,65 +20,83 @@ dependencies {
     }
 }
 
-fun modifyPom(pomNode: groovy.util.Node) {
-    val properties = pomNode.appendNode("properties")
-    properties.appendNode("java.version", "25")
-
-    val buildNode = pomNode.appendNode("build")
-    val pluginsNode = buildNode.appendNode("plugins")
-
-    val compilerPlugin = pluginsNode.appendNode("plugin")
-    compilerPlugin.appendNode("groupId", "org.apache.maven.plugins")
-    compilerPlugin.appendNode("artifactId", "maven-compiler-plugin")
-    compilerPlugin.appendNode("version", libs.versions.maven.compiler.plugin.get())
-
-    val compilerConfig = compilerPlugin.appendNode("configuration")
-    compilerConfig.appendNode("release", "\${java.version}")
-    compilerConfig.appendNode("source", "\${java.version}")
-    compilerConfig.appendNode("target", "\${java.version}")
-
-    val compilerArgs = compilerConfig.appendNode("compilerArgs")
-    compilerArgs.appendNode("arg", "-parameters")
-
-    val processorPaths = compilerConfig.appendNode("annotationProcessorPaths")
-    val pathNode = processorPaths.appendNode("path")
-    pathNode.appendNode("groupId", "io.koraframework")
-    pathNode.appendNode("artifactId", "annotation-processors")
-    pathNode.appendNode("version", project.version.toString())
-
-    val surefirePlugin = pluginsNode.appendNode("plugin")
-    surefirePlugin.appendNode("groupId", "org.apache.maven.plugins")
-    surefirePlugin.appendNode("artifactId", "maven-surefire-plugin")
-    surefirePlugin.appendNode("version", libs.versions.maven.surefire.plugin.get())
-
-    val surefireConfig = surefirePlugin.appendNode("configuration")
-    surefireConfig.appendNode("argLine", "--enable-preview")
-}
-
 publishing {
     publications {
         create<MavenPublication>("maven") {
             artifactId = "kora-bom"
             from(components["javaPlatform"])
-            // remove scope information from published BOM
+
             pom {
-                withXml {
-                    modifyPom(asNode())
-                }
                 name.set("Kora BOM")
                 description.set("Kora Bill-Of-Materials (BOM)")
+                url.set("https://github.com/kora-projects/kora")
+
+                withXml {
+                    val root = asElement()
+                    val doc = root.ownerDocument
+
+                    val properties = doc.createElement("properties")
+                    val javaVersion = doc.createElement("java.version")
+                    javaVersion.textContent = libs.versions.java.get()
+                    properties.appendChild(javaVersion)
+                    root.appendChild(properties)
+
+                    val build = doc.createElement("build")
+                    val plugins = doc.createElement("plugins")
+
+                    val compilerPlugin = doc.createElement("plugin")
+                    compilerPlugin.appendChild(doc.createElement("groupId").apply { textContent = "org.apache.maven.plugins" })
+                    compilerPlugin.appendChild(doc.createElement("artifactId").apply { textContent = "maven-compiler-plugin" })
+                    compilerPlugin.appendChild(doc.createElement("version").apply { textContent = libs.versions.maven.compiler.plugin.get() })
+
+                    val compilerConfig = doc.createElement("configuration")
+                    compilerConfig.appendChild(doc.createElement("release").apply { textContent = "\${java.version}" })
+                    compilerConfig.appendChild(doc.createElement("source").apply { textContent = "\${java.version}" })
+                    compilerConfig.appendChild(doc.createElement("target").apply { textContent = "\${java.version}" })
+
+                    val compilerArgs = doc.createElement("compilerArgs")
+                    compilerArgs.appendChild(doc.createElement("arg").apply { textContent = "-parameters" })
+                    compilerConfig.appendChild(compilerArgs)
+
+                    val processorPaths = doc.createElement("annotationProcessorPaths")
+                    val path = doc.createElement("path")
+                    path.appendChild(doc.createElement("groupId").apply { textContent = "io.koraframework" })
+                    path.appendChild(doc.createElement("artifactId").apply { textContent = "annotation-processors" })
+                    path.appendChild(doc.createElement("version").apply { textContent = project.version.toString() })
+                    processorPaths.appendChild(path)
+                    compilerConfig.appendChild(processorPaths)
+
+                    compilerPlugin.appendChild(compilerConfig)
+                    plugins.appendChild(compilerPlugin)
+
+                    val surefirePlugin = doc.createElement("plugin")
+                    surefirePlugin.appendChild(doc.createElement("groupId").apply { textContent = "org.apache.maven.plugins" })
+                    surefirePlugin.appendChild(doc.createElement("artifactId").apply { textContent = "maven-surefire-plugin" })
+                    surefirePlugin.appendChild(doc.createElement("version").apply { textContent = libs.versions.maven.surefire.plugin.get() })
+
+                    val surefireConfig = doc.createElement("configuration")
+                    surefireConfig.appendChild(doc.createElement("argLine").apply { textContent = "--enable-preview" })
+
+                    surefirePlugin.appendChild(surefireConfig)
+                    plugins.appendChild(surefirePlugin)
+
+                    build.appendChild(plugins)
+                    root.appendChild(build)
+                }
+
                 licenses {
                     license {
                         name.set("The Apache Software License, Version 2.0")
                         url.set("https://github.com/kora-projects/kora/blob/master/LICENSE")
                     }
                 }
+
                 scm {
                     url.set("https://github.com/kora-projects/kora")
                     connection.set("scm:git:git@github.com/kora-projects/kora.git")
                     developerConnection.set("scm:git:git@github.com/kora-projects/kora.git")
                 }
-                url.set("https://github.com/kora-projects/kora")
+
                 developers {
                     developer {
                         id.set("a.otts")

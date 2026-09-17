@@ -2,7 +2,7 @@ import java.net.URLClassLoader
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 plugins {
-    id("io.koraframework.kora-kotlin-lib")
+    id("io.koraframework.kora-kotlin-module")
     id("io.koraframework.kora-in-test-generated")
     `java-test-fixtures`
 }

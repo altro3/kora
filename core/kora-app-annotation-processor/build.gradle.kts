@@ -2,7 +2,7 @@ import io.koraframework.gradle.hint.CopyHintsTask
 import io.koraframework.gradle.hint.MergeHintsTask
 
 plugins {
-    id("io.koraframework.kora-kotlin-lib")
+    id("io.koraframework.kora-kotlin-module")
     id("io.koraframework.kora-in-test-generated")
     `java-test-fixtures`
 }

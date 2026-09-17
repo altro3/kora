@@ -1,5 +1,5 @@
 plugins {
-    id("io.koraframework.kora-java-lib")
+    id("io.koraframework.kora-java-module")
 }
 
 dependencies {

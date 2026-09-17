@@ -2,10 +2,6 @@ plugins {
     `kotlin-dsl`
 }
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
     implementation(libs.kotlin.gradle.plugin)
     implementation(libs.okhttp)
@@ -14,14 +10,14 @@ dependencies {
 
 gradlePlugin {
     plugins {
-        register("kora-java-lib") {
-            id = "io.koraframework.kora-java-lib"
-            implementationClass = "io.koraframework.gradle.KoraJavaLib"
+        register("kora-java-module") {
+            id = "io.koraframework.kora-java-module"
+            implementationClass = "io.koraframework.gradle.KoraJavaModule"
         }
 
-        register("kora-kotlin-lib") {
-            id = "io.koraframework.kora-kotlin-lib"
-            implementationClass = "io.koraframework.gradle.KoraKotlinLib"
+        register("kora-kotlin-module") {
+            id = "io.koraframework.kora-kotlin-module"
+            implementationClass = "io.koraframework.gradle.KoraKotlinModule"
         }
         register("kora-publishing") {
             id = "io.koraframework.kora-publishing"
