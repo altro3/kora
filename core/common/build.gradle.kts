@@ -10,14 +10,18 @@ dependencies {
 }
 
 val generateKoraVersion = tasks.register("generateKoraVersion") {
-    val buildDir = layout.buildDirectory
-    val projectName = project.name
-    val projectVersion = project.version.toString()
+    val versionProvider = project.provider { project.version.toString() }
+    val nameProvider = project.provider { project.name }
 
-    val outputDir = buildDir.dir("kora-version")
+    inputs.property("projectName", nameProvider)
+    inputs.property("projectVersion", versionProvider)
+
+    val outputDir = layout.buildDirectory.dir("kora-version")
     outputs.dir(outputDir)
 
     doLast {
+        val projectName = nameProvider.get()
+        val projectVersion = versionProvider.get()
         val file = outputDir.get().file("META-INF/kora/version/$projectName").asFile
         file.parentFile.mkdirs()
         if (file.exists()) {
