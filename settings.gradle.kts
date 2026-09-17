@@ -30,7 +30,10 @@ enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 rootProject.name = "kora"
 
-include(
+// В самом низу settings.gradle.kts
+
+// 1. Копируем сюда ровно тот список строк, который вы передали в include() выше
+val allIncludedPaths = listOf(
     "kora-bom",
     "core:common",
     "core:application-graph",
@@ -133,5 +136,19 @@ include(
     "experimental:camunda-rest-undertow",
     "experimental:camunda-zeebe-worker",
     "experimental:camunda-zeebe-worker-annotation-processor",
-    "experimental:camunda-zeebe-worker-symbol-processor",
+    "experimental:camunda-zeebe-worker-symbol-processor"
 )
+
+include(*allIncludedPaths.toTypedArray())
+
+gradle.projectsLoaded {
+    val targetNames = allIncludedPaths
+        .filter { path -> path != "kora-bom" }
+        .filter { path -> !path.startsWith("internal:") }
+        .map { path -> path.substringAfter(":") }
+        .distinct()
+
+    logger.lifecycle("Kora BOM: Found ${targetNames.size} modules for dependency management: $targetNames")
+
+    rootProject.extra["koraBomProjectNames"] = targetNames
+}

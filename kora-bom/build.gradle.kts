@@ -6,15 +6,14 @@ plugins {
 
 dependencies {
     constraints {
-        val added = hashSetOf<String>()
+        if (rootProject.ext.has("koraBomProjectNames")) {
+            @Suppress("UNCHECKED_CAST")
+            val koraProjectNames = rootProject.ext["koraBomProjectNames"] as List<String>
+            val currentGroup = project.group.toString()
+            val currentVersion = project.version.toString()
 
-        rootProject.subprojects {
-            val p = this
-            if (p.parent?.name == "internal") return@subprojects
-            if (p.subprojects.isNotEmpty()) return@subprojects
-
-            if (added.add(p.name)) {
-                api(p)
+            for (projectName in koraProjectNames) {
+                api("$currentGroup:$projectName:$currentVersion")
             }
         }
     }
@@ -25,6 +24,11 @@ publishing {
         create<MavenPublication>("maven") {
             artifactId = "kora-bom"
             from(components["javaPlatform"])
+
+            val javaVersionValue = libs.versions.java.get()
+            val mavenCompilerPluginVersion = libs.versions.maven.compiler.plugin.get()
+            val mavenSurefirePluginVersion = libs.versions.maven.surefire.plugin.get()
+            val projectVersionValue = project.version.toString()
 
             pom {
                 name.set("Kora BOM")
@@ -37,7 +41,7 @@ publishing {
 
                     val properties = doc.createElement("properties")
                     val javaVersion = doc.createElement("java.version")
-                    javaVersion.textContent = libs.versions.java.get()
+                    javaVersion.textContent = javaVersionValue
                     properties.appendChild(javaVersion)
                     root.appendChild(properties)
 
@@ -47,12 +51,12 @@ publishing {
                     val compilerPlugin = doc.createElement("plugin")
                     compilerPlugin.appendChild(doc.createElement("groupId").apply { textContent = "org.apache.maven.plugins" })
                     compilerPlugin.appendChild(doc.createElement("artifactId").apply { textContent = "maven-compiler-plugin" })
-                    compilerPlugin.appendChild(doc.createElement("version").apply { textContent = libs.versions.maven.compiler.plugin.get() })
+                    compilerPlugin.appendChild(doc.createElement("version").apply { textContent = mavenCompilerPluginVersion })
 
                     val compilerConfig = doc.createElement("configuration")
-                    compilerConfig.appendChild(doc.createElement("release").apply { textContent = "\${java.version}" })
-                    compilerConfig.appendChild(doc.createElement("source").apply { textContent = "\${java.version}" })
-                    compilerConfig.appendChild(doc.createElement("target").apply { textContent = "\${java.version}" })
+                    compilerConfig.appendChild(doc.createElement("release").apply { textContent = $$"${java.version}" })
+                    compilerConfig.appendChild(doc.createElement("source").apply { textContent = $$"${java.version}" })
+                    compilerConfig.appendChild(doc.createElement("target").apply { textContent = $$"${java.version}" })
 
                     val compilerArgs = doc.createElement("compilerArgs")
                     compilerArgs.appendChild(doc.createElement("arg").apply { textContent = "-parameters" })
@@ -62,7 +66,7 @@ publishing {
                     val path = doc.createElement("path")
                     path.appendChild(doc.createElement("groupId").apply { textContent = "io.koraframework" })
                     path.appendChild(doc.createElement("artifactId").apply { textContent = "annotation-processors" })
-                    path.appendChild(doc.createElement("version").apply { textContent = project.version.toString() })
+                    path.appendChild(doc.createElement("version").apply { textContent = projectVersionValue })
                     processorPaths.appendChild(path)
                     compilerConfig.appendChild(processorPaths)
 
@@ -72,7 +76,7 @@ publishing {
                     val surefirePlugin = doc.createElement("plugin")
                     surefirePlugin.appendChild(doc.createElement("groupId").apply { textContent = "org.apache.maven.plugins" })
                     surefirePlugin.appendChild(doc.createElement("artifactId").apply { textContent = "maven-surefire-plugin" })
-                    surefirePlugin.appendChild(doc.createElement("version").apply { textContent = libs.versions.maven.surefire.plugin.get() })
+                    surefirePlugin.appendChild(doc.createElement("version").apply { textContent = mavenSurefirePluginVersion })
 
                     val surefireConfig = doc.createElement("configuration")
                     surefireConfig.appendChild(doc.createElement("argLine").apply { textContent = "--enable-preview" })
