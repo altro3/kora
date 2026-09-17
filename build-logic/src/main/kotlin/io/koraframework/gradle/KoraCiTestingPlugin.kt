@@ -2,8 +2,6 @@ package io.koraframework.gradle
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.Task
-import org.gradle.api.tasks.TaskProvider
 
 class KoraCiTestingPlugin : Plugin<Project> {
     override fun apply(rootProject: Project) {
@@ -11,119 +9,92 @@ class KoraCiTestingPlugin : Plugin<Project> {
             throw IllegalStateException("The CI Testing plugin must be applied to the root project only.")
         }
 
-        val nonOtherModules = hashSetOf(
-            "internal:test-cassandra",
-            "internal:test-kafka",
-            "internal:test-logging",
-            "internal:test-postgres",
-            "internal:test-redis"
-        )
+        val types = listOf("postgres", "cassandra", "redis", "kafka", "openapi", "codegen-java", "codegen-kotlin", "other")
+        val prefixes = listOf("classes", "testClasses", "test", "javadoc")
 
-        fun getProjectFullName(pj: Project): String {
-            var fullName = pj.name
-            var parent = pj.parent
-            while (parent != null && parent.name != rootProject.name) {
-                fullName = "${parent.name}:$fullName"
-                parent = parent.parent
-            }
-            return fullName
-        }
-
-        fun addDependencies(taskProviders: List<TaskProvider<Task>>, dependency: String) {
-            taskProviders.forEach { taskProvider ->
-                taskProvider.configure {
-                    val taskPrefix = this.name.split("-")[0]
-                    this.dependsOn(":$dependency:$taskPrefix")
-                }
-            }
-            nonOtherModules.add(dependency)
-        }
-
-        fun addDependenciesByPattern(taskProviders: List<TaskProvider<Task>>, namePattern: String) {
-            rootProject.allprojects.forEach { project ->
-                if (project.name != rootProject.name && project.name.contains(namePattern) && !nonOtherModules.contains(project.name)) {
-                    val fullName = getProjectFullName(project)
-                    taskProviders.forEach { taskProvider ->
-                        taskProvider.configure {
-                            val taskPrefix = this.name.split("-")[0]
-                            this.dependsOn(":$fullName:$taskPrefix")
-                        }
-                    }
-                    nonOtherModules.add(fullName)
-                }
-            }
-        }
-
-        fun createTasks(type: String): List<TaskProvider<Task>> {
-            val classesByType = rootProject.tasks.register("classes-$type") {
+        types.forEach { type ->
+            rootProject.tasks.register("classes-$type") {
                 group = "build"
                 description = "Build classes for $type"
             }
-
-            val testClassesByType = rootProject.tasks.register("testClasses-$type") {
+            rootProject.tasks.register("testClasses-$type") {
                 group = "build"
                 description = "Build testClasses for $type"
             }
-
-            val testByType = rootProject.tasks.register("test-$type") {
+            rootProject.tasks.register("test-$type") {
                 group = "verification"
                 description = "Run tests with $type"
             }
-
-            val javadocByType = rootProject.tasks.register("javadoc-$type") {
+            rootProject.tasks.register("javadoc-$type") {
                 group = "documentation"
                 description = "Javadoc for $type"
             }
-
-            return listOf(classesByType, testClassesByType, testByType, javadocByType)
         }
 
-        val tasksPostgres = createTasks("postgres")
-        val tasksCassandra = createTasks("cassandra")
-        val tasksRedis = createTasks("redis")
-        val tasksKafka = createTasks("kafka")
-        val tasksOpenapi = createTasks("openapi")
-        val tasksCodegenJava = createTasks("codegen-java")
-        val tasksCodegenKotlin = createTasks("codegen-kotlin")
-        val tasksOther = createTasks("other")
+        val internalTestModules = hashSetOf(
+            "test-cassandra",
+            "test-kafka",
+            "test-logging",
+            "test-postgres",
+            "test-redis"
+        )
 
-        rootProject.gradle.projectsEvaluated {
-            // Postgres
-            addDependencies(tasksPostgres, "database:database-common")
-            addDependencies(tasksPostgres, "database:database-jdbc")
-            addDependencies(tasksPostgres, "database:database-flyway")
-            addDependencies(tasksPostgres, "database:database-liquibase")
-            addDependencies(tasksPostgres, "experimental:camunda-engine-bpmn")
+        rootProject.subprojects {
+            val subproject = this
 
-            // Cassandra
-            addDependencies(tasksCassandra, "database:database-cassandra")
+            subproject.plugins.withId("java") {
+                val projectName = subproject.name
 
-            // Redis
-            addDependencies(tasksRedis, "redis:redis-lettuce")
-            addDependencies(tasksRedis, "cache:cache-redis-lettuce")
+                if (subproject.childProjects.isNotEmpty() || projectName == "kora-bom") {
+                    return@withId
+                }
 
-            // Kafka
-            addDependencies(tasksKafka, "kafka:kafka")
+                if (internalTestModules.contains(projectName) && subproject.parent?.name == "internal") {
+                    return@withId
+                }
 
-            // OpenAPI
-            addDependencies(tasksOpenapi, "openapi:openapi-generator")
-            addDependencies(tasksOpenapi, "openapi:openapi-management")
+                fun getProjectFullName(pj: Project): String {
+                    var fullName = pj.name
+                    var parent = pj.parent
+                    while (parent != null && parent.name != rootProject.name) {
+                        fullName = "${parent.name}:$fullName"
+                        parent = parent.parent
+                    }
+                    return fullName
+                }
 
-            // Codegen Java
-            addDependenciesByPattern(tasksCodegenJava, "annotation-processor")
-            addDependencies(tasksCodegenJava, "mapping:mapstruct-java-extension")
+                val fullProjectName = getProjectFullName(subproject)
 
-            // Codegen Kotlin
-            addDependenciesByPattern(tasksCodegenKotlin, "symbol-processor")
-            addDependenciesByPattern(tasksCodegenKotlin, "ksp")
-            addDependencies(tasksCodegenKotlin, "mapping:mapstruct-ksp-extension")
-            addDependencies(tasksCodegenKotlin, "mapping:konvert-ksp-extension")
+                val targetType = when {
+                    fullProjectName == "database:database-common" ||
+                            fullProjectName == "database:database-jdbc" ||
+                            fullProjectName == "database:database-flyway" ||
+                            fullProjectName == "database:database-liquibase" ||
+                            fullProjectName == "experimental:camunda-engine-bpmn" -> "postgres"
 
-            rootProject.allprojects.forEach { project ->
-                if (project.name != rootProject.name && project.name != "kora-bom" && project.childProjects.isEmpty()) {
-                    val fullName = getProjectFullName(project)
-                    if (!nonOtherModules.contains(fullName)) {
-                        addDependencies(tasksOther, fullName)
+                    fullProjectName == "database:database-cassandra" -> "cassandra"
+
+                    fullProjectName == "redis:redis-lettuce" ||
+                            fullProjectName == "cache:cache-redis-lettuce" -> "redis"
+
+                    fullProjectName == "kafka:kafka" -> "kafka"
+
+                    fullProjectName == "openapi:openapi-generator" ||
+                            fullProjectName == "openapi:openapi-management" -> "openapi"
+
+                    projectName.contains("annotation-processor") && fullProjectName != "mapping:mapstruct-java-extension" -> "codegen-java"
+
+                    projectName.contains("symbol-processor") ||
+                            projectName.contains("ksp") ||
+                            fullProjectName == "mapping:mapstruct-ksp-extension" ||
+                            fullProjectName == "mapping:konvert-ksp-extension" -> "codegen-kotlin"
+
+                    else -> "other"
+                }
+
+                prefixes.forEach { prefix ->
+                    rootProject.tasks.named("$prefix-$targetType") {
+                        this.dependsOn(":$fullProjectName:$prefix")
                     }
                 }
             }
