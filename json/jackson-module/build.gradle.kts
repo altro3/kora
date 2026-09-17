@@ -3,8 +3,8 @@ plugins {
 }
 
 dependencies {
-    api(libs.jackson.databind)
-
     compileOnly(projects.http.httpServerCommon)
     compileOnly(projects.http.httpClientCommon)
+
+    api(libs.jackson.databind)
 }

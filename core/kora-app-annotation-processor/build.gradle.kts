@@ -9,6 +9,7 @@ plugins {
 
 dependencies {
     api(projects.core.annotationProcessorCommon)
+
     implementation(libs.jackson.core)
 
     testImplementation(projects.json.jsonCommon)

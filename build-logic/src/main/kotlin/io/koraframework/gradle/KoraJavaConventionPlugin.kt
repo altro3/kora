@@ -89,14 +89,16 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
-        val libs = catalogs.named("libs")
+        project.plugins.withId("java-library") {
+            val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
+            val libs = catalogs.named("libs")
 
-        project.dependencies.add("api", libs.findLibrary("jspecify").get())
-        project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
-        project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())
-        project.dependencies.add("testImplementation", libs.findLibrary("mockito.core").get())
-        project.dependencies.add("testImplementation", libs.findLibrary("assertj").get())
+            project.dependencies.add("api", libs.findLibrary("jspecify").get())
+            project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
+            project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())
+            project.dependencies.add("testImplementation", libs.findLibrary("mockito.core").get())
+            project.dependencies.add("testImplementation", libs.findLibrary("assertj").get())
+        }
 
         project.tasks.register("allDeps", DependencyReportTask::class.java)
     }

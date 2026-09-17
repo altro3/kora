@@ -2,8 +2,6 @@ plugins {
     id("io.koraframework.kora-java-lib")
 }
 
-description = "Kora HTTP Client implementation based on Apache HttpClient 5"
-
 dependencies {
     annotationProcessor(projects.config.configAnnotationProcessor)
 
