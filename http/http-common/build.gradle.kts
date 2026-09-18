@@ -3,6 +3,7 @@ plugins {
 }
 
 dependencies {
-    api(projects.core.common)
     compileOnly(projects.json.jsonCommon)
+
+    api(projects.core.common)
 }

@@ -9,6 +9,7 @@ plugins {
 
 dependencies {
     api(projects.core.annotationProcessorCommon)
+
     implementation(libs.jackson.core)
 
     testImplementation(projects.json.jsonCommon)
@@ -40,8 +41,5 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     dependsOn(buildHints)
 }
 tasks.withType<JavaCompile>().configureEach {
-    dependsOn(buildHints)
-}
-tasks.matching { it.name.startsWith("kspKotlin") || it.name.startsWith("kspJava") }.configureEach {
     dependsOn(buildHints)
 }

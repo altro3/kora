@@ -2,10 +2,6 @@ plugins {
     `kotlin-dsl`
 }
 
-repositories {
-    mavenCentral()
-}
-
 dependencies {
     implementation(libs.kotlin.gradle.plugin)
     implementation(libs.okhttp)
@@ -50,6 +46,10 @@ gradlePlugin {
         register("kora-experimental-convention") {
             id = "io.koraframework.kora-experimental-convention"
             implementationClass = "io.koraframework.gradle.KoraExperimentalConventionPlugin"
+        }
+        register("kora-soap-convention") {
+            id = "io.koraframework.kora-soap-convention"
+            implementationClass = "io.koraframework.gradle.soap.KoraSoapConventionPlugin"
         }
         register("kora-in-test-generated") {
             id = "io.koraframework.kora-in-test-generated"

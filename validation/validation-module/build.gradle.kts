@@ -3,7 +3,7 @@ plugins {
 }
 
 dependencies {
-    api(projects.validation.validationCommon)
-
     compileOnly(projects.http.httpServerCommon)
+
+    api(projects.validation.validationCommon)
 }

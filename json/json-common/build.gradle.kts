@@ -3,9 +3,9 @@ plugins {
 }
 
 dependencies {
+    compileOnly(libs.kotlin.stdlib.lib)
+
     api(projects.core.common)
     api(libs.jackson.core)
-
-    compileOnly(libs.kotlin.stdlib.lib)
 }
 

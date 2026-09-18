@@ -44,6 +44,3 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 tasks.withType<JavaCompile>().configureEach {
     dependsOn(buildHints)
 }
-tasks.matching { it.name.startsWith("kspKotlin") || it.name.startsWith("kspJava") }.configureEach {
-    dependsOn(buildHints)
-}

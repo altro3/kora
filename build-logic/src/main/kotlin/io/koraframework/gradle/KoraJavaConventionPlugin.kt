@@ -24,18 +24,26 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         project.plugins.apply("java-library")
 
+        val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
+        val libs = catalogs.named("libs")
+        val javaVersionStr = libs.findVersion("java")
+            .orElseThrow { IllegalStateException("Version 'java' not found in libs.versions.toml") }
+            .requiredVersion
+        val javaVersionAsInt = javaVersionStr.toInt()
+        val javaVersionEnum = JavaVersion.toVersion(javaVersionStr)
+
         project.extensions.configure(JavaPluginExtension::class.java) {
             toolchain {
-                languageVersion.set(JavaLanguageVersion.of(25))
+                languageVersion.set(JavaLanguageVersion.of(javaVersionAsInt))
             }
-            sourceCompatibility = JavaVersion.VERSION_25
-            targetCompatibility = JavaVersion.VERSION_25
+            sourceCompatibility = javaVersionEnum
+            targetCompatibility = javaVersionEnum
             withSourcesJar()
             withJavadocJar()
         }
 
         project.tasks.withType<JavaCompile>().configureEach {
-            options.encoding = "UTF-8"
+            options.encoding = Charsets.UTF_8.name()
             options.isDebug = true
             options.compilerArgs.addAll(listOf("-parameters", "-XprintRounds"))
             if (name == "compileJava" && !project.name.contains("internal")) {
@@ -45,7 +53,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         project.tasks.withType<Javadoc>().configureEach {
             val options = options as StandardJavadocDocletOptions
-            options.encoding = "UTF-8"
+            options.encoding = Charsets.UTF_8.name()
             options.addBooleanOption("html5", true)
             options.addBooleanOption("-no-fonts", true)
             options.addStringOption("Xdoclint:none", "-quiet")
@@ -89,14 +97,13 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
-        val libs = catalogs.named("libs")
-
-        project.dependencies.add("api", libs.findLibrary("jspecify").get())
-        project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
-        project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())
-        project.dependencies.add("testImplementation", libs.findLibrary("mockito.core").get())
-        project.dependencies.add("testImplementation", libs.findLibrary("assertj").get())
+        project.pluginManager.withPlugin("java-library") {
+            libs.findLibrary("jspecify").ifPresent { project.dependencies.add("api", it) }
+            project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
+            libs.findLibrary("junit.jupiter").ifPresent { project.dependencies.add("testImplementation", it) }
+            libs.findLibrary("mockito.core").ifPresent { project.dependencies.add("testImplementation", it) }
+            libs.findLibrary("assertj").ifPresent { project.dependencies.add("testImplementation", it) }
+        }
 
         project.tasks.register("allDeps", DependencyReportTask::class.java)
     }

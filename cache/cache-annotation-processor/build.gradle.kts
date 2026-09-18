@@ -5,7 +5,6 @@ plugins {
 
 dependencies {
     implementation(projects.aop.aopAnnotationProcessor)
-
     implementation(libs.javapoet)
 
     testImplementation(libs.prometheus.collector.caffeine)

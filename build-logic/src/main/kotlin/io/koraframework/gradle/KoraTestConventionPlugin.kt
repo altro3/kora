@@ -4,12 +4,12 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.api.tasks.testing.Test
+import org.gradle.api.tasks.testing.logging.TestLogEvent
 
 class KoraTestConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val catalogs = project.extensions.getByType(VersionCatalogsExtension::class.java)
         val libs = catalogs.named("libs")
-
         if (project.parent?.name != "internal") {
             return
         }
@@ -28,17 +28,35 @@ class KoraTestConventionPlugin : Plugin<Project> {
                 )
             }
 
+            maxParallelForks = 8
+            forkEvery = 0
+
             maxHeapSize = "512m"
             minHeapSize = "128m"
-            forkEvery = 0
-            maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
-            jvmArgs("-XX:+UseParallelGC")
+
+            jvmArgs(
+                "-XX:+TieredCompilation",
+                "-XX:TieredStopAtLevel=1",
+                "-XX:+UseParallelGC",
+                "-XX:FlightRecorderOptions=stackdepth=1024",
+                "--enable-preview",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.jvm=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED",
+                "--add-opens", "jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED"
+            )
 
             testLogging {
-                events("passed", "skipped", "failed")
-                showExceptions = true
+                events(TestLogEvent.FAILED)
+                showStandardStreams = false
                 showCauses = true
-                showStackTraces = false
+                showExceptions = true
+                showStackTraces = true
             }
         }
     }
