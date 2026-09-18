@@ -3,15 +3,20 @@ package io.koraframework.gradle.hint
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.json.JsonMapper
 import java.nio.file.Files
 
+@CacheableTask
 abstract class MergeHintsTask : DefaultTask() {
 
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:InputDirectory
     abstract val partsDirectory: DirectoryProperty
 
@@ -51,16 +56,7 @@ abstract class MergeHintsTask : DefaultTask() {
 
         val jsonString = mapper.writeValueAsString(rootArray)
 
-        if (targetFile.exists()) {
-            if (targetFile.readText() == jsonString) {
-                logger.info("=== [MergeHintsTask] Content has not changed, skipping write ===")
-                return
-            }
-            targetFile.delete()
-        }
-
         Files.createDirectories(targetFile.parentFile.toPath())
-        targetFile.createNewFile()
         targetFile.writeText(jsonString)
 
         logger.info("=== [MergeHintsTask] Final file successfully written to: ${targetFile.absolutePath} ===")

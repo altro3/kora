@@ -1,33 +1,26 @@
 package io.koraframework.gradle.hint
 
 import org.gradle.api.DefaultTask
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
-import org.gradle.api.file.FileCollection
 import org.gradle.api.file.FileSystemOperations
-import org.gradle.api.model.ObjectFactory
+import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.InputFiles
-import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import javax.inject.Inject
 
+@CacheableTask
 abstract class CopyHintsTask : DefaultTask() {
 
     @get:Inject
     abstract val fileSystemOperations: FileSystemOperations
 
-    @get:Inject
-    abstract val objectFactory: ObjectFactory
-
-    @get:Internal
-    abstract val repositoryRoot: DirectoryProperty
-
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:InputFiles
-    val hintFiles: FileCollection
-        get() = objectFactory.fileCollection().from(repositoryRoot.asFileTree.matching {
-            include("**/src/main/resources/kora-module-hints.json")
-            exclude("**/build/**/*")
-        })
+    abstract val hintFiles: ConfigurableFileCollection
 
     @get:OutputDirectory
     abstract val outputDirectory: DirectoryProperty
@@ -35,11 +28,10 @@ abstract class CopyHintsTask : DefaultTask() {
     @TaskAction
     fun run() {
         val targetDir = outputDirectory.get().asFile
-
         targetDir.deleteRecursively()
         targetDir.mkdirs()
 
-        logger.info("=== [CopyHintsTask] Starting safe hint file search via ObjectFactory ===")
+        logger.info("=== [CopyHintsTask] Starting safe hint file copy ===")
 
         var counter = 0
 

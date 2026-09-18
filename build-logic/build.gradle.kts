@@ -51,6 +51,10 @@ gradlePlugin {
             id = "io.koraframework.kora-soap-convention"
             implementationClass = "io.koraframework.gradle.soap.KoraSoapConventionPlugin"
         }
+        register("kora-hints") {
+            id = "io.koraframework.kora-hints"
+            implementationClass = "io.koraframework.gradle.hint.KoraHintsConventionPlugin"
+        }
         register("kora-in-test-generated") {
             id = "io.koraframework.kora-in-test-generated"
             implementationClass = "io.koraframework.gradle.KoraInTestGeneratedPlugin"

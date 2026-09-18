@@ -97,7 +97,7 @@ abstract class SonatypePublishTask : DefaultTask() {
 
             val rq = Request.Builder()
                 .post(ByteArray(0).toRequestBody())
-                .url("https://sonatype.com")
+                .url("https://central.sonatype.com/api/v1/publisher/status?id=$deploymentId")
                 .addHeader("Authorization", authorization)
                 .build()
 
