@@ -5,7 +5,10 @@ import org.gradle.api.Project
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.Copy
+import org.gradle.kotlin.dsl.getByType
 import org.gradle.kotlin.dsl.named
+import org.gradle.kotlin.dsl.register
+import org.gradle.kotlin.dsl.withType
 
 class KoraHintsConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
@@ -17,12 +20,12 @@ class KoraHintsConventionPlugin : Plugin<Project> {
                 exclude("**/build/**/*")
             }
 
-            val copyHints = rootProject.tasks.register("copyHints", CopyHintsTask::class.java) {
+            val copyHints = rootProject.tasks.register<CopyHintsTask>("copyHints") {
                 hintFiles.from(hintsTree)
                 outputDirectory.set(rootProject.layout.buildDirectory.dir("kora-hints/parts"))
             }
 
-            rootProject.tasks.register("buildHints", MergeHintsTask::class.java) {
+            rootProject.tasks.register<MergeHintsTask>("buildHints") {
                 partsDirectory.set(copyHints.flatMap { it.outputDirectory })
                 resultFile.set(rootProject.layout.buildDirectory.file("kora-hints-generated/kora-hints.json"))
             }
@@ -31,12 +34,12 @@ class KoraHintsConventionPlugin : Plugin<Project> {
         val rootBuildHints = rootProject.tasks.named<MergeHintsTask>("buildHints")
 
         project.pluginManager.withPlugin("java") {
-            val javaExtension = project.extensions.getByType(JavaPluginExtension::class.java)
+            val javaExtension = project.extensions.getByType<JavaPluginExtension>()
             javaExtension.sourceSets.getByName("main").resources {
                 srcDir(rootBuildHints.map { it.resultFile.get().asFile.parentFile })
             }
 
-            project.tasks.withType(Copy::class.java).configureEach {
+            project.tasks.withType<Copy>().configureEach {
                 if (name == "processResources") {
                     duplicatesStrategy = DuplicatesStrategy.INCLUDE
                 }

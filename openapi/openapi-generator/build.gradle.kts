@@ -116,3 +116,7 @@ pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
         )
     }
 }
+
+tasks.named<Test>("test") {
+    maxParallelForks = 5
+}

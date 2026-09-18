@@ -22,6 +22,10 @@ gradlePlugin {
             id = "io.koraframework.kora-publishing"
             implementationClass = "io.koraframework.gradle.publish.KoraPublishingConventionPlugin"
         }
+        register("kora-maven-publishing") {
+            id = "io.koraframework.kora-maven-publishing"
+            implementationClass = "io.koraframework.gradle.KoraMavenPublishingConventionPlugin"
+        }
         register("kora-ci-testing") {
             id = "io.koraframework.kora-ci-testing"
             implementationClass = "io.koraframework.gradle.KoraCiTestingConventionPlugin"
