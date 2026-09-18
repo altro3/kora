@@ -14,16 +14,17 @@ class KoraKotlinConventionPlugin : Plugin<Project> {
 
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
-        val javaVersionStr = libs.findVersion("java").get().requiredVersion
-        val javaVersionAsInt = javaVersionStr.toInt()
+        val javaVersionStr = libs.findVersion("java")
+            .orElseThrow { IllegalStateException("Version 'java' not found in libs.versions.toml") }
+            .requiredVersion
 
         val kotlinExtension = project.extensions.getByType<KotlinJvmProjectExtension>()
-        kotlinExtension.jvmToolchain(javaVersionAsInt)
+        kotlinExtension.jvmToolchain(javaVersionStr.toInt())
 
         project.tasks.withType<KotlinJvmCompile>().configureEach {
             compilerOptions {
                 javaParameters.set(true)
-                freeCompilerArgs.add("-Xjvm-enable-preview")
+                freeCompilerArgs.add("-Xjavac-arguments=--enable-preview")
             }
         }
     }

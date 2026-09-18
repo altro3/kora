@@ -10,40 +10,39 @@ class KoraDependencyAlignment : Plugin<Project> {
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
 
+        fun getVer(key: String): String {
+            return libs.findVersion(key)
+                .orElseThrow { IllegalStateException("Version '$key' not found in libs.versions.toml") }
+                .requiredVersion
+        }
+
+        val nettyVer = getVer("netty")
+        val grpcVer = getVer("grpc-java")
+        val protoVer = getVer("protobuf")
+        val jetbrainsVer = getVer("jetbrains-annotations")
+        val kotlinVer = getVer("kotlin-stdlib")
+        val poetVer = getVer("kotlinpoet")
+        val junitVer = getVer("junit")
+        val slf4jVer = getVer("slf4j")
+        val logbackVer = getVer("logback")
+        val guavaVer = getVer("guava")
+        val buddyVer = getVer("byte-buddy")
+        val jacksonAnnotationsVer = getVer("jackson2-annotations")
+        val jacksonCorelineVer = getVer("jackson2-coreline")
+        val cliVer = getVer("commons-cli")
+        val codecVer = getVer("commons-codec")
+        val collectionsVer = getVer("commons-collections")
+        val fileuploadVer = getVer("commons-fileupload")
+        val ioVer = getVer("commons-io")
+        val loggingVer = getVer("commons-logging")
+        val lang3Ver = getVer("commons-lang3")
+        val textVer = getVer("commons-text")
+        val prometheusVer = getVer("prometheus-metrics")
+        val swaggerVer = getVer("swagger-coreline")
+        val swaggerParserVer = getVer("swagger-parser")
+
         project.configurations.configureEach {
             resolutionStrategy {
-                fun getVer(key: String): String {
-                    return libs.findVersion(key)
-                        .orElseThrow { IllegalStateException("Version '$key' not found in libs.versions.toml") }
-                        .requiredVersion
-                }
-
-                val nettyVer = getVer("netty")
-                val grpcVer = getVer("grpc-java")
-                val protoVer = getVer("protobuf")
-                val jetbrainsVer = getVer("jetbrains-annotations")
-                val kotlinVer = getVer("kotlin-stdlib")
-                val poetVer = getVer("kotlinpoet")
-                val junitVer = getVer("junit")
-                val slf4jVer = getVer("slf4j")
-                val logbackVer = getVer("logback")
-                val guavaVer = getVer("guava")
-                val buddyVer = getVer("byte-buddy")
-                val jacksonAnnotationsVer = getVer("jackson2-annotations")
-                val jacksonCorelineVer = getVer("jackson2-coreline")
-                val cliVer = getVer("commons-cli")
-                val codecVer = getVer("commons-codec")
-                val collectionsVer = getVer("commons-collections")
-                val fileuploadVer = getVer("commons-fileupload")
-                val ioVer = getVer("commons-io")
-                val loggingVer = getVer("commons-logging")
-                val lang3Ver = getVer("commons-lang3")
-                val textVer = getVer("commons-text")
-                val prometheusVer = getVer("prometheus-metrics")
-                val swaggerVer = getVer("swagger-coreline")
-                val swaggerParserVer = getVer("swagger-parser")
-
-                // Принудительно выставляем плоский список версий
                 force(
                     "io.netty:netty-common:$nettyVer",
                     "io.netty:netty-buffer:$nettyVer",

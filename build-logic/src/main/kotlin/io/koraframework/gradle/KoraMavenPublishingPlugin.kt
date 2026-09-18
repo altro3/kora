@@ -12,7 +12,9 @@ import java.net.URI
 
 class KoraMavenPublishingPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        if (project == project.rootProject) {
+        val rootProject = project.gradle.rootProject
+
+        if (project == rootProject) {
             val cleanPublishDir = project.tasks.register("cleanPublishDir", Delete::class.java) {
                 delete(project.layout.buildDirectory.dir("publishing-repository"))
                 group = "publishing"
@@ -27,6 +29,15 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
                 destinationDirectory.set(project.layout.buildDirectory)
                 dependsOn(cleanPublishDir)
                 dependsOn(":kora-bom:publishMavenPublicationToBuildRepository")
+
+                rootProject.subprojects {
+                    val sub = this
+                    if (sub.name != "kora-bom" && !sub.path.startsWith(":internal:") && sub.childProjects.isEmpty()) {
+                        sub.plugins.withId("maven-publish") {
+                            this@register.dependsOn(sub.tasks.named("publishMavenPublicationToBuildRepository"))
+                        }
+                    }
+                }
             }
             return
         }
@@ -35,13 +46,13 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
             return
         }
 
-        project.plugins.apply("maven-publish")
-        project.plugins.apply("signing")
+        project.pluginManager.apply("maven-publish")
+        project.pluginManager.apply("signing")
 
         project.extensions.configure(PublishingExtension::class.java) {
             publications {
                 create("maven", MavenPublication::class.java) {
-                    if (project.plugins.hasPlugin("java-test-fixtures")) {
+                    project.pluginManager.withPlugin("java-test-fixtures") {
                         val testFixturesApiElements = project.configurations.getByName("testFixturesApiElements")
                         val testFixturesRuntimeElements = project.configurations.getByName("testFixturesRuntimeElements")
 
@@ -56,10 +67,9 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
                     from(project.components.getByName("java"))
 
                     pom {
-                        project.afterEvaluate {
-                            this@pom.name.set(project.name)
-                            this@pom.description.set("Kora ${project.name} module")
-                        }
+                        name.set(project.name)
+                        description.set(project.provider { "Kora ${project.name} module" })
+
                         licenses {
                             license {
                                 name.set("The Apache Software License, Version 2.0")
@@ -113,7 +123,7 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
             repositories {
                 maven {
                     name = "build"
-                    url = project.rootProject.layout.buildDirectory.dir("publishing-repository").get().asFile.toURI()
+                    url = rootProject.layout.buildDirectory.dir("publishing-repository").map { it.asFile.toURI() }.get()
                 }
                 maven {
                     name = "snapshot"
@@ -139,20 +149,14 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
             }
         }
 
-        project.rootProject.tasks.withType(Zip::class.java).configureEach {
-            if (name == "createPublishArchive") {
-                dependsOn(project.tasks.named("publishMavenPublicationToBuildRepository"))
-            }
-        }
-
         project.tasks.named("publishMavenPublicationToBuildRepository").configure {
-            dependsOn(project.rootProject.tasks.named("cleanPublishDir"))
+            dependsOn(rootProject.tasks.named("cleanPublishDir"))
         }
     }
 
     private fun isPublishedLibrary(p: Project): Boolean {
         if (!p.childProjects.isEmpty()) return false
-        if (p.parent?.name == "internal") return false
+        if (p.path.startsWith(":internal:")) return false
         if (p.name == "kora-bom") return false
         return true
     }

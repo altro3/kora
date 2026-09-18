@@ -12,15 +12,31 @@ class KoraInTestGeneratedPlugin : Plugin<Project> {
         project.pluginManager.withPlugin("java") {
             val javaPlugin = project.extensions.getByType<JavaPluginExtension>()
             val sourceSets = javaPlugin.sourceSets
-
             val main = sourceSets.getByName("main")
             val test = sourceSets.getByName("test")
 
-            sourceSets.maybeCreate("testGenerated").apply {
+            val testGenerated = sourceSets.maybeCreate("testGenerated").apply {
                 java.srcDir(project.layout.buildDirectory.dir("in-test-generated/sources"))
+            }
 
-                compileClasspath = compileClasspath + main.output + test.output + main.compileClasspath + test.compileClasspath
-                runtimeClasspath = runtimeClasspath + main.output + test.output + main.runtimeClasspath + test.runtimeClasspath
+            project.configurations.named(testGenerated.compileClasspathConfigurationName) {
+                extendsFrom(project.configurations.getByName(main.compileClasspathConfigurationName))
+            }
+            project.configurations.named(testGenerated.runtimeClasspathConfigurationName) {
+                extendsFrom(project.configurations.getByName(main.runtimeClasspathConfigurationName))
+            }
+
+            testGenerated.compileClasspath += main.output
+            testGenerated.runtimeClasspath += main.output
+
+            test.compileClasspath += testGenerated.output
+            test.runtimeClasspath += testGenerated.output
+
+            project.configurations.named(test.compileClasspathConfigurationName) {
+                extendsFrom(project.configurations.getByName(testGenerated.compileClasspathConfigurationName))
+            }
+            project.configurations.named(test.runtimeClasspathConfigurationName) {
+                extendsFrom(project.configurations.getByName(testGenerated.runtimeClasspathConfigurationName))
             }
         }
 

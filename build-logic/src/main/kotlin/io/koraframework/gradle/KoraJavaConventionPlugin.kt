@@ -26,7 +26,9 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
-        val javaVersionStr = libs.findVersion("java").get().requiredVersion
+        val javaVersionStr = libs.findVersion("java")
+            .orElseThrow { IllegalStateException("Version 'java' not found in libs.versions.toml") }
+            .requiredVersion
         val javaVersionAsInt = javaVersionStr.toInt()
         val javaVersionEnum = JavaVersion.toVersion(javaVersionStr)
 
@@ -41,7 +43,7 @@ class KoraJavaConventionPlugin : Plugin<Project> {
         }
 
         project.tasks.withType<JavaCompile>().configureEach {
-            options.encoding = "UTF-8"
+            options.encoding = Charsets.UTF_8.name()
             options.isDebug = true
             options.compilerArgs.addAll(listOf("-parameters", "-XprintRounds", "--enable-preview"))
             if (name == "compileJava" && !project.name.contains("internal")) {
@@ -51,23 +53,24 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         project.tasks.withType<Javadoc>().configureEach {
             val options = options as StandardJavadocDocletOptions
-            options.encoding = "UTF-8"
+            options.encoding = Charsets.UTF_8.name()
             options.addBooleanOption("html5", true)
             options.addBooleanOption("-no-fonts", true)
             options.addStringOption("Xdoclint:none", "-quiet")
         }
 
-        if (project.childProjects.isEmpty()) {
-            val moduleInfo = project.layout.projectDirectory.file("src/main/java/module-info.java")
-            if (!moduleInfo.asFile.exists()) {
-                project.tasks.withType<Jar>().configureEach {
-                    manifest {
-                        attributes(mapOf("Automatic-Module-Name" to "kora." + project.name.replace('-', '.')))
+        project.tasks.withType<Jar>().configureEach {
+            manifest {
+                attributes(mapOf("Automatic-Module-Name" to project.provider {
+                    val moduleInfo = project.layout.projectDirectory.file("src/main/java/module-info.java")
+                    if (!moduleInfo.asFile.exists()) {
+                        "kora." + project.name.replace('-', '.')
+                    } else {
+                        null
                     }
-                }
+                }))
             }
         }
-
         project.tasks.withType<Test>().configureEach {
             jvmArgs(
                 "-XX:+TieredCompilation",
@@ -95,12 +98,12 @@ class KoraJavaConventionPlugin : Plugin<Project> {
             }
         }
 
-        project.plugins.withId("java-library") {
-            project.dependencies.add("api", libs.findLibrary("jspecify").get())
+        project.pluginManager.withPlugin("java-library") {
+            libs.findLibrary("jspecify").ifPresent { project.dependencies.add("api", it) }
             project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))
-            project.dependencies.add("testImplementation", libs.findLibrary("junit.jupiter").get())
-            project.dependencies.add("testImplementation", libs.findLibrary("mockito.core").get())
-            project.dependencies.add("testImplementation", libs.findLibrary("assertj").get())
+            libs.findLibrary("junit.jupiter").ifPresent { project.dependencies.add("testImplementation", it) }
+            libs.findLibrary("mockito.core").ifPresent { project.dependencies.add("testImplementation", it) }
+            libs.findLibrary("assertj").ifPresent { project.dependencies.add("testImplementation", it) }
         }
 
         project.tasks.register("allDeps", DependencyReportTask::class.java)

@@ -7,8 +7,6 @@ class KoraJavaModule : Plugin<Project> {
     override fun apply(project: Project) {
         val pluginManager = project.pluginManager
 
-        pluginManager.apply("java")
-
         pluginManager.apply("io.koraframework.kora-java-convention")
         pluginManager.apply("io.koraframework.kora-dependency-alignment")
         pluginManager.apply("io.koraframework.kora-experimental-convention")
