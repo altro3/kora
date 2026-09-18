@@ -10,45 +10,40 @@ dependencies {
 
 gradlePlugin {
     plugins {
-        register("kora-java-lib") {
-            id = "io.koraframework.kora-java-lib"
-            implementationClass = "io.koraframework.gradle.KoraJavaLib"
+        register("kora-java-module") {
+            id = "io.koraframework.kora-java-module"
+            implementationClass = "io.koraframework.gradle.KoraJavaModuleConventionPlugin"
         }
-
-        register("kora-kotlin-lib") {
-            id = "io.koraframework.kora-kotlin-lib"
-            implementationClass = "io.koraframework.gradle.KoraKotlinLib"
+        register("kora-kotlin-module") {
+            id = "io.koraframework.kora-kotlin-module"
+            implementationClass = "io.koraframework.gradle.KoraKotlinModuleConventionPlugin"
         }
         register("kora-publishing") {
             id = "io.koraframework.kora-publishing"
-            implementationClass = "io.koraframework.gradle.KoraPublishingPlugin"
-        }
-        register("kora-maven-publishing") {
-            id = "io.koraframework.kora-maven-publishing"
-            implementationClass = "io.koraframework.gradle.KoraMavenPublishingPlugin"
+            implementationClass = "io.koraframework.gradle.publish.KoraPublishingConventionPlugin"
         }
         register("kora-ci-testing") {
             id = "io.koraframework.kora-ci-testing"
-            implementationClass = "io.koraframework.gradle.KoraCiTestingPlugin"
+            implementationClass = "io.koraframework.gradle.KoraCiTestingConventionPlugin"
         }
-        register("kora-java-convention") {
-            id = "io.koraframework.kora-java-convention"
+        register("kora-java") {
+            id = "io.koraframework.kora-java"
             implementationClass = "io.koraframework.gradle.KoraJavaConventionPlugin"
         }
-        register("kora-kotlin-convention") {
-            id = "io.koraframework.kora-kotlin-convention"
+        register("kora-kotlin") {
+            id = "io.koraframework.kora-kotlin"
             implementationClass = "io.koraframework.gradle.KoraKotlinConventionPlugin"
         }
-        register("kora-test-convention") {
-            id = "io.koraframework.kora-test-convention"
+        register("kora-test") {
+            id = "io.koraframework.kora-test"
             implementationClass = "io.koraframework.gradle.KoraTestConventionPlugin"
         }
-        register("kora-experimental-convention") {
-            id = "io.koraframework.kora-experimental-convention"
+        register("kora-experimental") {
+            id = "io.koraframework.kora-experimental"
             implementationClass = "io.koraframework.gradle.KoraExperimentalConventionPlugin"
         }
-        register("kora-soap-convention") {
-            id = "io.koraframework.kora-soap-convention"
+        register("kora-soap") {
+            id = "io.koraframework.kora-soap"
             implementationClass = "io.koraframework.gradle.soap.KoraSoapConventionPlugin"
         }
         register("kora-hints") {
@@ -57,11 +52,11 @@ gradlePlugin {
         }
         register("kora-in-test-generated") {
             id = "io.koraframework.kora-in-test-generated"
-            implementationClass = "io.koraframework.gradle.KoraInTestGeneratedPlugin"
+            implementationClass = "io.koraframework.gradle.KoraInTestGeneratedConventionPlugin"
         }
         register("kora-dependency-alignment") {
             id = "io.koraframework.kora-dependency-alignment"
-            implementationClass = "io.koraframework.gradle.KoraDependencyAlignment"
+            implementationClass = "io.koraframework.gradle.KoraDependencyAlignmentConventionPlugin"
         }
     }
 }

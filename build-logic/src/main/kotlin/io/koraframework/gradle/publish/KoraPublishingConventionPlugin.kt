@@ -1,4 +1,4 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.publish
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -10,8 +10,29 @@ import org.gradle.api.tasks.bundling.Zip
 import org.gradle.plugins.signing.SigningExtension
 import java.net.URI
 
-class KoraMavenPublishingPlugin : Plugin<Project> {
+class KoraPublishingConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
+
+        project.tasks.register("uploadPublishArchive", SonatypePublishTask::class.java) {
+            dependsOn("createPublishArchive")
+
+            version.convention(project.provider { project.version.toString() })
+
+            archive.set(project.rootProject.layout.buildDirectory.file("deployment.zip"))
+
+            username.convention(
+                project.providers.gradleProperty("sonatypeUser")
+                    .orElse(project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME"))
+                    .orElse("")
+            )
+
+            password.convention(
+                project.providers.gradleProperty("sonatypePassword")
+                    .orElse(project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD"))
+                    .orElse("")
+            )
+        }
+
         if (project == project.rootProject) {
             val cleanPublishDir = project.tasks.register("cleanPublishDir", Delete::class.java) {
                 delete(project.layout.buildDirectory.dir("publishing-repository"))
@@ -117,7 +138,7 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
                 }
                 maven {
                     name = "snapshot"
-                    url = URI("https://sonatype.com")
+                    url = URI("https://central.sonatype.com/repository/maven-snapshots/")
                     credentials {
                         username = project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME").orElse("").get()
                         password = project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD").orElse("").get()
@@ -148,10 +169,11 @@ class KoraMavenPublishingPlugin : Plugin<Project> {
         project.tasks.named("publishMavenPublicationToBuildRepository").configure {
             dependsOn(project.rootProject.tasks.named("cleanPublishDir"))
         }
+
     }
 
     private fun isPublishedLibrary(p: Project): Boolean {
-        if (!p.childProjects.isEmpty()) return false
+        if (p.childProjects.isNotEmpty()) return false
         if (p.parent?.name == "internal") return false
         if (p.name == "kora-bom") return false
         return true

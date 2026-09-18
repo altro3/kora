@@ -1,7 +1,7 @@
 plugins {
-    id("io.koraframework.kora-java-lib")
+    id("io.koraframework.kora-java-module")
     id("io.koraframework.kora-in-test-generated")
-    id("io.koraframework.kora-soap-convention")
+    id("io.koraframework.kora-soap")
 }
 
 dependencies {

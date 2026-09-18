@@ -5,7 +5,7 @@ import org.gradle.api.Project
 import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.kotlin.dsl.getByType
 
-class KoraDependencyAlignment : Plugin<Project> {
+class KoraDependencyAlignmentConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")

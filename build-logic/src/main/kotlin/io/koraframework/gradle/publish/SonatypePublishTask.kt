@@ -1,4 +1,4 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.publish
 
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody

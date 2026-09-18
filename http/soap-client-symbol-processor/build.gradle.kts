@@ -1,7 +1,7 @@
 plugins {
-    id("io.koraframework.kora-kotlin-lib")
+    id("io.koraframework.kora-kotlin-module")
     id("io.koraframework.kora-in-test-generated")
-    id("io.koraframework.kora-soap-convention")
+    id("io.koraframework.kora-soap")
     `java-test-fixtures`
 }
 

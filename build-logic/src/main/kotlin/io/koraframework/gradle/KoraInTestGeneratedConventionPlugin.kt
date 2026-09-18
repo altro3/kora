@@ -6,7 +6,7 @@ import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.kotlin.dsl.getByType
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 
-class KoraInTestGeneratedPlugin : Plugin<Project> {
+class KoraInTestGeneratedConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
 
         project.pluginManager.withPlugin("java") {

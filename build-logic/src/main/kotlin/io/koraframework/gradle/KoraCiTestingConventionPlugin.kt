@@ -5,7 +5,7 @@ import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.tasks.TaskProvider
 
-class KoraCiTestingPlugin : Plugin<Project> {
+class KoraCiTestingConventionPlugin : Plugin<Project> {
     override fun apply(rootProject: Project) {
         if (rootProject != rootProject.gradle.rootProject) {
             throw IllegalStateException("The CI Testing plugin must be applied to the root project only.")
