@@ -1,4 +1,4 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.test
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -8,28 +8,17 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.gradle.kotlin.dsl.getByType
 import org.gradle.kotlin.dsl.withType
-import org.gradle.testing.jacoco.tasks.JacocoReport
 
 class KoraTestConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-
         if (project.childProjects.isNotEmpty() || project.name == "kora-bom") {
             return
-        }
-
-        project.pluginManager.apply("jacoco")
-        project.tasks.withType<JacocoReport>().configureEach {
-            reports {
-                xml.required.set(true)
-                html.required.set(true)
-            }
         }
 
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
 
         project.pluginManager.withPlugin("java") {
-
             libs.findLibrary("jspecify").ifPresent { project.dependencies.add("api", it) }
 
             project.dependencies.add("testImplementation", project.dependencies.project(mapOf("path" to ":internal:test-logging")))

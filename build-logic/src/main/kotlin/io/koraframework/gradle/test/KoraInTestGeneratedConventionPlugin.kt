@@ -1,4 +1,4 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.test
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project

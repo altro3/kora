@@ -1,4 +1,4 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.test
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
@@ -47,10 +47,9 @@ class KoraCiTestingConventionPlugin : Plugin<Project> {
 
         fun addDependenciesByPattern(taskProviders: List<TaskProvider<Task>>, namePattern: String) {
             rootProject.subprojects {
-                val subproject = this
-                if (subproject.name != rootProject.name && subproject.name.contains(namePattern) && !nonOtherModules.contains(subproject.name)) {
-                    val fullName = getProjectFullName(subproject)
-                    taskProviders.forEach { linkCiTaskToSubproject(it, subproject) }
+                if (name != rootProject.name && name.contains(namePattern) && !nonOtherModules.contains(name)) {
+                    val fullName = getProjectFullName(this)
+                    taskProviders.forEach { linkCiTaskToSubproject(it, this) }
                     nonOtherModules.add(fullName)
                 }
             }
@@ -121,12 +120,11 @@ class KoraCiTestingConventionPlugin : Plugin<Project> {
         addDependencies(tasksCodegenKotlin, "mapping:konvert-ksp-extension")
 
         rootProject.subprojects {
-            val subproject = this
-            subproject.afterEvaluate {
-                if (subproject.name != rootProject.name && subproject.name != "kora-bom" && subproject.childProjects.isEmpty()) {
-                    val fullName = getProjectFullName(subproject)
+            afterEvaluate {
+                if (name != rootProject.name && name != "kora-bom" && childProjects.isEmpty()) {
+                    val fullName = getProjectFullName(this)
                     if (!nonOtherModules.contains(fullName)) {
-                        tasksOther.forEach { linkCiTaskToSubproject(it, subproject) }
+                        tasksOther.forEach { linkCiTaskToSubproject(it, this) }
                     }
                 }
             }
