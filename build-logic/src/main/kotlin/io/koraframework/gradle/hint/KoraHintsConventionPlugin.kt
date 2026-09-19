@@ -8,46 +8,53 @@ import org.gradle.api.tasks.Copy
 import org.gradle.api.tasks.bundling.Jar
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.kotlin.dsl.getByType
-import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 import org.gradle.kotlin.dsl.withType
+import java.io.File
 
 class KoraHintsConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        val rootProject = project.rootProject
+        val rootDirFile = project.rootProject.rootDir
+        val localTargetDirProvider = project.layout.buildDirectory.dir("kora-hints-generated")
+        val localHintsFile = project.layout.projectDirectory.file("src/main/resources/kora-module-hints.json")
 
-        if (rootProject.tasks.findByName("buildHints") == null) {
-            rootProject.tasks.register<MergeHintsTask>("buildHints") {
-                hintFiles.from(rootProject.layout.projectDirectory.asFileTree.matching {
-                    include("**/src/main/resources/kora-module-hints.json")
-                    exclude("**/build/**/*")
-                })
-                resultFile.set(rootProject.layout.buildDirectory.file("kora-hints-generated/kora-hints.json"))
+        val buildHints = project.tasks.register<MergeHintsTask>("buildHints") {
+            hintFiles.from(project.provider {
+                val paths = mutableListOf<File>()
+                rootDirFile.walkTopDown()
+                    .filter { it.isFile && it.name == "kora-module-hints.json" && !it.absolutePath.contains("${File.separator}build${File.separator}") }
+                    .forEach { paths.add(it) }
+                paths
+            })
+
+            if (localHintsFile.asFile.exists()) {
+                hintFiles.from(localHintsFile)
             }
-        }
 
-        val rootBuildHints = rootProject.tasks.named<MergeHintsTask>("buildHints")
+            resultFile.set(localTargetDirProvider.map { it.file("kora-hints.json") })
+        }
 
         project.pluginManager.withPlugin("java") {
             val javaExtension = project.extensions.getByType<JavaPluginExtension>()
 
             javaExtension.sourceSets.getByName("main").resources {
-                srcDir(rootBuildHints.map { it.resultFile.get().asFile.parentFile })
+                srcDir(localTargetDirProvider)
             }
 
             project.tasks.withType<JavaCompile>().configureEach {
-                dependsOn(rootBuildHints)
+                dependsOn(buildHints)
             }
 
             project.tasks.withType<Jar>().configureEach {
                 if (name == "sourcesJar") {
-                    dependsOn(rootBuildHints)
+                    dependsOn(buildHints)
                 }
             }
 
             project.tasks.withType<Copy>().configureEach {
                 if (name == "processResources") {
                     duplicatesStrategy = DuplicatesStrategy.INCLUDE
+                    dependsOn(buildHints)
                 }
             }
         }

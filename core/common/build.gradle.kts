@@ -36,7 +36,7 @@ abstract class GenerateKoraVersionTask : DefaultTask() {
 
 val generateKoraVersion = tasks.register<GenerateKoraVersionTask>("generateKoraVersion") {
     projectName.set(project.name)
-    projectVersion.set(project.provider { rootProject.version.toString() })
+    projectVersion.set(project.provider { project.version.toString() })
     outputDir.set(layout.buildDirectory.dir("kora-version"))
 }
 
@@ -48,6 +48,8 @@ sourceSets {
     }
 }
 
-tasks.matching { it.name == "sourcesJar" }.configureEach {
-    dependsOn(generateKoraVersion)
+tasks.withType<Jar>().configureEach {
+    if (name == "sourcesJar") {
+        dependsOn(generateKoraVersion)
+    }
 }

@@ -25,22 +25,36 @@ abstract class MergeHintsTask : DefaultTask() {
         val rootArray = mapper.createArrayNode()
         val targetFile = resultFile.get().asFile
 
+        logger.lifecycle("=== [MergeHintsTask] Starting merge execution ===")
+        logger.lifecycle("-> Total files in hintFiles collection: ${hintFiles.files.size}")
+
+        hintFiles.files.forEach { file ->
+            logger.lifecycle("-> Found input file path: ${file.absolutePath} (exists: ${file.exists()})")
+        }
+
         var filesProcessed = 0
 
         hintFiles.files.forEach { file ->
             if (file.isFile && file.extension == "json") {
                 filesProcessed++
+                logger.lifecycle("-> Processing JSON file: ${file.name}")
                 val node = mapper.readTree(file)
                 if (node.isArray) {
                     node.forEach { rootArray.add(it) }
                 } else {
                     rootArray.add(node)
                 }
+            } else {
+                logger.lifecycle("-> Skipping input (not a JSON file): ${file.absolutePath}")
             }
         }
+
+        logger.lifecycle("=== [MergeHintsTask] Total chunk files processed: $filesProcessed ===")
 
         Files.createDirectories(targetFile.parentFile.toPath())
         val jsonString = mapper.writeValueAsString(rootArray)
         targetFile.writeText(jsonString)
+
+        logger.lifecycle("=== [MergeHintsTask] Target file written to: ${targetFile.absolutePath} ===")
     }
 }
