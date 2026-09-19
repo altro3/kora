@@ -15,17 +15,16 @@ import javax.xml.xpath.XPathFactory
 
 class KoraModulePublishingConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        if (project == project.rootProject) return
-
-        if (!isPublishedLibrary(project)) return
+        if (project == project.rootProject || !isPublishedLibrary(project)) return
 
         project.pluginManager.apply("maven-publish")
         project.pluginManager.apply("signing")
 
-        project.pluginManager.withPlugin("java") {
-            project.extensions.configure<PublishingExtension> {
-                publications {
-                    create("maven", MavenPublication::class.java) {
+        project.extensions.configure<PublishingExtension> {
+            publications {
+                create("maven", MavenPublication::class.java) {
+
+                    project.pluginManager.withPlugin("java") {
                         if (project.pluginManager.hasPlugin("java-test-fixtures")) {
                             val testFixturesApiElements = project.configurations.getByName("testFixturesApiElements")
                             val testFixturesRuntimeElements = project.configurations.getByName("testFixturesRuntimeElements")
@@ -37,89 +36,96 @@ class KoraModulePublishingConventionPlugin : Plugin<Project> {
                             suppressPomMetadataWarningsFor("testFixturesApiElements")
                             suppressPomMetadataWarningsFor("testFixturesRuntimeElements")
                         }
-
                         from(project.components.getByName("java"))
+                    }
 
-                        pom {
-                            name.set(project.provider { project.name })
-                            description.set(project.provider { "Kora ${project.name} module" })
-                            licenses {
-                                license {
-                                    name.set("The Apache Software License, Version 2.0")
-                                    url.set("https://github.com")
-                                }
-                            }
-                            scm {
+                    project.pluginManager.withPlugin("java-platform") {
+                        from(project.components.getByName("javaPlatform"))
+                    }
+
+                    pom {
+                        name.set(project.provider {
+                            if (project.name == "kora-bom") "Kora BOM" else project.name
+                        })
+                        description.set(project.provider {
+                            if (project.name == "kora-bom") "Kora Bill-Of-Materials (BOM)" else "Kora ${project.name} module"
+                        })
+                        licenses {
+                            license {
+                                name.set("The Apache Software License, Version 2.0")
                                 url.set("https://github.com")
-                                connection.set("scm:git:git@://github.com")
-                                developerConnection.set("scm:git:git@://github.com")
-                            }
-                            url.set("https://github.com")
-                            developers {
-                                developer {
-                                    id.set("a.otts")
-                                    name.set("Aleksei Otts")
-                                    email.set("eld0727@mail.ru")
-                                }
-                                developer {
-                                    id.set("a.duyun")
-                                    name.set("Anton Duyun")
-                                    email.set("anton.duyun@gmail.com")
-                                }
-                                developer {
-                                    id.set("a.kurako")
-                                    name.set("Anton Kurako")
-                                    email.set("goodforgod.dev@gmail.com")
-                                }
-                                developer {
-                                    id.set("a.yakovlev")
-                                    name.set("Artem Yakovlev")
-                                    email.set("jakart89@gmail.com")
-                                }
-                            }
-
-                            withXml {
-                                val element = asElement()
-                                val xpf = XPathFactory.newInstance()
-                                val xp = xpf.newXPath()
-                                val xpath = xp.compile("//dependency[optional[contains(text(), 'true')]]")
-                                val nl = xpath.evaluate(element, XPathConstants.NODESET) as NodeList
-                                for (i in nl.length - 1 downTo 0) {
-                                    val node = nl.item(i)
-                                    node.parentNode.removeChild(node)
-                                }
                             }
                         }
-                    }
-                }
+                        scm {
+                            url.set("https://github.com")
+                            connection.set("scm:git:git@github.com:kora-projects/kora.git")
+                            developerConnection.set("scm:git:git@github.com:kora-projects/kora.git")
+                        }
+                        url.set("https://github.com")
+                        developers {
+                            developer {
+                                id.set("a.otts")
+                                name.set("Aleksei Otts")
+                                email.set("eld0727@mail.ru")
+                            }
+                            developer {
+                                id.set("a.duyun")
+                                name.set("Anton Duyun")
+                                email.set("anton.duyun@gmail.com")
+                            }
+                            developer {
+                                id.set("a.kurako")
+                                name.set("Anton Kurako")
+                                email.set("goodforgod.dev@gmail.com")
+                            }
+                            developer {
+                                id.set("a.yakovlev")
+                                name.set("Artem Yakovlev")
+                                email.set("jakart89@gmail.com")
+                            }
+                        }
 
-                repositories {
-                    maven {
-                        name = "build"
-                        url = project.rootProject.layout.buildDirectory.dir("publishing-repository").map { it.asFile.toURI() }.get()
-                    }
-                    maven {
-                        name = "snapshot"
-                        url = URI("https://sonatype.com")
-                        credentials {
-                            username = project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME").orElse("").get()
-                            password = project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD").orElse("").get()
+                        withXml {
+                            val element = asElement()
+                            val xpf = XPathFactory.newInstance()
+                            val xp = xpf.newXPath()
+                            val xpath = xp.compile("//dependency[optional[contains(text(), 'true')]]")
+                            val nl = xpath.evaluate(element, XPathConstants.NODESET) as NodeList
+                            for (i in nl.length - 1 downTo 0) {
+                                val node = nl.item(i)
+                                node.parentNode.removeChild(node)
+                            }
                         }
                     }
                 }
             }
 
-            project.extensions.configure<SigningExtension> {
-                val signingKey = project.providers.environmentVariable("KORA_IO_SIGNING_KEY").orNull
-                val signingPassword = project.providers.environmentVariable("KORA_IO_SIGNING_PASSWORD").orNull
-                if (signingKey == null || signingPassword == null) {
-                    isRequired = false
-                } else {
-                    isRequired = true
-                    useInMemoryPgpKeys(signingKey, signingPassword)
-                    val publishing = project.extensions.getByType<PublishingExtension>()
-                    sign(publishing.publications.getByName("maven"))
+            repositories {
+                maven {
+                    name = "build"
+                    url = project.rootProject.layout.buildDirectory.dir("publishing-repository").map { it.asFile.toURI() }.get()
                 }
+                maven {
+                    name = "snapshot"
+                    url = URI("https://sonatype.com")
+                    credentials {
+                        username = project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME").orElse("").get()
+                        password = project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD").orElse("").get()
+                    }
+                }
+            }
+        }
+
+        project.extensions.configure<SigningExtension> {
+            val signingKey = project.providers.environmentVariable("KORA_IO_SIGNING_KEY").orNull
+            val signingPassword = project.providers.environmentVariable("KORA_IO_SIGNING_PASSWORD").orNull
+            if (signingKey == null || signingPassword == null) {
+                isRequired = false
+            } else {
+                isRequired = true
+                useInMemoryPgpKeys(signingKey, signingPassword)
+                val publishing = project.extensions.getByType<PublishingExtension>()
+                sign(publishing.publications.getByName("maven"))
             }
         }
 
@@ -143,8 +149,7 @@ class KoraModulePublishingConventionPlugin : Plugin<Project> {
 
     private fun isPublishedLibrary(p: Project): Boolean {
         if (p.childProjects.isNotEmpty()) return false
-        if (p.parent?.name == "internal") return false
-        if (p.name == "kora-bom") return false
+        if (p.path.contains(":internal:") || p.parent?.name == "internal") return false
         return true
     }
 }

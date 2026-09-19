@@ -14,6 +14,7 @@ dependencies {
     testImplementation(projects.config.configHocon)
 
     testFixturesApi(libs.okhttp)
+
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.assertj)
     testFixturesImplementation(libs.mockito.core)

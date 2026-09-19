@@ -6,7 +6,6 @@ plugins {
 dependencies {
     implementation(projects.core.annotationProcessorCommon)
     implementation(projects.aop.aopAnnotationProcessor)
-
     implementation(libs.javapoet)
 
     testImplementation(testFixtures(projects.core.annotationProcessorCommon))

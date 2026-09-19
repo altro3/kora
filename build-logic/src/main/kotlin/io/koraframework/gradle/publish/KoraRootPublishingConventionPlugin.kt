@@ -15,6 +15,11 @@ class KoraRootPublishingConventionPlugin : Plugin<Project> {
             isCanBeResolved = true
         }
 
+        val bomSourceElements = project.configurations.create("bomSourceElements") {
+            isCanBeConsumed = true
+            isCanBeResolved = false
+        }
+
         val cleanPublishDir = project.tasks.register<Delete>("cleanPublishDir") {
             delete(project.layout.buildDirectory.dir("publishing-repository"))
             group = "publishing"
@@ -34,10 +39,23 @@ class KoraRootPublishingConventionPlugin : Plugin<Project> {
             dependsOn(publishingAggregation.incoming.artifactView { }.files)
         }
 
+        val publishedSubprojects = project.subprojects.filter {
+            it.childProjects.isEmpty()
+                && it.name != "kora-bom"
+                && !it.path.contains(":internal:")
+                && it.parent?.name != "internal"
+        }
+
         publishingAggregation.dependencies.addAllLater(project.provider {
-            project.subprojects
-                .filter { it.childProjects.isEmpty() && it.name != "kora-bom" && it.name != "internal" && it.parent?.name != "internal" }
-                .map { project.dependencies.project(mapOf("path" to it.path, "configuration" to "publishingElements")) }
+            publishedSubprojects.map {
+                project.dependencies.project(mapOf("path" to it.path, "configuration" to "publishingElements"))
+            }
+        })
+
+        bomSourceElements.dependencies.addAllLater(project.provider {
+            publishedSubprojects.map {
+                project.dependencies.project(mapOf("path" to it.path))
+            }
         })
 
         project.tasks.register<SonatypePublishTask>("uploadPublishArchive") {

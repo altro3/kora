@@ -7,6 +7,7 @@ dependencies {
 
     api(projects.core.common)
     api(projects.telemetry.telemetryCommon)
+
     implementation(projects.config.configCommon)
 
     testImplementation(projects.internal.testLogging)

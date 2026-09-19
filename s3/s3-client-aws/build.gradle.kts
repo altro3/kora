@@ -11,7 +11,6 @@ dependencies {
     api(projects.http.httpClientCommon)
     api(projects.config.configCommon)
     api(projects.core.common)
-
     api(libs.s3client.aws) {
         exclude(group = "software.amazon.awssdk", module = "apache-client")
         exclude(group = "software.amazon.awssdk", module = "netty-nio-client")

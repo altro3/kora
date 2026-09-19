@@ -25,7 +25,6 @@ dependencies {
 //        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-core'
 //        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-databind'
     }
-
     testFixturesImplementation(libs.bundles.netty)
     testFixturesImplementation(libs.junit.jupiter)
     testFixturesImplementation(libs.assertj)

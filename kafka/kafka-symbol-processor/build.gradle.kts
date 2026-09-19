@@ -11,6 +11,5 @@ dependencies {
     testImplementation(projects.logging.loggingCommon)
     testImplementation(projects.aop.aopSymbolProcessor)
     testImplementation(projects.logging.loggingSymbolProcessor)
-
     testImplementation(testFixtures(projects.core.symbolProcessorCommon))
 }
