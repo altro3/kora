@@ -52,5 +52,6 @@ abstract class CxfGenTask : DefaultTask() {
                 )
             )
         }
+        queue.await()
     }
 }

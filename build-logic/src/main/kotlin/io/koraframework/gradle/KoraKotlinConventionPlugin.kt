@@ -6,7 +6,7 @@ import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.kotlin.dsl.getByType
 import org.gradle.kotlin.dsl.withType
 import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
-import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 class KoraKotlinConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
@@ -21,7 +21,7 @@ class KoraKotlinConventionPlugin : Plugin<Project> {
         val kotlinExtension = project.extensions.getByType<KotlinJvmProjectExtension>()
         kotlinExtension.jvmToolchain(javaVersionStr.toInt())
 
-        project.tasks.withType<KotlinJvmCompile>().configureEach {
+        project.tasks.withType<KotlinCompile>().configureEach {
             compilerOptions {
                 javaParameters.set(true)
             }

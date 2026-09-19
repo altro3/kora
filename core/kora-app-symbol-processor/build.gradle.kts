@@ -7,6 +7,7 @@ plugins {
 
 dependencies {
     api(projects.core.symbolProcessorCommon)
+
     implementation(libs.jackson.core)
 
     testImplementation(projects.json.jsonCommon)

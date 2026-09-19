@@ -46,6 +46,7 @@ class KoraTestConventionPlugin : Plugin<Project> {
                 forkEvery = 0
                 failFast = true
                 failOnNoDiscoveredTests.set(false)
+                environment(System.getenv())
 
                 jvmArgs(
                     "-XX:+TieredCompilation",

@@ -52,9 +52,13 @@ abstract class MergeHintsTask : DefaultTask() {
         }
 
         logger.info("=== [MergeHintsTask] Total chunk files processed: $filesProcessed ===")
-        logger.info("=== [MergeHintsTask] Final array contains elements: ${rootArray.size()} ===")
 
         val jsonString = mapper.writeValueAsString(rootArray)
+
+        if (targetFile.exists() && targetFile.readText() == jsonString) {
+            logger.info("=== [MergeHintsTask] Content is identical, skipping write ===")
+            return
+        }
 
         Files.createDirectories(targetFile.parentFile.toPath())
         targetFile.writeText(jsonString)
