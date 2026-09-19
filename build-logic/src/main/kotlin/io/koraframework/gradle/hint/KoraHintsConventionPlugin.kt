@@ -2,27 +2,24 @@ package io.koraframework.gradle.hint
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
-import org.gradle.api.attributes.Usage
+import org.gradle.api.attributes.Attribute
+import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.tasks.Copy
 import org.gradle.kotlin.dsl.register
 
 class KoraHintsConventionPlugin : Plugin<Project> {
+
+    companion object {
+        val KORA_HINTS_ATTRIBUTE: Attribute<String> = Attribute.of("io.koraframework.hint.type", String::class.java)
+    }
+
     override fun apply(project: Project) {
         if (project == project.rootProject) return
-
-        project.dependencies.attributesSchema {
-            attribute(Usage.USAGE_ATTRIBUTE) {
-                compatibilityRules.add(HintsAttributeCompatibilityRule::class.java)
-                disambiguationRules.add(HintsAttributeDisambiguationRule::class.java)
-            }
-        }
 
         val hintsElements = project.configurations.create("hintsElements") {
             isCanBeConsumed = true
             isCanBeResolved = false
-            attributes {
-                attribute(Usage.USAGE_ATTRIBUTE, project.objects.named(Usage::class.java, "hintsElements"))
-            }
+            attributes.attribute(KORA_HINTS_ATTRIBUTE, "kora-hints-json")
         }
 
         val hintsFile = project.layout.projectDirectory.file("src/main/resources/kora-module-hints.json")
@@ -33,20 +30,25 @@ class KoraHintsConventionPlugin : Plugin<Project> {
                 isCanBeConsumed = false
                 isCanBeResolved = true
                 extendsFrom(project.configurations.getByName("compileClasspath"))
-                attributes {
-                    attribute(Usage.USAGE_ATTRIBUTE, project.objects.named(Usage::class.java, "hintsElements"))
-                }
+                attributes.attribute(KORA_HINTS_ATTRIBUTE, "kora-hints-json")
             }
 
             val buildHints = project.tasks.register<MergeHintsTask>("buildHints") {
-                hintArtifacts.set(hintsAggregation.incoming.artifacts)
+                hintFiles.from(hintsAggregation.incoming.artifactView {
+                    lenient(true)
+                }.files)
+
                 resultFile.set(project.layout.buildDirectory.file("generated/kora-hints/kora-hints.json"))
             }
 
             project.tasks.named("processResources", Copy::class.java).configure {
-                from(buildHints.flatMap { it.resultFile }) {
-                    into("META-INF/kora")
-                }
+                duplicatesStrategy = DuplicatesStrategy.INCLUDE
+                from(buildHints.flatMap { it.resultFile })
+            }
+
+            project.tasks.named("processTestResources", Copy::class.java).configure {
+                duplicatesStrategy = DuplicatesStrategy.INCLUDE
+                from(buildHints.flatMap { it.resultFile })
             }
         }
     }
