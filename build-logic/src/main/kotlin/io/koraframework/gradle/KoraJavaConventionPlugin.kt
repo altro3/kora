@@ -19,8 +19,19 @@ import org.gradle.kotlin.dsl.withType
 class KoraJavaConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
 
-        project.group = project.rootProject.group.toString()
-        project.version = project.rootProject.version.toString()
+        val globalGroupProvider = project.providers.gradleProperty("globalGroup")
+        val globalVersionProvider = project.providers.gradleProperty("globalVersion")
+
+        project.afterEvaluate {
+            if (project.group.toString().isEmpty() || project.group.toString() == "unspecified") {
+                val g = globalGroupProvider.orNull
+                if (!g.isNullOrEmpty()) project.group = g
+            }
+            if (project.version.toString() == "unspecified") {
+                val v = globalVersionProvider.orNull
+                if (!v.isNullOrEmpty() && v != "unspecified") project.version = v
+            }
+        }
 
         if (project.childProjects.isNotEmpty() || project.name == "kora-bom") {
             return
