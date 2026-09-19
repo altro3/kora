@@ -6,6 +6,7 @@ import org.gradle.api.component.AdhocComponentWithVariants
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.kotlin.dsl.configure
+import org.gradle.kotlin.dsl.create
 import org.gradle.kotlin.dsl.getByType
 import org.gradle.plugins.signing.SigningExtension
 import org.w3c.dom.NodeList
@@ -21,9 +22,23 @@ class KoraModulePublishingConventionPlugin : Plugin<Project> {
         project.pluginManager.apply("signing")
 
         project.extensions.configure<PublishingExtension> {
-            publications {
-                create("maven", MavenPublication::class.java) {
+            repositories {
+                maven {
+                    name = "build"
+                    url = project.rootProject.layout.buildDirectory.dir("publishing-repository").get().asFile.toURI()
+                }
+                maven {
+                    name = "snapshot"
+                    url = URI("https://central.sonatype.com/repository/maven-snapshots/")
+                    credentials {
+                        username = project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME").orElse("").get()
+                        password = project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD").orElse("").get()
+                    }
+                }
+            }
 
+            publications {
+                create<MavenPublication>("maven") {
                     project.pluginManager.withPlugin("java") {
                         if (project.pluginManager.hasPlugin("java-test-fixtures")) {
                             val testFixturesApiElements = project.configurations.getByName("testFixturesApiElements")
@@ -53,13 +68,13 @@ class KoraModulePublishingConventionPlugin : Plugin<Project> {
                         licenses {
                             license {
                                 name.set("The Apache Software License, Version 2.0")
-                                url.set("https://github.com")
+                                url.set("https://github.com/kora-projects/kora/blob/master/LICENSE")
                             }
                         }
                         scm {
-                            url.set("https://github.com")
-                            connection.set("scm:git:git@github.com:kora-projects/kora.git")
-                            developerConnection.set("scm:git:git@github.com:kora-projects/kora.git")
+                            url.set("https://github.com/kora-projects/kora")
+                            connection.set("scm:git:git@github.com/kora-projects/kora.git")
+                            developerConnection.set("scm:git:git@github.com/kora-projects/kora.git")
                         }
                         url.set("https://github.com")
                         developers {
@@ -96,21 +111,6 @@ class KoraModulePublishingConventionPlugin : Plugin<Project> {
                                 node.parentNode.removeChild(node)
                             }
                         }
-                    }
-                }
-            }
-
-            repositories {
-                maven {
-                    name = "build"
-                    url = project.rootProject.layout.buildDirectory.dir("publishing-repository").map { it.asFile.toURI() }.get()
-                }
-                maven {
-                    name = "snapshot"
-                    url = URI("https://sonatype.com")
-                    credentials {
-                        username = project.providers.environmentVariable("SONATYPE_KORA_IO_USERNAME").orElse("").get()
-                        password = project.providers.environmentVariable("SONATYPE_KORA_IO_PASSWORD").orElse("").get()
                     }
                 }
             }
