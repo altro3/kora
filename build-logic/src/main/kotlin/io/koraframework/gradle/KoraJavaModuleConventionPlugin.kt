@@ -13,7 +13,7 @@ class KoraJavaModuleConventionPlugin : Plugin<Project> {
         pluginManager.apply("io.koraframework.kora-dependency-alignment")
         pluginManager.apply("io.koraframework.kora-experimental")
         pluginManager.apply("io.koraframework.kora-test")
-        pluginManager.apply("io.koraframework.kora-module-publishing")
+        pluginManager.apply("io.koraframework.kora-module-publish")
         pluginManager.apply("io.koraframework.kora-module-coverage")
     }
 }

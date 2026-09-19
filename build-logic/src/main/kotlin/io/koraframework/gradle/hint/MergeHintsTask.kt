@@ -37,6 +37,7 @@ abstract class MergeHintsTask : DefaultTask() {
         if (partsDirFile.exists()) {
             partsDirFile.walkTopDown()
                 .filter { it.isFile && it.extension == "json" }
+                .sortedBy { it.name }
                 .forEach { file ->
                     filesProcessed++
                     val node = mapper.readTree(file)
@@ -54,11 +55,6 @@ abstract class MergeHintsTask : DefaultTask() {
         logger.info("=== [MergeHintsTask] Total chunk files processed: $filesProcessed ===")
 
         val jsonString = mapper.writeValueAsString(rootArray)
-
-        if (targetFile.exists() && targetFile.readText() == jsonString) {
-            logger.info("=== [MergeHintsTask] Content is identical, skipping write ===")
-            return
-        }
 
         Files.createDirectories(targetFile.parentFile.toPath())
         targetFile.writeText(jsonString)
