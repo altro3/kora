@@ -5,9 +5,8 @@ import org.gradle.api.Project
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.Copy
-import org.gradle.api.tasks.bundling.Jar
-import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.kotlin.dsl.getByType
+import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 import org.gradle.kotlin.dsl.withType
 import java.io.File
@@ -38,24 +37,11 @@ class KoraHintsConventionPlugin : Plugin<Project> {
             val javaExtension = project.extensions.getByType<JavaPluginExtension>()
 
             javaExtension.sourceSets.getByName("main").resources {
-                srcDir(localTargetDirProvider)
+                srcDir(buildHints.map { it.resultFile.get().asFile.parentFile })
             }
 
-            project.tasks.withType<JavaCompile>().configureEach {
-                dependsOn(buildHints)
-            }
-
-            project.tasks.withType<Jar>().configureEach {
-                if (name == "sourcesJar") {
-                    dependsOn(buildHints)
-                }
-            }
-
-            project.tasks.withType<Copy>().configureEach {
-                if (name == "processResources") {
-                    duplicatesStrategy = DuplicatesStrategy.INCLUDE
-                    dependsOn(buildHints)
-                }
+            project.tasks.named<Copy>("processResources") {
+                duplicatesStrategy = DuplicatesStrategy.INCLUDE
             }
         }
     }
