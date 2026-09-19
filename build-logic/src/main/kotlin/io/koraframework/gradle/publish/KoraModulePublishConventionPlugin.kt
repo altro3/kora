@@ -21,11 +21,13 @@ class KoraModulePublishConventionPlugin : Plugin<Project> {
         project.pluginManager.apply("maven-publish")
         project.pluginManager.apply("signing")
 
+        val rootBuildDir = project.layout.projectDirectory.dir("../../build/publishing-repository")
+
         project.extensions.configure<PublishingExtension> {
             repositories {
                 maven {
                     name = "build"
-                    url = project.rootProject.layout.buildDirectory.dir("publishing-repository").get().asFile.toURI()
+                    url = rootBuildDir.asFile.toURI()
                 }
                 maven {
                     name = "snapshot"
@@ -132,8 +134,11 @@ class KoraModulePublishConventionPlugin : Plugin<Project> {
         project.pluginManager.withPlugin("maven-publish") {
             val publishTask = project.tasks.named("publishMavenPublicationToBuildRepository")
 
-            publishTask.configure {
-                dependsOn(project.rootProject.tasks.named("cleanPublishDir"))
+            val lockService = project.gradle.sharedServices.registrations.findByName("koraPublishLock")
+            if (lockService != null) {
+                publishTask.configure {
+                    usesService(lockService.service)
+                }
             }
 
             val publishingElements = project.configurations.create("publishingElements") {

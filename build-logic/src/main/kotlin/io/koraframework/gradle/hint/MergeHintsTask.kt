@@ -4,10 +4,12 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.CacheableTask
-import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.IgnoreEmptyDirectories
+import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.SkipWhenEmpty
 import org.gradle.api.tasks.TaskAction
 import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.json.JsonMapper
@@ -17,7 +19,9 @@ import java.nio.file.Files
 abstract class MergeHintsTask : DefaultTask() {
 
     @get:PathSensitive(PathSensitivity.RELATIVE)
-    @get:InputDirectory
+    @get:IgnoreEmptyDirectories
+    @get:SkipWhenEmpty
+    @get:InputFiles
     abstract val partsDirectory: DirectoryProperty
 
     @get:OutputFile

@@ -35,7 +35,6 @@ class KoraRootPublishConventionPlugin : Plugin<Project> {
 
             dependsOn(cleanPublishDir)
             dependsOn(":kora-bom:publishMavenPublicationToBuildRepository")
-
             dependsOn(publishingAggregation.incoming.artifactView { }.files)
         }
 
