@@ -9,39 +9,43 @@ dependencies {
     api(libs.opentelemetry.api)
 }
 
-val generateKoraVersion = tasks.register("generateKoraVersion") {
-    val versionProvider = project.provider { project.version.toString() }
-    val nameProvider = project.provider { project.name }
+abstract class GenerateKoraVersionTask : DefaultTask() {
+    @get:Input
+    abstract val projectName: Property<String>
 
-    inputs.property("projectName", nameProvider)
-    inputs.property("projectVersion", versionProvider)
+    @get:Input
+    abstract val projectVersion: Property<String>
 
-    val outputDir = layout.buildDirectory.dir("kora-version")
-    outputs.dir(outputDir)
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
 
-    doLast {
-        val projectName = nameProvider.get()
-        val projectVersion = versionProvider.get()
-        val file = outputDir.get().file("META-INF/kora/version/$projectName").asFile
-        file.parentFile.mkdirs()
-        if (file.exists()) {
-            file.delete()
+    @TaskAction
+    fun generate() {
+        val name = projectName.get()
+        val version = projectVersion.get()
+        val targetFile = outputDir.get().file("META-INF/kora/version/$name").asFile
+
+        targetFile.parentFile.mkdirs()
+        if (targetFile.exists()) {
+            targetFile.delete()
         }
-        file.createNewFile()
-        file.writeText(projectVersion)
+        targetFile.createNewFile()
+        targetFile.writeText(version)
     }
+}
+
+val generateKoraVersion = tasks.register<GenerateKoraVersionTask>("generateKoraVersion") {
+    projectName.set(project.name)
+    projectVersion.set(project.provider { rootProject.version.toString() })
+    outputDir.set(layout.buildDirectory.dir("kora-version"))
 }
 
 sourceSets {
     main {
         resources {
-            srcDir(generateKoraVersion)
+            srcDir(generateKoraVersion.map { it.outputDir })
         }
     }
-}
-
-tasks.processResources {
-    dependsOn(generateKoraVersion)
 }
 
 tasks.matching { it.name == "sourcesJar" }.configureEach {
