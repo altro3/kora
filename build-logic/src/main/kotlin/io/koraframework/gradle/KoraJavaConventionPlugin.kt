@@ -9,9 +9,6 @@ import org.gradle.api.tasks.bundling.Jar
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.diagnostics.DependencyReportTask
 import org.gradle.api.tasks.javadoc.Javadoc
-import org.gradle.api.tasks.testing.Test
-import org.gradle.api.tasks.testing.logging.TestExceptionFormat
-import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.gradle.external.javadoc.StandardJavadocDocletOptions
 import org.gradle.jvm.toolchain.JavaLanguageVersion
 import org.gradle.kotlin.dsl.configure
@@ -64,8 +61,8 @@ class KoraJavaConventionPlugin : Plugin<Project> {
 
         if (project.childProjects.isEmpty()) {
             val moduleInfo = project.layout.projectDirectory.file("src/main/java/module-info.java")
-            if (!moduleInfo.asFile.exists()) {
-                project.tasks.withType<Jar>().configureEach {
+            project.tasks.withType<Jar>().configureEach {
+                if (!moduleInfo.asFile.exists()) {
                     manifest {
                         attributes(mapOf("Automatic-Module-Name" to "kora." + project.name.replace('-', '.')))
                     }

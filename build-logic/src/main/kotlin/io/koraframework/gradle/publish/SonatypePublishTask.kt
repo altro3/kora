@@ -64,7 +64,7 @@ abstract class SonatypePublishTask : DefaultTask() {
             .setType(MultipartBody.FORM)
             .addFormDataPart(
                 "bundle", "bundle.zip",
-                archive.asFile.get().asRequestBody("application/octet-stream".toMediaType())
+                archive.get().asFile.asRequestBody("application/octet-stream".toMediaType())
             )
             .build()
 

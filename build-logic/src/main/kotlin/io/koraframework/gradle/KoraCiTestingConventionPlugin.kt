@@ -12,6 +12,7 @@ class KoraCiTestingConventionPlugin : Plugin<Project> {
         }
 
         val nonOtherModules = hashSetOf(
+            "internal",
             "internal:test-cassandra",
             "internal:test-kafka",
             "internal:test-logging",
@@ -29,26 +30,27 @@ class KoraCiTestingConventionPlugin : Plugin<Project> {
             return fullName
         }
 
+        fun linkCiTaskToSubproject(ciTaskProvider: TaskProvider<Task>, subproject: Project) {
+            ciTaskProvider.configure {
+                val taskPrefix = this.name.split("-")[0]
+                this.dependsOn(subproject.tasks.matching { it.name == taskPrefix })
+            }
+        }
+
         fun addDependencies(taskProviders: List<TaskProvider<Task>>, dependency: String) {
-            taskProviders.forEach { taskProvider ->
-                taskProvider.configure {
-                    val taskPrefix = this.name.split("-")[0]
-                    this.dependsOn(":$dependency:$taskPrefix")
-                }
+            val subproject = rootProject.findProject(":$dependency")
+            if (subproject != null) {
+                taskProviders.forEach { linkCiTaskToSubproject(it, subproject) }
             }
             nonOtherModules.add(dependency)
         }
 
         fun addDependenciesByPattern(taskProviders: List<TaskProvider<Task>>, namePattern: String) {
-            rootProject.allprojects.forEach { project ->
-                if (project.name != rootProject.name && project.name.contains(namePattern) && !nonOtherModules.contains(project.name)) {
-                    val fullName = getProjectFullName(project)
-                    taskProviders.forEach { taskProvider ->
-                        taskProvider.configure {
-                            val taskPrefix = this.name.split("-")[0]
-                            this.dependsOn(":$fullName:$taskPrefix")
-                        }
-                    }
+            rootProject.subprojects {
+                val subproject = this
+                if (subproject.name != rootProject.name && subproject.name.contains(namePattern) && !nonOtherModules.contains(subproject.name)) {
+                    val fullName = getProjectFullName(subproject)
+                    taskProviders.forEach { linkCiTaskToSubproject(it, subproject) }
                     nonOtherModules.add(fullName)
                 }
             }
@@ -87,43 +89,44 @@ class KoraCiTestingConventionPlugin : Plugin<Project> {
         val tasksCodegenKotlin = createTasks("codegen-kotlin")
         val tasksOther = createTasks("other")
 
-        rootProject.gradle.projectsEvaluated {
-            // Postgres
-            addDependencies(tasksPostgres, "database:database-common")
-            addDependencies(tasksPostgres, "database:database-jdbc")
-            addDependencies(tasksPostgres, "database:database-flyway")
-            addDependencies(tasksPostgres, "database:database-liquibase")
-            addDependencies(tasksPostgres, "experimental:camunda-engine-bpmn")
+        // Postgres
+        addDependencies(tasksPostgres, "database:database-common")
+        addDependencies(tasksPostgres, "database:database-jdbc")
+        addDependencies(tasksPostgres, "database:database-flyway")
+        addDependencies(tasksPostgres, "database:database-liquibase")
+        addDependencies(tasksPostgres, "experimental:camunda-engine-bpmn")
 
-            // Cassandra
-            addDependencies(tasksCassandra, "database:database-cassandra")
+        // Cassandra
+        addDependencies(tasksCassandra, "database:database-cassandra")
 
-            // Redis
-            addDependencies(tasksRedis, "redis:redis-lettuce")
-            addDependencies(tasksRedis, "cache:cache-redis-lettuce")
+        // Redis
+        addDependencies(tasksRedis, "redis:redis-lettuce")
+        addDependencies(tasksRedis, "cache:cache-redis-lettuce")
 
-            // Kafka
-            addDependencies(tasksKafka, "kafka:kafka")
+        // Kafka
+        addDependencies(tasksKafka, "kafka:kafka")
 
-            // OpenAPI
-            addDependencies(tasksOpenapi, "openapi:openapi-generator")
-            addDependencies(tasksOpenapi, "openapi:openapi-management")
+        // OpenAPI
+        addDependencies(tasksOpenapi, "openapi:openapi-generator")
+        addDependencies(tasksOpenapi, "openapi:openapi-management")
 
-            // Codegen Java
-            addDependenciesByPattern(tasksCodegenJava, "annotation-processor")
-            addDependencies(tasksCodegenJava, "mapping:mapstruct-java-extension")
+        // Codegen Java
+        addDependenciesByPattern(tasksCodegenJava, "annotation-processor")
+        addDependencies(tasksCodegenJava, "mapping:mapstruct-java-extension")
 
-            // Codegen Kotlin
-            addDependenciesByPattern(tasksCodegenKotlin, "symbol-processor")
-            addDependenciesByPattern(tasksCodegenKotlin, "ksp")
-            addDependencies(tasksCodegenKotlin, "mapping:mapstruct-ksp-extension")
-            addDependencies(tasksCodegenKotlin, "mapping:konvert-ksp-extension")
+        // Codegen Kotlin
+        addDependenciesByPattern(tasksCodegenKotlin, "symbol-processor")
+        addDependenciesByPattern(tasksCodegenKotlin, "ksp")
+        addDependencies(tasksCodegenKotlin, "mapping:mapstruct-ksp-extension")
+        addDependencies(tasksCodegenKotlin, "mapping:konvert-ksp-extension")
 
-            rootProject.allprojects.forEach { project ->
-                if (project.name != rootProject.name && project.name != "kora-bom" && project.childProjects.isEmpty()) {
-                    val fullName = getProjectFullName(project)
+        rootProject.subprojects {
+            val subproject = this
+            subproject.afterEvaluate {
+                if (subproject.name != rootProject.name && subproject.name != "kora-bom" && subproject.childProjects.isEmpty()) {
+                    val fullName = getProjectFullName(subproject)
                     if (!nonOtherModules.contains(fullName)) {
-                        addDependencies(tasksOther, fullName)
+                        tasksOther.forEach { linkCiTaskToSubproject(it, subproject) }
                     }
                 }
             }

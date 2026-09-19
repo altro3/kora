@@ -25,11 +25,10 @@ class KoraTestConventionPlugin : Plugin<Project> {
             }
         }
 
-
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
 
-        project.pluginManager.withPlugin("java-library") {
+        project.pluginManager.withPlugin("java") {
 
             libs.findLibrary("jspecify").ifPresent { project.dependencies.add("api", it) }
 
@@ -44,7 +43,6 @@ class KoraTestConventionPlugin : Plugin<Project> {
             }
 
             project.tasks.withType<Test>().configureEach {
-
                 forkEvery = 0
                 failFast = true
                 failOnNoDiscoveredTests.set(false)

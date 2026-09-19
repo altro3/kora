@@ -35,7 +35,8 @@ abstract class CxfRunnable : WorkAction<CxfWorkParameters> {
         } finally {
             try {
                 setThreadDefaultBusMethod.invoke(null, null)
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
 
             Thread.currentThread().contextClassLoader = originalClassLoader
 
