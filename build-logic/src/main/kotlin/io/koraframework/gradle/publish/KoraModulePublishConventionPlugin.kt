@@ -8,6 +8,7 @@ import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.kotlin.dsl.configure
 import org.gradle.kotlin.dsl.create
 import org.gradle.kotlin.dsl.getByType
+import org.gradle.kotlin.dsl.named
 import org.gradle.plugins.signing.SigningExtension
 import org.w3c.dom.NodeList
 import java.net.URI
@@ -43,12 +44,16 @@ class KoraModulePublishConventionPlugin : Plugin<Project> {
                 create<MavenPublication>("maven") {
                     project.pluginManager.withPlugin("java") {
                         if (project.pluginManager.hasPlugin("java-test-fixtures")) {
-                            val testFixturesApiElements = project.configurations.getByName("testFixturesApiElements")
-                            val testFixturesRuntimeElements = project.configurations.getByName("testFixturesRuntimeElements")
-
-                            val javaComponent = project.components.getByName("java") as AdhocComponentWithVariants
-                            javaComponent.withVariantsFromConfiguration(testFixturesApiElements) { skip() }
-                            javaComponent.withVariantsFromConfiguration(testFixturesRuntimeElements) { skip() }
+                            val javaComponent = project.components.named<AdhocComponentWithVariants>("java")
+                            javaComponent.configure {
+                                val adhocComponent = this
+                                project.configurations.named("testFixturesApiElements").configure {
+                                    adhocComponent.withVariantsFromConfiguration(this) { skip() }
+                                }
+                                project.configurations.named("testFixturesRuntimeElements").configure {
+                                    adhocComponent.withVariantsFromConfiguration(this) { skip() }
+                                }
+                            }
 
                             suppressPomMetadataWarningsFor("testFixturesApiElements")
                             suppressPomMetadataWarningsFor("testFixturesRuntimeElements")
