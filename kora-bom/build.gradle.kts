@@ -1,6 +1,6 @@
 plugins {
     `java-platform`
-    id("io.koraframework.kora-publish-module")
+    id("io.koraframework.kora-module-publish")
 }
 
 val bomResolver = configurations.create("bomResolver") {

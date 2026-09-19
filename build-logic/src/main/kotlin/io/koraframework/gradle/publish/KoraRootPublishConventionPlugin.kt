@@ -6,7 +6,7 @@ import org.gradle.api.tasks.Delete
 import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.register
 
-class KoraRootPublishingConventionPlugin : Plugin<Project> {
+class KoraRootPublishConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         if (project != project.rootProject) return
 

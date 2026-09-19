@@ -14,7 +14,7 @@ import java.net.URI
 import javax.xml.xpath.XPathConstants
 import javax.xml.xpath.XPathFactory
 
-class KoraModulePublishingConventionPlugin : Plugin<Project> {
+class KoraModulePublishConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         if (project == project.rootProject || !isPublishedLibrary(project)) return
 

@@ -62,13 +62,13 @@ gradlePlugin {
             id = "io.koraframework.kora-in-test-generated"
             implementationClass = "io.koraframework.gradle.test.KoraInTestGeneratedConventionPlugin"
         }
-        register("kora-root-publishing") {
-            id = "io.koraframework.kora-root-publishing"
-            implementationClass = "io.koraframework.gradle.publish.KoraRootPublishingConventionPlugin"
+        register("kora-root-publish") {
+            id = "io.koraframework.kora-root-publish"
+            implementationClass = "io.koraframework.gradle.publish.KoraRootPublishConventionPlugin"
         }
-        register("kora-module-publishing") {
-            id = "io.koraframework.kora-module-publishing"
-            implementationClass = "io.koraframework.gradle.publish.KoraModulePublishingConventionPlugin"
+        register("kora-module-publish") {
+            id = "io.koraframework.kora-module-publish"
+            implementationClass = "io.koraframework.gradle.publish.KoraModulePublishConventionPlugin"
         }
     }
 }
