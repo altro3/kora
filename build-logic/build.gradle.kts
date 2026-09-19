@@ -58,9 +58,13 @@ gradlePlugin {
             id = "io.koraframework.kora-test"
             implementationClass = "io.koraframework.gradle.test.KoraTestConventionPlugin"
         }
-        register("kora-coverage") {
-            id = "io.koraframework.kora-coverage"
-            implementationClass = "io.koraframework.gradle.test.KoraCoverageConventionPlugin"
+        register("kora-root-coverage") {
+            id = "io.koraframework.kora-root-coverage"
+            implementationClass = "io.koraframework.gradle.test.KoraRootCoverageConventionPlugin"
+        }
+        register("kora-module-coverage") {
+            id = "io.koraframework.kora-module-coverage"
+            implementationClass = "io.koraframework.gradle.test.KoraModuleCoverageConventionPlugin"
         }
         register("kora-in-test-generated") {
             id = "io.koraframework.kora-in-test-generated"

@@ -18,6 +18,10 @@ import org.gradle.kotlin.dsl.withType
 
 class KoraJavaConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
+
+        project.group = project.rootProject.group
+        project.version = project.rootProject.version
+
         if (project.childProjects.isNotEmpty() || project.name == "kora-bom") {
             return
         }

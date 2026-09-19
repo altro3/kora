@@ -14,55 +14,55 @@ import org.gradle.testing.jacoco.tasks.JacocoReport
 
 @Suppress("UnstableApiUsage")
 class KoraCoverageConventionPlugin : Plugin<Project> {
-    override fun apply(project: Project) {
-        if (project != project.rootProject) {
-            return
-        }
+override fun apply(project: Project) {
+if (project != project.rootProject) {
+return
+}
 
-        project.pluginManager.apply("jacoco-report-aggregation")
+project.pluginManager.apply("jacoco-report-aggregation")
 
-        project.extensions.configure<ReportingExtension> {
-            reports {
-                create<JacocoCoverageReport>("testCodeCoverageReport") {
-                    testSuiteName.set("test")
-                }
-            }
-        }
+project.extensions.configure<ReportingExtension> {
+reports {
+create<JacocoCoverageReport>("testCodeCoverageReport") {
+testSuiteName.set("test")
+}
+}
+}
 
-        project.tasks.named<JacocoReport>("testCodeCoverageReport").configure {
-            reports {
-                xml.required.set(true)
-                html.required.set(true)
-            }
-        }
+project.tasks.named<JacocoReport>("testCodeCoverageReport").configure {
+reports {
+xml.required.set(true)
+html.required.set(true)
+}
+}
 
-        project.configurations.named("jacocoAggregation").configure {
-            dependencies.addAllLater(project.provider {
-                project.subprojects
-                    .filter { it.childProjects.isEmpty() && it.name != "kora-bom" }
-                    .map { project.dependencies.project(mapOf("path" to it.path)) }
-            })
-        }
+project.configurations.named("jacocoAggregation").configure {
+dependencies.addAllLater(project.provider {
+project.subprojects
+.filter { it.childProjects.isEmpty() && it.name != "kora-bom" }
+.map { project.dependencies.project(mapOf("path" to it.path)) }
+})
+}
 
-        project.subprojects {
-            if (childProjects.isNotEmpty() || name == "kora-bom") {
-                return@subprojects
-            }
+project.subprojects {
+if (childProjects.isNotEmpty() || name == "kora-bom") {
+return@subprojects
+}
 
-            pluginManager.apply("jacoco")
+pluginManager.apply("jacoco")
 
-            tasks.withType<JacocoReport>().configureEach {
-                reports {
-                    xml.required.set(true)
-                    html.required.set(true)
-                }
-            }
+tasks.withType<JacocoReport>().configureEach {
+reports {
+xml.required.set(true)
+html.required.set(true)
+}
+}
 
-            tasks.withType<Test>().configureEach {
-                extensions.configure<JacocoTaskExtension> {
-                    excludes = listOf("**.packageFor**")
-                }
-            }
-        }
-    }
+tasks.withType<Test>().configureEach {
+extensions.configure<JacocoTaskExtension> {
+excludes = listOf("**.packageFor**")
+}
+}
+}
+}
 }
