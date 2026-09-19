@@ -11,7 +11,7 @@ import java.nio.file.Files
 @CacheableTask
 abstract class MergeHintsTask : DefaultTask() {
 
-    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    @get:PathSensitive(PathSensitivity.RELATIVE)
     @get:IgnoreEmptyDirectories
     @get:InputFiles
     abstract val hintFiles: ConfigurableFileCollection
