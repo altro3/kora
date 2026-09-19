@@ -1,43 +1,23 @@
-package io.koraframework.gradle
+package io.koraframework.gradle.publish
 
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.component.AdhocComponentWithVariants
 import org.gradle.api.publish.PublishingExtension
 import org.gradle.api.publish.maven.MavenPublication
-import org.gradle.api.tasks.Delete
-import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.configure
 import org.gradle.kotlin.dsl.getByType
-import org.gradle.kotlin.dsl.register
-import org.gradle.kotlin.dsl.withType
 import org.gradle.plugins.signing.SigningExtension
+import org.w3c.dom.NodeList
 import java.net.URI
+import javax.xml.xpath.XPathConstants
+import javax.xml.xpath.XPathFactory
 
-class KoraMavenPublishingConventionPlugin : Plugin<Project> {
+class KoraModulePublishingConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        if (project == project.rootProject) {
-            val cleanPublishDir = project.tasks.register<Delete>("cleanPublishDir") {
-                delete(project.layout.buildDirectory.dir("publishing-repository"))
-                group = "publishing"
-            }
+        if (project == project.rootProject) return
 
-            project.tasks.register<Zip>("createPublishArchive") {
-                from(project.layout.buildDirectory.dir("publishing-repository"))
-                include("*/**")
-                exclude("*/**/maven-metadata.*")
-                group = "publishing"
-                archiveFileName.set("deployment.zip")
-                destinationDirectory.set(project.layout.buildDirectory)
-                dependsOn(cleanPublishDir)
-                dependsOn(":kora-bom:publishMavenPublicationToBuildRepository")
-            }
-            return
-        }
-
-        if (!isPublishedLibrary(project)) {
-            return
-        }
+        if (!isPublishedLibrary(project)) return
 
         project.pluginManager.apply("maven-publish")
         project.pluginManager.apply("signing")
@@ -100,10 +80,10 @@ class KoraMavenPublishingConventionPlugin : Plugin<Project> {
 
                             withXml {
                                 val element = asElement()
-                                val xpf = javax.xml.xpath.XPathFactory.newInstance()
+                                val xpf = XPathFactory.newInstance()
                                 val xp = xpf.newXPath()
                                 val xpath = xp.compile("//dependency[optional[contains(text(), 'true')]]")
-                                val nl = xpath.evaluate(element, javax.xml.xpath.XPathConstants.NODESET) as org.w3c.dom.NodeList
+                                val nl = xpath.evaluate(element, XPathConstants.NODESET) as NodeList
                                 for (i in nl.length - 1 downTo 0) {
                                     val node = nl.item(i)
                                     node.parentNode.removeChild(node)
@@ -116,7 +96,7 @@ class KoraMavenPublishingConventionPlugin : Plugin<Project> {
                 repositories {
                     maven {
                         name = "build"
-                        url = project.rootProject.layout.buildDirectory.dir("publishing-repository").get().asFile.toURI()
+                        url = project.rootProject.layout.buildDirectory.dir("publishing-repository").map { it.asFile.toURI() }.get()
                     }
                     maven {
                         name = "snapshot"
@@ -143,15 +123,20 @@ class KoraMavenPublishingConventionPlugin : Plugin<Project> {
             }
         }
 
-        project.rootProject.tasks.withType<Zip>().configureEach {
-            if (name == "createPublishArchive") {
-                dependsOn(project.tasks.named("publishMavenPublicationToBuildRepository"))
-            }
-        }
-
         project.pluginManager.withPlugin("maven-publish") {
-            project.tasks.named("publishMavenPublicationToBuildRepository").configure {
+            val publishTask = project.tasks.named("publishMavenPublicationToBuildRepository")
+
+            publishTask.configure {
                 dependsOn(project.rootProject.tasks.named("cleanPublishDir"))
+            }
+
+            val publishingElements = project.configurations.create("publishingElements") {
+                isCanBeConsumed = true
+                isCanBeResolved = false
+            }
+
+            project.artifacts.add(publishingElements.name, project.layout.buildDirectory.file("publishing-repository")) {
+                builtBy(publishTask)
             }
         }
     }

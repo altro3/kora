@@ -3,6 +3,6 @@ group = "io.koraframework"
 
 plugins {
     alias(libs.plugins.kotlin.jvm) apply false
-    id("io.koraframework.kora-publishing")
+    id("io.koraframework.kora-root-publishing")
     id("io.koraframework.kora-root-coverage")
 }

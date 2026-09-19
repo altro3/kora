@@ -30,14 +30,6 @@ gradlePlugin {
             id = "io.koraframework.kora-dependency-alignment"
             implementationClass = "io.koraframework.gradle.KoraDependencyAlignmentConventionPlugin"
         }
-        register("kora-publishing") {
-            id = "io.koraframework.kora-publishing"
-            implementationClass = "io.koraframework.gradle.publish.KoraPublishingConventionPlugin"
-        }
-        register("kora-maven-publishing") {
-            id = "io.koraframework.kora-maven-publishing"
-            implementationClass = "io.koraframework.gradle.KoraMavenPublishingConventionPlugin"
-        }
         register("kora-experimental") {
             id = "io.koraframework.kora-experimental"
             implementationClass = "io.koraframework.gradle.KoraExperimentalConventionPlugin"
@@ -69,6 +61,14 @@ gradlePlugin {
         register("kora-in-test-generated") {
             id = "io.koraframework.kora-in-test-generated"
             implementationClass = "io.koraframework.gradle.test.KoraInTestGeneratedConventionPlugin"
+        }
+        register("kora-root-publishing") {
+            id = "io.koraframework.kora-root-publishing"
+            implementationClass = "io.koraframework.gradle.publish.KoraRootPublishingConventionPlugin"
+        }
+        register("kora-module-publishing") {
+            id = "io.koraframework.kora-module-publishing"
+            implementationClass = "io.koraframework.gradle.publish.KoraModulePublishingConventionPlugin"
         }
     }
 }

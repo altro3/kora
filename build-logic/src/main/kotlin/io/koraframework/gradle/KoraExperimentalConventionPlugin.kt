@@ -10,7 +10,7 @@ class KoraExperimentalConventionPlugin : Plugin<Project> {
         val catalogs = project.extensions.getByType<VersionCatalogsExtension>()
         val libs = catalogs.named("libs")
 
-        if (project.parent?.name != "experimental") {
+        if (!project.path.startsWith(":experimental:")) {
             return
         }
 

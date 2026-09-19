@@ -5,45 +5,57 @@ import org.gradle.api.Project
 import org.gradle.api.file.DuplicatesStrategy
 import org.gradle.api.plugins.JavaPluginExtension
 import org.gradle.api.tasks.Copy
-import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.bundling.Jar
+import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.kotlin.dsl.getByType
-import org.gradle.kotlin.dsl.named
 import org.gradle.kotlin.dsl.register
 import org.gradle.kotlin.dsl.withType
 
 class KoraHintsConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
-        val rootProject = project.rootProject
+        if (project == project.rootProject) {
+            return
+        }
 
-        if (rootProject.tasks.findByName("buildHints") == null) {
+        val root = project.rootProject
 
-            val hintsTree = rootProject.layout.projectDirectory.asFileTree.matching {
-                include("**/src/main/resources/kora-module-hints.json")
-                exclude("**/build/**/*")
-            }
+        val hintsAggregation = root.configurations.findByName("hintsAggregation") ?: root.configurations.create("hintsAggregation") {
+            isCanBeConsumed = false
+            isCanBeResolved = true
+        }
 
-            val partsDirProvider = rootProject.layout.buildDirectory.dir("kora-hints/parts")
+        if (root.tasks.findByName("buildHints") == null) {
+            val partsDirProvider = root.layout.buildDirectory.dir("kora-hints/parts")
 
-            val copyHints = rootProject.tasks.register<CopyHintsTask>("copyHints") {
-                from(hintsTree)
+            val copyHints = root.tasks.register<CopyHintsTask>("copyHints") {
+                from(hintsAggregation.incoming.artifactView { }.files)
                 into(partsDirProvider)
             }
 
-            rootProject.tasks.register<MergeHintsTask>("buildHints") {
+            root.tasks.register<MergeHintsTask>("buildHints") {
                 partsDirectory.set(partsDirProvider)
-                resultFile.set(rootProject.layout.buildDirectory.file("kora-hints-generated/kora-hints.json"))
+                resultFile.set(root.layout.buildDirectory.file("kora-hints-generated/kora-hints.json"))
                 dependsOn(copyHints)
             }
         }
 
-        val rootBuildHints = rootProject.tasks.named<MergeHintsTask>("buildHints")
+        val hintsFile = project.layout.projectDirectory.file("src/main/resources/kora-module-hints.json")
+        if (hintsFile.asFile.exists()) {
+            val hintsElements = project.configurations.create("hintsElements") {
+                isCanBeConsumed = true
+                isCanBeResolved = false
+            }
+            project.artifacts.add(hintsElements.name, hintsFile)
+
+            root.dependencies.add(hintsAggregation.name, project.dependencies.project(mapOf("path" to project.path, "configuration" to "hintsElements")))
+        }
 
         project.pluginManager.withPlugin("java") {
             val javaExtension = project.extensions.getByType<JavaPluginExtension>()
+            val rootBuildHints = root.tasks.named("buildHints")
 
             javaExtension.sourceSets.getByName("main").resources {
-                srcDir(rootBuildHints.map { it.resultFile.get().asFile.parentFile })
+                srcDir(rootBuildHints.map { (it as MergeHintsTask).resultFile.get().asFile.parentFile })
             }
 
             project.tasks.withType<JavaCompile>().configureEach {

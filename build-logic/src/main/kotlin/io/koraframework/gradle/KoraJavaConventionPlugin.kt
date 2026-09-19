@@ -19,8 +19,8 @@ import org.gradle.kotlin.dsl.withType
 class KoraJavaConventionPlugin : Plugin<Project> {
     override fun apply(project: Project) {
 
-        project.group = project.rootProject.group
-        project.version = project.rootProject.version
+        project.group = project.rootProject.group.toString()
+        project.version = project.rootProject.version.toString()
 
         if (project.childProjects.isNotEmpty() || project.name == "kora-bom") {
             return
@@ -66,10 +66,15 @@ class KoraJavaConventionPlugin : Plugin<Project> {
         if (project.childProjects.isEmpty()) {
             val moduleInfo = project.layout.projectDirectory.file("src/main/java/module-info.java")
             project.tasks.withType<Jar>().configureEach {
-                if (!moduleInfo.asFile.exists()) {
-                    manifest {
-                        attributes(mapOf("Automatic-Module-Name" to "kora." + project.name.replace('-', '.')))
+                manifest {
+                    val automaticModuleNameProvider = project.provider {
+                        if (!moduleInfo.asFile.exists()) {
+                            "kora." + project.name.replace('-', '.')
+                        } else {
+                            null
+                        }
                     }
+                    attributes(mapOf("Automatic-Module-Name" to automaticModuleNameProvider))
                 }
             }
         }
