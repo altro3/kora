@@ -27,6 +27,10 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.timeout.ReadTimeoutException;
+import io.netty.handler.timeout.ReadTimeoutHandler;
+import io.netty.handler.timeout.WriteTimeoutException;
+import io.netty.handler.timeout.WriteTimeoutHandler;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,6 +105,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline p = ch.pipeline();
+                        var config = httpServerConfig.get();
+                        var readTimeout = config.socketReadTimeout();
+                        if (!readTimeout.isZero()) {
+                            p.addLast(new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
+                        }
+                        var writeTimeout = config.socketWriteTimeout();
+                        if (!writeTimeout.isZero()) {
+                            p.addLast(new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
+                        }
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
                         p.addLast(new ChannelInboundHandlerAdapter() {
@@ -112,6 +125,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                             @Override
                             public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                 try {
+                                    if (cause instanceof ReadTimeoutException
+                                        || cause instanceof WriteTimeoutException) {
+                                        ctx.close();
+                                        return;
+                                    }
                                     httpHandler.get().exceptionCaught(ctx, cause);
                                 } catch (Throwable t) {
                                     ctx.close();

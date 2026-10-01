@@ -307,7 +307,8 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
     }
 
     private void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
-        if (keepAlive) {
+        boolean keepAliveAllowed = keepAlive && this.httpServerConfig.headerKeepAliveEnabled();
+        if (keepAliveAllowed) {
             if (!version.isKeepAliveDefault()) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
             }
