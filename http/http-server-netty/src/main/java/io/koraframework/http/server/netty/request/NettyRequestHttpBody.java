@@ -10,15 +10,13 @@ import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 public final class NettyRequestHttpBody implements HttpBodyInput {
 
-    private static final AtomicReferenceFieldUpdater<NettyRequestHttpBody, InputStream> INPUT_STREAM_UPDATER =
-        AtomicReferenceFieldUpdater.newUpdater(NettyRequestHttpBody.class, InputStream.class, "inputStream");
-
     private final FullHttpRequest nettyRequest;
+    @Nullable
     private volatile InputStream inputStream;
+    private boolean released = false;
 
     public NettyRequestHttpBody(FullHttpRequest nettyRequest) {
         this.nettyRequest = nettyRequest;
@@ -48,28 +46,30 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
         }
 
         var duplicate = nettyRequest.content().retainedDuplicate();
-        in = new ByteBufInputStream(duplicate, true);
+        var newIn = new ByteBufInputStream(duplicate, true);
 
-        if (INPUT_STREAM_UPDATER.compareAndSet(this, null, in)) {
-            return in;
+        if (this.inputStream == null) {
+            this.inputStream = newIn;
+            return newIn;
         }
 
-        try {
-            in.close();
-        } catch (IOException ignored) {}
-
-        return this.inputStream;
+        duplicate.release();
+        var winnerIn = this.inputStream;
+        return winnerIn != null ? winnerIn : newIn;
     }
 
     @Override
     public void close() throws IOException {
+        if (released) {
+            return;
+        }
+        released = true;
+
         var in = this.inputStream;
         if (in != null) {
             in.close();
-        } else {
-            var duplicate = nettyRequest.content().retainedDuplicate();
-            new ByteBufInputStream(duplicate, true).close();
         }
+        nettyRequest.release();
     }
 
     @Override
