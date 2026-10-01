@@ -70,11 +70,16 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             final long started = TimeUtils.started();
 
             var config = this.httpServerConfig.get();
-            var b = new ServerBootstrap();
-            b.group(resources.bossGroup(), resources.workerGroup())
+            var bootstrap = new ServerBootstrap();
+            bootstrap.group(resources.bossGroup(), resources.workerGroup())
                 .channel(resources.channelClass())
-                .option(ChannelOption.SO_BACKLOG, 1024)
-                .childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
+                .option(ChannelOption.SO_BACKLOG, 1024);
+
+            if (this.configurer != null) {
+                bootstrap = this.configurer.configure(bootstrap.clone());
+            }
+
+            bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
@@ -86,12 +91,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                     }
                 });
 
-            if (this.configurer != null) {
-                b = this.configurer.configure(b.clone());
-            }
-
             int port = config.port();
-            ChannelFuture bindFuture = b.bind(port).awaitUninterruptibly();
+            ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
             if (!bindFuture.isSuccess()) {
                 throw bindFuture.cause();
             }
@@ -112,7 +113,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     @Override
     public void release() {
-        log.debug("Public HTTP Server (Netty) stopping...");
+        log.debug("HTTP Server {} (Netty) stopping...", name);
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
         this.shuttingDown = true;
