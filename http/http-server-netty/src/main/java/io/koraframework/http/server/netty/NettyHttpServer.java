@@ -8,6 +8,8 @@ import io.koraframework.common.readiness.ReadinessProbeFailure;
 import io.koraframework.common.util.TimeUtils;
 import io.koraframework.http.server.common.HttpServer;
 import io.koraframework.http.server.common.HttpServerConfig;
+import io.koraframework.http.server.netty.NettyResourceLifecycle.NettyResources;
+import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
 import io.koraframework.http.server.netty.handler.NettyHttpHandler;
 import io.koraframework.logging.common.arg.StructuredArgument;
 import io.netty.bootstrap.ServerBootstrap;
@@ -18,8 +20,11 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.MultiThreadIoEventLoopGroup;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import org.jspecify.annotations.Nullable;
@@ -30,6 +35,7 @@ import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
@@ -38,26 +44,32 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final String name;
-    private final NettyResourceLifecycle.NettyResources resources;
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final ValueOf<NettyHttpHandler> httpHandler;
     @Nullable
     private final Configurer<ServerBootstrap> configurer;
+    private final boolean manageResources;
+    private volatile NettyResources resources;
 
     private volatile @Nullable Channel serverChannel;
 
     public NettyHttpServer(
         String name,
-        NettyResourceLifecycle.NettyResources resources,
+        @Nullable NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
         ValueOf<NettyHttpHandler> httpHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
-        this.resources = resources;
         this.httpServerConfig = httpServerConfig;
         this.httpHandler = httpHandler;
         this.configurer = configurer;
+        if (resources != null) {
+            this.resources = resources;
+            this.manageResources = false;
+        } else {
+            this.manageResources = true;
+        }
     }
 
     @Override
@@ -66,6 +78,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             log.debug("HTTP Server {} (Netty) starting...", name);
             final long started = TimeUtils.started();
 
+            if (this.manageResources) {
+                var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+                var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+                this.resources = new NettyResources(boss, worker, NioServerSocketChannel.class);
+            }
             var config = this.httpServerConfig.get();
             var bootstrap = new ServerBootstrap();
             bootstrap.group(resources.bossGroup(), resources.workerGroup())
@@ -86,14 +103,14 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         ChannelPipeline p = ch.pipeline();
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        p.addLast(new io.netty.channel.ChannelInboundHandlerAdapter() {
+                        p.addLast(new ChannelInboundHandlerAdapter() {
                             @Override
-                            public void channelRead(io.netty.channel.ChannelHandlerContext ctx, Object msg) throws Exception {
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
                                 httpHandler.get().handle(ctx, msg);
                             }
 
                             @Override
-                            public void exceptionCaught(io.netty.channel.ChannelHandlerContext ctx, Throwable cause) {
+                            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
                                 try {
                                     httpHandler.get().exceptionCaught(ctx, cause);
                                 } catch (Throwable t) {
@@ -130,6 +147,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
 
+        if (this.manageResources) {
+            long timeoutMs = this.httpServerConfig.get().shutdownWait().toMillis();
+            long quietPeriodMs = Math.min(2000, timeoutMs);
+            var bossFuture = this.resources.bossGroup().shutdownGracefully(quietPeriodMs, timeoutMs, TimeUnit.MILLISECONDS);
+            var workerFuture = this.resources.workerGroup().shutdownGracefully(quietPeriodMs, timeoutMs, TimeUnit.MILLISECONDS);
+            bossFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
+            workerFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
+        }
+
         var localChannel = this.serverChannel;
         ChannelFuture closeFuture = null;
         if (localChannel != null) {
@@ -137,15 +163,41 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         }
 
         final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
-        if (closeFuture != null) {
+
+        NettyHttpHandler actualHandler = this.httpHandler.get();
+        if (actualHandler instanceof KoraHttpServerHandler koraHandler) {
+            koraHandler.setShuttingDown(true);
+
             try {
-                closeFuture.await(shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
+                log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
+                koraHandler.getPhaser().awaitAdvanceInterruptibly(
+                    koraHandler.getPhaser().arrive(),
+                    shutdownAwait.toMillis(),
+                    TimeUnit.MILLISECONDS
+                );
+            } catch (TimeoutException e) {
+                log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, shutdownAwait);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
+            }
+
+            if (closeFuture != null) {
+                try {
+                    closeFuture.await(shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            if (koraHandler.getActiveRequests().get() > 0) {
+                log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, koraHandler.getActiveRequests().get());
+            } else {
+                log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
             }
         }
-        log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
     }
+
 
     @Override
     public int port() {

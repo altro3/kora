@@ -6,7 +6,6 @@ import io.koraframework.http.server.common.HttpServerConfig;
 import io.koraframework.http.server.common.telemetry.HttpServerTelemetryConfig;
 import io.koraframework.http.server.netty.handler.NettyHttpHandler;
 import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.nio.NioIoHandler;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.DefaultFullHttpResponse;

@@ -43,7 +43,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Objects;
 import java.util.concurrent.Phaser;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BooleanSupplier;
 
 @ChannelHandler.Sharable
 public final class KoraHttpServerHandler implements NettyHttpHandler {
@@ -58,26 +57,20 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
     private final boolean telemetryEnabled;
     private final boolean contextPropagationEnabled;
 
-    private final AtomicInteger activeRequests;
-    private final Phaser phaser;
-    private final BooleanSupplier shuttingDown;
+    private final AtomicInteger activeRequests = new AtomicInteger(0);
+    private final Phaser phaser = new Phaser(1);
+    private volatile boolean shuttingDown = false;
 
     public KoraHttpServerHandler(
         HttpServerConfig httpServerConfig,
         HttpServerRouter httpServerRouter,
-        HttpServerTelemetry telemetry,
-        AtomicInteger activeRequests,
-        Phaser phaser,
-        BooleanSupplier shuttingDown
+        HttpServerTelemetry telemetry
     ) {
         this.httpServerConfig = httpServerConfig;
         this.httpServerRouter = httpServerRouter;
         this.telemetry = telemetry;
         this.telemetryEnabled = !(telemetry instanceof NoopHttpServerTelemetry);
         this.contextPropagationEnabled = this.telemetryEnabled;
-        this.activeRequests = activeRequests;
-        this.phaser = phaser;
-        this.shuttingDown = shuttingDown;
     }
 
     @Override
@@ -87,7 +80,7 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
             return;
         }
 
-        if (shuttingDown.getAsBoolean()) {
+        if (shuttingDown) {
             sendServiceUnavailable(ctx, nettyReq);
             return;
         }
@@ -327,5 +320,17 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Netty pipeline exception caught", cause);
         ctx.close();
+    }
+
+    public void setShuttingDown(boolean shuttingDown) {
+        this.shuttingDown = shuttingDown;
+    }
+
+    public AtomicInteger getActiveRequests() {
+        return activeRequests;
+    }
+
+    public Phaser getPhaser() {
+        return phaser;
     }
 }

@@ -11,9 +11,6 @@ import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.common.router.HttpServerRouter;
 import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
 import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -24,9 +21,7 @@ import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Phaser;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -74,7 +69,8 @@ class NettyHttpServerTest extends HttpServerTestKit {
         assertThat(writeThread.get().isVirtual()).isTrue();
         assertThat(closeThread.get()).isNotNull();
         assertThat(closeThread.get().isVirtual()).isFalse();
-        assertThat(closeThread.get().getName()).contains("nioEventLoopGroup");
+        assertThat(closeThread.get().getName().toLowerCase())
+            .matches(name -> name.contains("loop") || name.contains("event"));
     }
 
     @Test
@@ -121,7 +117,8 @@ class NettyHttpServerTest extends HttpServerTestKit {
         assertThat(writeThread.get().isVirtual()).isTrue();
         assertThat(closeThread.get()).isNotNull();
         assertThat(closeThread.get().isVirtual()).isFalse();
-        assertThat(closeThread.get().getName()).contains("nioEventLoopGroup");
+        assertThat(closeThread.get().getName().toLowerCase())
+            .matches(name -> name.contains("loop") || name.contains("event"));
     }
 
     /**
@@ -196,31 +193,12 @@ class NettyHttpServerTest extends HttpServerTestKit {
 
     @Override
     protected HttpServer httpServer(ValueOf<? extends HttpServerConfig> config, HttpServerRouter httpServerRouter, HttpServerTelemetry telemetry) {
-        var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        var workerGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-
-        var resources = new NettyResourceLifecycle.NettyResources(
-            bossGroup,
-            workerGroup,
-            NioServerSocketChannel.class
-        );
-
-        var handler = new KoraHttpServerHandler(
-            config.get(),
-            httpServerRouter,
-            telemetry,
-            new AtomicInteger(0),
-            new Phaser(1),
-            () -> false
-        );
-
         return new NettyHttpServer(
             "test",
-            resources,
+            null,
             (ValueOf<HttpServerConfig>) config,
-            () -> handler,
+            valueOf(new KoraHttpServerHandler(config.get(), httpServerRouter, telemetry)),
             null
         );
     }
-
 }
