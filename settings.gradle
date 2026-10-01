@@ -59,6 +59,7 @@ include(
     'kafka:kafka-symbol-processor',
     'http:http-common',
     'http:http-server-common',
+    'http:http-server-netty',
     'http:http-server-undertow',
     'http:http-client-common',
     'http:http-client-ok',
