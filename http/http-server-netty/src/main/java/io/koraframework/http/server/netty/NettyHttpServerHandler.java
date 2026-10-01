@@ -8,7 +8,14 @@ import io.netty.buffer.ByteBufOutputStream;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpResponse;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,16 +58,18 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
 
             var version = nettyReq.protocolVersion();
             var keepAlive = HttpUtil.isKeepAlive(nettyReq);
-
             var koraReq = new NettyHttpServerRequest(nettyReq);
-            ReferenceCountUtil.release(nettyReq);
 
             Thread.startVirtualThread(() -> {
                 try {
-                    HttpServerResponse koraResp = rootHandler.handle(koraReq);
-                    sendSuccessResponse(ctx, version, keepAlive, koraResp);
-                } catch (Throwable t) {
-                    sendErrorResponse(ctx, version, keepAlive, t);
+                    ScopedValue.where(NettyContext.VALUE, new NettyContext(nettyReq)).run(() -> {
+                        try {
+                            HttpServerResponse koraResp = rootHandler.handle(koraReq);
+                            sendSuccessResponse(ctx, version, keepAlive, koraResp);
+                        } catch (Throwable t) {
+                            sendErrorResponse(ctx, version, keepAlive, t);
+                        }
+                    });
                 } finally {
                     try {
                         koraReq.body().close();
@@ -77,6 +86,7 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
             ctx.fireChannelRead(msg);
         }
     }
+
 
     private void sendSuccessResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, HttpServerResponse koraResp) {
         ByteBuf buffer = ctx.alloc().buffer();
