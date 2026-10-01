@@ -13,12 +13,16 @@ import java.io.UncheckedIOException;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
-public final class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
+public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
+
+    private static final String DEFAULT_HOST = "localhost";
+    private static final String SCHEME_HTTP = "http";
+    private static final String HEADER_X_FORWARDED_PROTO = "X-Forwarded-Proto";
 
     private static final AtomicReferenceFieldUpdater<NettyUnroutedHttpRequest, HttpBodyInput> BODY_UPDATER =
         AtomicReferenceFieldUpdater.newUpdater(NettyUnroutedHttpRequest.class, HttpBodyInput.class, "body");
 
-    private final FullHttpRequest nettyRequest;
+    protected final FullHttpRequest nettyRequest;
     private final String method;
     private final String path;
     private final NettyHttpHeaders headers;
@@ -38,60 +42,59 @@ public final class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     }
 
     @Override
-    public String method() {
+    public final String method() {
         return this.method;
     }
 
     @Override
-    public String path() {
+    public final String path() {
         return this.path;
     }
 
     @Override
-    public String host() {
+    public final String host() {
         String host = nettyRequest.headers().get(HttpHeaderNames.HOST);
-        return host != null ? host : "localhost";
+        return host != null ? host : DEFAULT_HOST;
     }
 
     @Override
-    public String scheme() {
-        String forwardedProto = nettyRequest.headers().get("X-Forwarded-Proto");
-        return forwardedProto != null ? forwardedProto.toLowerCase(Locale.ROOT) : "http";
+    public final String scheme() {
+        String forwardedProto = nettyRequest.headers().get(HEADER_X_FORWARDED_PROTO);
+        return forwardedProto != null ? forwardedProto.toLowerCase(Locale.ROOT) : SCHEME_HTTP;
     }
 
     @Override
-    public HttpHeaders headers() {
+    public final HttpHeaders headers() {
         return this.headers;
     }
 
     @Override
-    public Map<String, List<String>> queryParams() {
+    public final Map<String, List<String>> queryParams() {
         return this.queryParams;
     }
 
     @Override
-    public HttpBodyInput body() {
-        var b = this.body;
-        if (b != null) {
-            return b;
+    public final HttpBodyInput body() {
+        var body = this.body;
+        if (body != null) {
+            return body;
         }
         try {
-            b = this.getContent();
-            if (BODY_UPDATER.compareAndSet(this, null, b)) {
-                return b;
+            body = this.getContent();
+            if (BODY_UPDATER.compareAndSet(this, null, body)) {
+                if (body instanceof NettyRequestHttpBody nettyBody) {
+                    nettyBody.prepare();
+                }
+                return body;
             }
-            var closeable = (AutoCloseable) b;
-            try {
-                closeable.close();
-            } catch (Exception ignored) {}
             return this.body;
         } catch (IOException e) {
-            throw new UncheckedIOException("HTTP request body cannot be opened for %s %s; cause: %s".formatted(this.method, this.path, e.getMessage()), e);
+            throw new UncheckedIOException("HTTP request body cannot be opened for " + this.method + " " + this.path, e);
         }
     }
 
     @Override
-    public long requestStartTimeInNanos() {
+    public final long requestStartTimeInNanos() {
         return this.startTime;
     }
 
@@ -107,17 +110,16 @@ public final class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         if (nettyParams.isEmpty()) {
             return Map.of();
         }
+
         var queryParams = new LinkedHashMap<String, List<String>>(nettyParams.size());
-        for (var entry : nettyParams.entrySet()) {
-            var key = entry.getKey();
-            var value = new ArrayList<String>(entry.getValue().size());
-            for (var it : entry.getValue()) {
-                if (!it.isEmpty()) {
-                    value.add(it);
-                }
+        nettyParams.forEach((key, values) -> {
+            if (values.isEmpty()) {
+                queryParams.put(key, Collections.emptyList());
+            } else {
+                queryParams.put(key, Collections.unmodifiableList(values));
             }
-            queryParams.put(key, Collections.unmodifiableList(value));
-        }
+        });
+
         return Collections.unmodifiableMap(queryParams);
     }
 
