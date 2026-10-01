@@ -3,6 +3,7 @@ package io.koraframework.http.server.netty;
 import io.koraframework.http.server.common.request.HttpServerRequestHandler;
 import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.netty.request.NettyHttpServerRequest;
+import io.netty.buffer.ByteBufOutputStream;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
@@ -10,7 +11,10 @@ import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+
 public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
+
     private static final Logger log = LoggerFactory.getLogger(NettyHttpServerHandler.class);
 
     private final HttpServerRequestHandler rootHandler;
@@ -22,19 +26,23 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof FullHttpRequest nettyReq) {
+            nettyReq.retain();
+            var version = nettyReq.protocolVersion();
             var koraReq = new NettyHttpServerRequest(nettyReq);
 
             Thread.startVirtualThread(() -> {
                 try {
                     HttpServerResponse koraResp = rootHandler.handle(koraReq);
-                    sendSuccessResponse(ctx, koraResp);
+                    sendSuccessResponse(ctx, version, koraResp);
                 } catch (Throwable t) {
-                    sendErrorResponse(ctx, t);
+                    sendErrorResponse(ctx, version, t);
                 } finally {
                     try {
                         koraReq.body().close();
-                    } catch (java.io.IOException e) {
+                    } catch (IOException e) {
                         log.warn("Failed to close request body", e);
+                    } finally {
+                        nettyReq.release();
                     }
                 }
             });
@@ -43,12 +51,24 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
-    private void sendSuccessResponse(ChannelHandlerContext ctx, HttpServerResponse koraResp) {
-        byte[] bodyBytes = koraResp.body() != null ? koraResp.body() : new byte[0];
+    private void sendSuccessResponse(ChannelHandlerContext ctx, HttpVersion version, HttpServerResponse koraResp) {
+        var bodyOutput = koraResp.body();
+        var buffer = ctx.alloc().buffer();
+
+        if (bodyOutput != null) {
+            try (var os = new ByteBufOutputStream(buffer)) {
+                bodyOutput.write(os);
+            } catch (IOException e) {
+                buffer.release();
+                sendErrorResponse(ctx, version, e);
+                return;
+            }
+        }
+
         var nettyResp = new DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                HttpResponseStatus.valueOf(koraResp.code()),
-                Unpooled.wrappedBuffer(bodyBytes)
+            version,
+            HttpResponseStatus.valueOf(koraResp.code()),
+            buffer
         );
 
         koraResp.headers().forEach(entry -> {
@@ -56,19 +76,26 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
                 nettyResp.headers().add(entry.getKey(), val);
             }
         });
-        nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, bodyBytes.length);
+        nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
 
-        ctx.channel().eventLoop().execute(() -> ctx.writeAndFlush(nettyResp));
+        try {
+            ctx.channel().eventLoop().execute(() -> ctx.writeAndFlush(nettyResp));
+        } catch (Throwable t) {
+            nettyResp.release();
+            log.error("Failed to enqueue response write task", t);
+        }
     }
 
-    private void sendErrorResponse(ChannelHandlerContext ctx, Throwable t) {
+    private void sendErrorResponse(ChannelHandlerContext ctx, HttpVersion version, Throwable t) {
         log.error("Error processing request in Kora", t);
-        var errorResp = new DefaultFullHttpResponse(
-                HttpVersion.HTTP_1_1,
-                HttpResponseStatus.INTERNAL_SERVER_ERROR
-        );
+        var errorResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR);
         errorResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
-        ctx.channel().eventLoop().execute(() -> ctx.writeAndFlush(errorResp));
+        try {
+            ctx.channel().eventLoop().execute(() -> ctx.writeAndFlush(errorResp));
+        } catch (Throwable e) {
+            errorResp.release();
+            log.error("Failed to enqueue error response write task", e);
+        }
     }
 
     @Override
