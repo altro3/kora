@@ -4,17 +4,21 @@ import io.koraframework.http.common.body.HttpBodyInput;
 import io.koraframework.http.common.cookie.Cookie;
 import io.koraframework.http.common.header.HttpHeaders;
 import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.netty.buffer.ByteBufInputStream;
 import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.QueryStringDecoder;
 import org.jspecify.annotations.Nullable;
 
-import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NettyHttpServerRequest implements HttpServerRequest {
+
     private final FullHttpRequest nettyRequest;
     private final String path;
     private final HttpHeaders headers;
@@ -30,45 +34,57 @@ public final class NettyHttpServerRequest implements HttpServerRequest {
         this.path = decoder.path();
         this.queryParams = decoder.parameters();
 
-        var koraHeaders = HttpHeaders.of();
-        for (Map.Entry<String, String> entry : nettyRequest.headers()) {
-            koraHeaders = koraHeaders.add(entry.getKey(), entry.getValue());
+        var headersByName = new LinkedHashMap<String, List<String>>(nettyRequest.headers().size());
+        for (String name : nettyRequest.headers().names()) {
+            headersByName.put(name, nettyRequest.headers().getAll(name));
         }
-        this.headers = koraHeaders;
+        this.headers = HttpHeaders.of(headersByName);
 
-        byte[] bodyBytes;
-        if (nettyRequest.content().isReadable()) {
-            bodyBytes = new byte[nettyRequest.content().readableBytes()];
-            nettyRequest.content().readBytes(bodyBytes);
-        } else {
-            bodyBytes = new byte[0];
+        String contentType = nettyRequest.headers().get(HttpHeaderNames.CONTENT_TYPE);
+        long contentLength = nettyRequest.content().readableBytes();
+
+        this.body = new NettyHttpBodyInput(nettyRequest, contentType, contentLength);
+    }
+
+    private static final class NettyHttpBodyInput implements HttpBodyInput {
+
+        private final FullHttpRequest request;
+        private final String contentType;
+        private final long contentLength;
+        private final AtomicBoolean released = new AtomicBoolean(false);
+
+        private NettyHttpBodyInput(FullHttpRequest request, String contentType, long contentLength) {
+            this.request = request;
+            this.contentType = contentType;
+            this.contentLength = contentLength;
         }
 
-        String contentType = nettyRequest.headers().get("Content-Type");
-        this.body = new HttpBodyInput() {
-            @Override
-            public String contentType() {
-                return contentType;
-            }
+        @Override
+        public String contentType() {
+            return contentType;
+        }
 
-            @Override
-            public long contentLength() {
-                return bodyBytes.length;
-            }
+        @Override
+        public long contentLength() {
+            return contentLength;
+        }
 
-            @Override
-            public InputStream asInputStream() {
-                return new ByteArrayInputStream(bodyBytes);
-            }
+        @Override
+        public InputStream asInputStream() {
+            return new ByteBufInputStream(request.content().duplicate());
+        }
 
-            @Override
-            public void close() {}
-        };
+        @Override
+        public void close() {
+            if (released.compareAndSet(false, true)) {
+                request.release();
+            }
+        }
     }
 
     @Override
     public String host() {
-        String host = nettyRequest.headers().get("Host");
+        String host = nettyRequest.headers().get(HttpHeaderNames.HOST);
         return host != null ? host : "localhost";
     }
 
