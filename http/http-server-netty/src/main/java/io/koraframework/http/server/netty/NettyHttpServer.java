@@ -8,8 +8,9 @@ import io.koraframework.common.readiness.ReadinessProbeFailure;
 import io.koraframework.common.util.TimeUtils;
 import io.koraframework.http.server.common.HttpServer;
 import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.request.HttpServerRequestHandler;
-import io.koraframework.http.server.netty.handler.NettyHttpServerHandler;
+import io.koraframework.http.server.common.router.HttpServerRouter;
+import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
+import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
 import io.koraframework.logging.common.arg.StructuredArgument;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -17,6 +18,7 @@ import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
@@ -43,7 +45,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final String name;
     private final NettyResourceLifecycle.NettyResources resources;
     private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final HttpServerRequestHandler rootHandler;
+    private final HttpServerRouter httpServerRouter;
+    private final HttpServerTelemetry telemetry;
     @Nullable
     private final Configurer<ServerBootstrap> configurer;
 
@@ -54,13 +57,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         String name,
         NettyResourceLifecycle.NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
-        HttpServerRequestHandler rootHandler,
+        HttpServerRouter httpServerRouter,
+        HttpServerTelemetry telemetry,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
         this.resources = resources;
         this.httpServerConfig = httpServerConfig;
-        this.rootHandler = rootHandler;
+        this.httpServerRouter = httpServerRouter;
+        this.telemetry = telemetry;
         this.configurer = configurer;
     }
 
@@ -80,15 +85,24 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 bootstrap = this.configurer.configure(bootstrap.clone());
             }
 
+            var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
+                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline p = ch.pipeline();
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        p.addLast(new NettyHttpServerHandler(rootHandler, activeRequests, phaser, () -> shuttingDown));
+                        p.addLast(new KoraHttpServerHandler(
+                            config,
+                            httpServerRouter,
+                            telemetry,
+                            activeRequests,
+                            phaser,
+                            () -> shuttingDown
+                        ));
                     }
                 });
 
