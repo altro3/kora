@@ -69,8 +69,11 @@ public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyRes
     public void release() {
         if (resources != null) {
             log.debug("Shutting down Netty EventLoopGroups...");
-            Future<?> bossFuture = resources.bossGroup().shutdownGracefully(2, 15, TimeUnit.SECONDS);
-            Future<?> workerFuture = resources.workerGroup().shutdownGracefully(2, 15, TimeUnit.SECONDS);
+            var config = configValue.get();
+            long timeout = config.threadKeepAliveTimeout().toSeconds();
+
+            Future<?> bossFuture = resources.bossGroup().shutdownGracefully(2, timeout, TimeUnit.SECONDS);
+            Future<?> workerFuture = resources.workerGroup().shutdownGracefully(2, timeout, TimeUnit.SECONDS);
 
             bossFuture.awaitUninterruptibly();
             workerFuture.awaitUninterruptibly();
