@@ -4,10 +4,13 @@ import io.koraframework.http.server.common.request.HttpServerRequestHandler;
 import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.netty.request.NettyHttpServerRequest;
 import io.netty.buffer.ByteBufOutputStream;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,24 +55,21 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void sendSuccessResponse(ChannelHandlerContext ctx, HttpVersion version, HttpServerResponse koraResp) {
-        var bodyOutput = koraResp.body();
         var buffer = ctx.alloc().buffer();
 
-        if (bodyOutput != null) {
-            try (var os = new ByteBufOutputStream(buffer)) {
-                bodyOutput.write(os);
-            } catch (IOException e) {
-                buffer.release();
-                sendErrorResponse(ctx, version, e);
-                return;
+        try (var bodyOutput = koraResp.body()) {
+            if (bodyOutput != null) {
+                try (var os = new ByteBufOutputStream(buffer)) {
+                    bodyOutput.write(os);
+                }
             }
+        } catch (IOException e) {
+            buffer.release();
+            sendErrorResponse(ctx, version, e);
+            return;
         }
 
-        var nettyResp = new DefaultFullHttpResponse(
-            version,
-            HttpResponseStatus.valueOf(koraResp.code()),
-            buffer
-        );
+        var nettyResp = new DefaultFullHttpResponse(version, HttpResponseStatus.valueOf(koraResp.code()), buffer);
 
         koraResp.headers().forEach(entry -> {
             for (String val : entry.getValue()) {
@@ -85,6 +85,7 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
             log.error("Failed to enqueue response write task", t);
         }
     }
+
 
     private void sendErrorResponse(ChannelHandlerContext ctx, HttpVersion version, Throwable t) {
         log.error("Error processing request in Kora", t);
