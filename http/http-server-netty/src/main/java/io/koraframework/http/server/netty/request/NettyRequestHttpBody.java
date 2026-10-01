@@ -4,24 +4,26 @@ import io.koraframework.http.common.body.HttpBodyInput;
 import io.netty.buffer.ByteBufInputStream;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpUtil;
 import org.jspecify.annotations.NonNull;
 import org.jspecify.annotations.Nullable;
 
-import java.io.IOException;
 import java.io.InputStream;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NettyRequestHttpBody implements HttpBodyInput {
 
     private final FullHttpRequest nettyRequest;
+    private final AtomicBoolean closed = new AtomicBoolean(false);
 
     public NettyRequestHttpBody(FullHttpRequest nettyRequest) {
         this.nettyRequest = nettyRequest;
+        nettyRequest.retain();
     }
 
     @Override
     public long contentLength() {
-        String contentLengthStr = nettyRequest.headers().get(HttpHeaderNames.CONTENT_LENGTH);
-        return contentLengthStr == null ? -1 : Long.parseLong(contentLengthStr);
+        return HttpUtil.getContentLength(nettyRequest, -1L);
     }
 
     @Nullable
@@ -33,12 +35,14 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
     @Override
     @NonNull
     public InputStream asInputStream() {
-        return new ByteBufInputStream(nettyRequest.content().duplicate());
+        return new ByteBufInputStream(nettyRequest.content().duplicate(), false);
     }
 
     @Override
-    public void close() throws IOException {
-        this.asInputStream().close();
+    public void close() {
+        if (closed.compareAndSet(false, true)) {
+            nettyRequest.release();
+        }
     }
 
     @Override

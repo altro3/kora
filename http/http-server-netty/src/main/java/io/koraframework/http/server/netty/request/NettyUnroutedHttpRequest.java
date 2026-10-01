@@ -11,8 +11,12 @@ import io.netty.handler.codec.http.QueryStringDecoder;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 
 public final class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
+
+    private static final AtomicReferenceFieldUpdater<NettyUnroutedHttpRequest, HttpBodyInput> BODY_UPDATER =
+        AtomicReferenceFieldUpdater.newUpdater(NettyUnroutedHttpRequest.class, HttpBodyInput.class, "body");
 
     private final FullHttpRequest nettyRequest;
     private final String method;
@@ -73,10 +77,17 @@ public final class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         }
         try {
             b = this.getContent();
+            if (BODY_UPDATER.compareAndSet(this, null, b)) {
+                return b;
+            }
+            var closeable = (AutoCloseable) b;
+            try {
+                closeable.close();
+            } catch (Exception ignored) {}
+            return this.body;
         } catch (IOException e) {
             throw new UncheckedIOException("HTTP request body cannot be opened for %s %s; cause: %s".formatted(this.method, this.path, e.getMessage()), e);
         }
-        return this.body = b;
     }
 
     @Override
