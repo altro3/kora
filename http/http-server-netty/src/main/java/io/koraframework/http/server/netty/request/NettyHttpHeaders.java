@@ -5,7 +5,15 @@ import io.koraframework.http.common.header.HttpHeaders;
 import org.jspecify.annotations.NullMarked;
 import org.jspecify.annotations.Nullable;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 @NullMarked
 public final class NettyHttpHeaders extends AbstractHttpHeaders implements HttpHeaders {
@@ -43,7 +51,7 @@ public final class NettyHttpHeaders extends AbstractHttpHeaders implements HttpH
 
     @Override
     public int size() {
-        return nettyHeaders.names().size();
+        return nettyHeaders.size();
     }
 
     @Override
@@ -53,28 +61,51 @@ public final class NettyHttpHeaders extends AbstractHttpHeaders implements HttpH
 
     @Override
     public Set<String> names() {
-        var names = this.names;
-        if (names != null) {
-            return names;
+        var n = this.names;
+        if (n != null) {
+            return n;
         }
-        names = new LinkedHashSet<>();
-        for (CharSequence headerName : nettyHeaders.names()) {
-            names.add(headerName.toString().toLowerCase(Locale.ROOT));
+
+        var nettyNames = nettyHeaders.names();
+        var computedNames = new LinkedHashSet<String>(nettyNames.size());
+        for (CharSequence headerName : nettyNames) {
+            computedNames.add(headerName.toString().toLowerCase(Locale.ROOT));
         }
-        return this.names = Collections.unmodifiableSet(names);
+
+        var immutableNames = Collections.unmodifiableSet(computedNames);
+        this.names = immutableNames;
+        return immutableNames;
     }
 
     @Override
     public Iterator<Map.Entry<String, List<String>>> iterator() {
-        var entries = this.entries;
-        if (entries != null) {
-            return entries.iterator();
+        var e = this.entries;
+        if (e != null) {
+            return e.iterator();
         }
-        entries = new ArrayList<>(nettyHeaders.names().size());
-        for (String name : nettyHeaders.names()) {
-            entries.add(Map.entry(name.toLowerCase(Locale.ROOT), Collections.unmodifiableList(nettyHeaders.getAll(name))));
+
+        var linkedMap = new LinkedHashMap<String, List<String>>(nettyHeaders.size());
+        var nettyIterator = nettyHeaders.iteratorCharSequence();
+
+        while (nettyIterator.hasNext()) {
+            var entry = nettyIterator.next();
+            var lowerKey = entry.getKey().toString().toLowerCase(Locale.ROOT);
+            var value = entry.getValue().toString();
+
+            var list = (ArrayList<String>) linkedMap.get(lowerKey);
+            if (list == null) {
+                list = new ArrayList<>(2);
+                linkedMap.put(lowerKey, list);
+            }
+            list.add(value);
         }
-        return (this.entries = Collections.unmodifiableList(entries)).iterator();
+
+        var computedEntries = new ArrayList<Map.Entry<String, List<String>>>(linkedMap.size());
+        linkedMap.forEach((k, v) -> computedEntries.add(Map.entry(k, Collections.unmodifiableList(v))));
+
+        var immutableEntries = Collections.unmodifiableList(computedEntries);
+        this.entries = immutableEntries;
+        return immutableEntries.iterator();
     }
 
     @Override
