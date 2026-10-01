@@ -20,11 +20,9 @@ import io.netty.channel.uring.IoUring;
 import io.netty.channel.uring.IoUringIoHandler;
 import io.netty.channel.uring.IoUringServerSocketChannel;
 import io.netty.util.concurrent.DefaultThreadFactory;
-import io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyResourceLifecycle.NettyResources> {
@@ -39,54 +37,47 @@ public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyRes
     }
 
     @Override
-    public void init() throws Exception {
+    public void init() {
         log.debug("Netty EventLoopGroups starting...");
         var started = System.nanoTime();
 
-        var future = new CompletableFuture<NettyResources>();
-        var thread = Thread.ofPlatform()
-            .name("kora-netty-init")
-            .daemon(false)
-            .unstarted(() -> {
-                try {
-                    IoHandlerFactory factory;
-                    Class<? extends ServerChannel> channelClass;
+        final IoHandlerFactory bossFactory;
+        final IoHandlerFactory workerFactory;
+        final Class<? extends ServerChannel> channelClass;
 
-                    if (IoUring.isAvailable()) {
-                        factory = IoUringIoHandler.newFactory();
-                        channelClass = IoUringServerSocketChannel.class;
-                    } else if (Epoll.isAvailable()) {
-                        factory = EpollIoHandler.newFactory();
-                        channelClass = EpollServerSocketChannel.class;
-                    } else if (KQueue.isAvailable()) {
-                        factory = KQueueIoHandler.newFactory();
-                        channelClass = KQueueServerSocketChannel.class;
-                    } else {
-                        factory = NioIoHandler.newFactory();
-                        channelClass = NioServerSocketChannel.class;
-                    }
+        if (IoUring.isAvailable()) {
+            bossFactory = IoUringIoHandler.newFactory();
+            workerFactory = IoUringIoHandler.newFactory();
+            channelClass = IoUringServerSocketChannel.class;
+        } else if (Epoll.isAvailable()) {
+            bossFactory = EpollIoHandler.newFactory();
+            workerFactory = EpollIoHandler.newFactory();
+            channelClass = EpollServerSocketChannel.class;
+        } else if (KQueue.isAvailable()) {
+            bossFactory = KQueueIoHandler.newFactory();
+            workerFactory = KQueueIoHandler.newFactory();
+            channelClass = KQueueServerSocketChannel.class;
+        } else {
+            bossFactory = NioIoHandler.newFactory();
+            workerFactory = NioIoHandler.newFactory();
+            channelClass = NioServerSocketChannel.class;
+        }
 
-                    int threads = configValue.get().ioThreads();
+        int threads = configValue.get().ioThreads();
 
-                    EventLoopGroup bossGroup = new MultiThreadIoEventLoopGroup(
-                        1,
-                        new DefaultThreadFactory("kora-netty-boss", false),
-                        factory
-                    );
-                    EventLoopGroup workerGroup = new MultiThreadIoEventLoopGroup(
-                        threads,
-                        new DefaultThreadFactory("kora-netty-worker", false),
-                        factory
-                    );
+        var bossGroup = new MultiThreadIoEventLoopGroup(
+            1,
+            new DefaultThreadFactory("kora-netty-boss", false),
+            bossFactory
+        );
 
-                    future.complete(new NettyResources(bossGroup, workerGroup, channelClass));
-                } catch (Throwable e) {
-                    future.completeExceptionally(e);
-                }
-            });
+        var workerGroup = new MultiThreadIoEventLoopGroup(
+            threads,
+            new DefaultThreadFactory("kora-netty-worker", false),
+            workerFactory
+        );
 
-        thread.start();
-        this.resources = future.get();
+        this.resources = new NettyResources(bossGroup, workerGroup, channelClass);
 
         log.info("Netty EventLoopGroups started using {} transport in {}",
             this.resources.channelClass().getSimpleName(),
@@ -95,19 +86,25 @@ public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyRes
 
     @Override
     public void release() {
-        if (resources != null) {
-            log.debug("Netty EventLoopGroups stopping...");
-            var started = System.nanoTime();
-            var config = configValue.get();
-            long timeout = config.threadKeepAliveTimeout().toSeconds();
-
-            Future<?> bossFuture = resources.bossGroup().shutdownGracefully(2, timeout, TimeUnit.SECONDS);
-            Future<?> workerFuture = resources.workerGroup().shutdownGracefully(2, timeout, TimeUnit.SECONDS);
-
-            bossFuture.awaitUninterruptibly();
-            workerFuture.awaitUninterruptibly();
-            log.info("Netty EventLoopGroups stopped in {}", TimeUtils.tookForLogging(started));
+        if (resources == null) {
+            return;
         }
+        log.debug("Netty EventLoopGroups stopping...");
+        var started = System.nanoTime();
+        var config = configValue.get();
+
+        long timeoutSec = config.threadKeepAliveTimeout().toSeconds();
+        var bossFuture = resources.bossGroup().shutdownGracefully(2, timeoutSec, TimeUnit.SECONDS);
+        var workerFuture = resources.workerGroup().shutdownGracefully(2, timeoutSec, TimeUnit.SECONDS);
+
+        try {
+            bossFuture.get(timeoutSec + 1, TimeUnit.SECONDS);
+            workerFuture.get(timeoutSec + 1, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.warn("Error while stopping Netty EventLoopGroups: {}", e.getMessage());
+        }
+
+        log.info("Netty EventLoopGroups stopped in {}", TimeUtils.tookForLogging(started));
     }
 
     @Override
