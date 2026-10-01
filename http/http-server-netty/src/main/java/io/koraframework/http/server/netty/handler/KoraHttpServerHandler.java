@@ -12,15 +12,23 @@ import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
 import io.koraframework.http.server.common.telemetry.impl.NoopHttpServerObservation;
 import io.koraframework.http.server.common.telemetry.impl.NoopHttpServerTelemetry;
 import io.koraframework.http.server.netty.NettyContext;
-import io.koraframework.http.server.netty.NettyHttpHandler;
 import io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.*;
+import io.netty.handler.codec.http.DefaultFullHttpResponse;
+import io.netty.handler.codec.http.DefaultHttpResponse;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpHeaderValues;
+import io.netty.handler.codec.http.HttpHeaders;
+import io.netty.handler.codec.http.HttpMessage;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.AsciiString;
 import io.netty.util.ReferenceCountUtil;
 import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
@@ -38,7 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 @ChannelHandler.Sharable
-public final class KoraHttpServerHandler extends ChannelInboundHandlerAdapter implements NettyHttpHandler {
+public final class KoraHttpServerHandler implements NettyHttpHandler {
 
     private static final Logger log = LoggerFactory.getLogger(KoraHttpServerHandler.class);
     private static final AsciiString HEADER_SERVER_VALUE = AsciiString.cached("Kora");
@@ -73,12 +81,7 @@ public final class KoraHttpServerHandler extends ChannelInboundHandlerAdapter im
     }
 
     @Override
-    public ChannelHandler get() {
-        return this;
-    }
-
-    @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+    public void handle(ChannelHandlerContext ctx, Object msg) {
         if (!(msg instanceof FullHttpRequest nettyReq)) {
             ctx.fireChannelRead(msg);
             return;
@@ -91,6 +94,7 @@ public final class KoraHttpServerHandler extends ChannelInboundHandlerAdapter im
 
         activeRequests.incrementAndGet();
         phaser.register();
+
         nettyReq.retain();
 
         var version = nettyReq.protocolVersion();
@@ -101,7 +105,7 @@ public final class KoraHttpServerHandler extends ChannelInboundHandlerAdapter im
             try {
                 processRequest(ctx, nettyReq, koraReq, version, keepAlive);
             } finally {
-                nettyReq.release();
+                ReferenceCountUtil.release(nettyReq);
                 activeRequests.decrementAndGet();
                 phaser.arriveAndDeregister();
             }

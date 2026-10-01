@@ -8,11 +8,13 @@ import io.koraframework.common.readiness.ReadinessProbeFailure;
 import io.koraframework.common.util.TimeUtils;
 import io.koraframework.http.server.common.HttpServer;
 import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
+import io.koraframework.http.server.netty.handler.NettyHttpHandler;
 import io.koraframework.logging.common.arg.StructuredArgument;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
@@ -38,7 +40,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final String name;
     private final NettyResourceLifecycle.NettyResources resources;
     private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final ValueOf<KoraHttpServerHandler> httpHandler;
+    private final ValueOf<NettyHttpHandler> httpHandler;
     @Nullable
     private final Configurer<ServerBootstrap> configurer;
 
@@ -48,7 +50,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         String name,
         NettyResourceLifecycle.NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
-        ValueOf<KoraHttpServerHandler> httpHandler,
+        ValueOf<NettyHttpHandler> httpHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
@@ -84,7 +86,21 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         ChannelPipeline p = ch.pipeline();
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        p.addLast(httpHandler.get());
+                        p.addLast(new io.netty.channel.ChannelInboundHandlerAdapter() {
+                            @Override
+                            public void channelRead(io.netty.channel.ChannelHandlerContext ctx, Object msg) throws Exception {
+                                httpHandler.get().handle(ctx, msg);
+                            }
+
+                            @Override
+                            public void exceptionCaught(io.netty.channel.ChannelHandlerContext ctx, Throwable cause) {
+                                try {
+                                    httpHandler.get().exceptionCaught(ctx, cause);
+                                } catch (Throwable t) {
+                                    ctx.close();
+                                }
+                            }
+                        });
                     }
                 });
 
