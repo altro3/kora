@@ -8,8 +8,6 @@ import io.koraframework.common.readiness.ReadinessProbeFailure;
 import io.koraframework.common.util.TimeUtils;
 import io.koraframework.http.server.common.HttpServer;
 import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.router.HttpServerRouter;
-import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
 import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
 import io.koraframework.logging.common.arg.StructuredArgument;
 import io.netty.bootstrap.ServerBootstrap;
@@ -29,43 +27,34 @@ import org.slf4j.LoggerFactory;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.time.Duration;
-import java.util.concurrent.Phaser;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
 
-    private final Phaser phaser = new Phaser(1);
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
-    private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final String name;
     private final NettyResourceLifecycle.NettyResources resources;
     private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final HttpServerRouter httpServerRouter;
-    private final HttpServerTelemetry telemetry;
+    private final ValueOf<KoraHttpServerHandler> httpHandler;
     @Nullable
     private final Configurer<ServerBootstrap> configurer;
 
     private volatile @Nullable Channel serverChannel;
-    private volatile boolean shuttingDown = false;
 
     public NettyHttpServer(
         String name,
         NettyResourceLifecycle.NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
-        HttpServerRouter httpServerRouter,
-        HttpServerTelemetry telemetry,
+        ValueOf<KoraHttpServerHandler> httpHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
         this.resources = resources;
         this.httpServerConfig = httpServerConfig;
-        this.httpServerRouter = httpServerRouter;
-        this.telemetry = telemetry;
+        this.httpHandler = httpHandler;
         this.configurer = configurer;
     }
 
@@ -95,14 +84,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         ChannelPipeline p = ch.pipeline();
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        p.addLast(new KoraHttpServerHandler(
-                            config,
-                            httpServerRouter,
-                            telemetry,
-                            activeRequests,
-                            phaser,
-                            () -> shuttingDown
-                        ));
+                        p.addLast(httpHandler.get());
                     }
                 });
 
@@ -131,7 +113,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         log.debug("HTTP Server {} (Netty) stopping...", name);
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
-        this.shuttingDown = true;
 
         var localChannel = this.serverChannel;
         ChannelFuture closeFuture = null;
@@ -140,16 +121,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         }
 
         final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
-        try {
-            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
-            phaser.awaitAdvanceInterruptibly(phaser.arrive(), shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
-        } catch (TimeoutException e) {
-            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, shutdownAwait);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
-        }
-
         if (closeFuture != null) {
             try {
                 closeFuture.await(shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
@@ -157,12 +128,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 Thread.currentThread().interrupt();
             }
         }
-
-        if (activeRequests.get() > 0) {
-            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, activeRequests.get());
-        } else {
-            log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
-        }
+        log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
     }
 
     @Override
