@@ -1,0 +1,20 @@
+dependencies {
+    annotationProcessor project(":config:config-annotation-processor")
+
+    api project(":core:common")
+    api project(":http:http-server-common")
+    api project(":logging:logging-common")
+
+    api libs.netty.transports
+    api libs.netty.handlers
+    api libs.netty.codecs
+    api libs.netty.codec.http
+    api libs.netty.buffer
+    api libs.netty.common
+    api libs.netty.transport.epoll
+    api libs.netty.transport.kqueue
+    api libs.netty.transport.uring
+    api libs.netty.transport.unix
+
+    testImplementation testFixtures(project(":http:http-server-common"))
+}
