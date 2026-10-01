@@ -19,6 +19,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class NettyHttpServerRequest implements HttpServerRequest {
 
+    private static final String DEFAULT_HOST = "localhost";
+    private static final String SCHEME_HTTP = "http";
+    private static final String HEADER_X_FORWARDED_PROTO = "X-Forwarded-Proto";
+
     private final FullHttpRequest nettyRequest;
     private final String path;
     private final HttpHeaders headers;
@@ -85,16 +89,16 @@ public final class NettyHttpServerRequest implements HttpServerRequest {
     @Override
     public String host() {
         String host = nettyRequest.headers().get(HttpHeaderNames.HOST);
-        return host != null ? host : "localhost";
+        return host != null ? host : DEFAULT_HOST;
     }
 
     @Override
     public String scheme() {
-        String forwardedProto = nettyRequest.headers().get("X-Forwarded-Proto");
+        String forwardedProto = nettyRequest.headers().get(HEADER_X_FORWARDED_PROTO);
         if (forwardedProto != null) {
             return forwardedProto.toLowerCase();
         }
-        return "http";
+        return SCHEME_HTTP;
     }
 
     @Override

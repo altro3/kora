@@ -54,7 +54,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         NettyResourceLifecycle.NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
         HttpServerRequestHandler rootHandler,
-        @Nullable Configurer<ServerBootstrap> configurer) {
+        @Nullable Configurer<ServerBootstrap> configurer
+    ) {
         this.name = name;
         this.resources = resources;
         this.httpServerConfig = httpServerConfig;

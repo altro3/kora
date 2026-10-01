@@ -7,11 +7,14 @@ import java.time.Duration;
 @ConfigMapper
 public interface NettyConfig {
 
+    int DEFAULT_IO_THREADS = Math.max(Runtime.getRuntime().availableProcessors(), 2);
+    Duration DEFAULT_KEEP_ALIVE_TIMEOUT = Duration.ofSeconds(60);
+
     default int ioThreads() {
-        return Math.max(Runtime.getRuntime().availableProcessors(), 2);
+        return DEFAULT_IO_THREADS;
     }
 
     default Duration threadKeepAliveTimeout() {
-        return Duration.ofSeconds(60);
+        return DEFAULT_KEEP_ALIVE_TIMEOUT;
     }
 }

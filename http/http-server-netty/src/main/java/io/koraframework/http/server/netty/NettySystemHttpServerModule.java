@@ -22,8 +22,7 @@ public interface NettySystemHttpServerModule extends SystemHttpServerModule {
     }
 
     @DefaultComponent
-    default Wrapped<NettyResourceLifecycle.NettyResources> nettyResources(
-            ValueOf<NettyConfig> configValue) {
+    default Wrapped<NettyResourceLifecycle.NettyResources> nettyResources(ValueOf<NettyConfig> configValue) {
         return new NettyResourceLifecycle(configValue);
     }
 }
