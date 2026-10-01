@@ -7,11 +7,14 @@ import io.koraframework.http.server.common.router.UnroutedHttpRequest;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.QueryStringDecoder;
+import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.*;
-import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
@@ -19,15 +22,13 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     private static final String SCHEME_HTTP = "http";
     private static final String HEADER_X_FORWARDED_PROTO = "X-Forwarded-Proto";
 
-    private static final AtomicReferenceFieldUpdater<NettyUnroutedHttpRequest, HttpBodyInput> BODY_UPDATER =
-        AtomicReferenceFieldUpdater.newUpdater(NettyUnroutedHttpRequest.class, HttpBodyInput.class, "body");
-
     protected final FullHttpRequest nettyRequest;
     private final String method;
     private final String path;
     private final NettyHttpHeaders headers;
     private final long startTime;
     private final Map<String, List<String>> queryParams;
+    @Nullable
     private volatile HttpBodyInput body;
 
     public NettyUnroutedHttpRequest(FullHttpRequest nettyRequest) {
@@ -37,64 +38,67 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
         QueryStringDecoder decoder = new QueryStringDecoder(nettyRequest.uri());
         this.path = decoder.path();
-        this.queryParams = queryParams(decoder);
+        this.queryParams = Collections.unmodifiableMap(decoder.parameters());
         this.headers = new NettyHttpHeaders(nettyRequest.headers());
     }
 
     @Override
-    public final String method() {
+    public String method() {
         return this.method;
     }
 
     @Override
-    public final String path() {
+    public String path() {
         return this.path;
     }
 
     @Override
-    public final String host() {
+    public String host() {
         String host = nettyRequest.headers().get(HttpHeaderNames.HOST);
         return host != null ? host : DEFAULT_HOST;
     }
 
     @Override
-    public final String scheme() {
+    public String scheme() {
         String forwardedProto = nettyRequest.headers().get(HEADER_X_FORWARDED_PROTO);
         return forwardedProto != null ? forwardedProto.toLowerCase(Locale.ROOT) : SCHEME_HTTP;
     }
 
     @Override
-    public final HttpHeaders headers() {
+    public HttpHeaders headers() {
         return this.headers;
     }
 
     @Override
-    public final Map<String, List<String>> queryParams() {
+    public Map<String, List<String>> queryParams() {
         return this.queryParams;
     }
 
     @Override
-    public final HttpBodyInput body() {
-        var body = this.body;
-        if (body != null) {
-            return body;
+    public HttpBodyInput body() {
+        var localBody = this.body;
+        if (localBody != null) {
+            return localBody;
         }
+
         try {
-            body = this.getContent();
-            if (BODY_UPDATER.compareAndSet(this, null, body)) {
-                if (body instanceof NettyRequestHttpBody nettyBody) {
-                    nettyBody.prepare();
-                }
-                return body;
+            var newBody = this.getContent();
+            if (this.body == null) {
+                this.body = newBody;
+                return newBody;
             }
-            return this.body;
+            if (newBody instanceof NettyRequestHttpBody nettyBody) {
+                nettyBody.close();
+            }
+            var winnerBody = this.body;
+            return winnerBody != null ? winnerBody : newBody;
         } catch (IOException e) {
             throw new UncheckedIOException("HTTP request body cannot be opened for " + this.method + " " + this.path, e);
         }
     }
 
     @Override
-    public final long requestStartTimeInNanos() {
+    public long requestStartTimeInNanos() {
         return this.startTime;
     }
 
@@ -102,25 +106,9 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         if (nettyRequest.content().readableBytes() == 0) {
             return HttpBody.empty();
         }
-        return new NettyRequestHttpBody(nettyRequest);
-    }
-
-    private static Map<String, List<String>> queryParams(QueryStringDecoder decoder) {
-        var nettyParams = decoder.parameters();
-        if (nettyParams.isEmpty()) {
-            return Map.of();
-        }
-
-        var queryParams = new LinkedHashMap<String, List<String>>(nettyParams.size());
-        nettyParams.forEach((key, values) -> {
-            if (values.isEmpty()) {
-                queryParams.put(key, Collections.emptyList());
-            } else {
-                queryParams.put(key, Collections.unmodifiableList(values));
-            }
-        });
-
-        return Collections.unmodifiableMap(queryParams);
+        var nettyBody = new NettyRequestHttpBody(nettyRequest);
+        nettyBody.prepare();
+        return nettyBody;
     }
 
     @Override

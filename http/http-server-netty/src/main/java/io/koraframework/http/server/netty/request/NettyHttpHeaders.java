@@ -61,9 +61,9 @@ public final class NettyHttpHeaders extends AbstractHttpHeaders implements HttpH
 
     @Override
     public Set<String> names() {
-        var n = this.names;
-        if (n != null) {
-            return n;
+        var names = this.names;
+        if (names != null) {
+            return names;
         }
 
         var nettyNames = nettyHeaders.names();
@@ -72,40 +72,39 @@ public final class NettyHttpHeaders extends AbstractHttpHeaders implements HttpH
             computedNames.add(headerName.toString().toLowerCase(Locale.ROOT));
         }
 
-        var immutableNames = Collections.unmodifiableSet(computedNames);
-        this.names = immutableNames;
-        return immutableNames;
+        names = Collections.unmodifiableSet(computedNames);
+        this.names = names;
+        return names;
     }
 
     @Override
     public Iterator<Map.Entry<String, List<String>>> iterator() {
-        var e = this.entries;
-        if (e != null) {
-            return e.iterator();
+        var entries = this.entries;
+        if (entries != null) {
+            return entries.iterator();
         }
 
-        var linkedMap = new LinkedHashMap<String, List<String>>(nettyHeaders.size());
-        var nettyIterator = nettyHeaders.iteratorCharSequence();
+        var result = new LinkedHashMap<String, List<String>>(nettyHeaders.size());
+        var headersIter = nettyHeaders.iteratorCharSequence();
 
-        while (nettyIterator.hasNext()) {
-            var entry = nettyIterator.next();
+        while (headersIter.hasNext()) {
+            var entry = headersIter.next();
             var lowerKey = entry.getKey().toString().toLowerCase(Locale.ROOT);
             var value = entry.getValue().toString();
 
-            var list = (ArrayList<String>) linkedMap.get(lowerKey);
+            var list = result.get(lowerKey);
             if (list == null) {
-                list = new ArrayList<>(2);
-                linkedMap.put(lowerKey, list);
+                list = new ArrayList<>(1);
+                result.put(lowerKey, list);
             }
             list.add(value);
         }
 
-        var computedEntries = new ArrayList<Map.Entry<String, List<String>>>(linkedMap.size());
-        linkedMap.forEach((k, v) -> computedEntries.add(Map.entry(k, Collections.unmodifiableList(v))));
-
-        var immutableEntries = Collections.unmodifiableList(computedEntries);
-        this.entries = immutableEntries;
-        return immutableEntries.iterator();
+        var computedEntries = new ArrayList<Map.Entry<String, List<String>>>(result.size());
+        result.forEach((k, v) -> computedEntries.add(Map.entry(k, Collections.unmodifiableList(v))));
+        entries = Collections.unmodifiableList(computedEntries);
+        this.entries = entries;
+        return entries.iterator();
     }
 
     @Override
