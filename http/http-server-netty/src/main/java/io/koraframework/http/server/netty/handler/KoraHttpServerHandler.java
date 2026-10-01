@@ -152,13 +152,14 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
     }
 
     private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, HttpServerObservation observation, Context context, HttpServerResponse response, boolean isHead) {
-        response = observation.observeResponse(response);
-        var body = response.body();
-        HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
+        var trackedResponse = observation.observeResponse(response);
+
+        var body = trackedResponse.body();
+        HttpResponseStatus status = HttpResponseStatus.valueOf(trackedResponse.code());
 
         if (body == null) {
             var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
-            writeHeaders(nettyResp.headers(), response.headers(), null);
+            writeHeaders(nettyResp.headers(), trackedResponse.headers(), null);
             nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
             finalizeAndWrite(ctx, nettyResp, version, keepAlive, context, observation, null);
             return;
@@ -169,7 +170,7 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
 
         if (isHead) {
             var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
-            writeHeaders(nettyResp.headers(), response.headers(), contentType);
+            writeHeaders(nettyResp.headers(), trackedResponse.headers(), contentType);
             if (declaredLength >= 0) {
                 nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
             }
@@ -177,19 +178,20 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
             return;
         }
 
+        AdaptiveNettyBodyOutputStream output = null;
         try {
             var content = body.getFullContentIfAvailable();
             if (content != null) {
                 ByteBuf nettyBody = Unpooled.wrappedBuffer(content);
                 var nettyResp = new DefaultFullHttpResponse(version, status, nettyBody);
-                writeHeaders(nettyResp.headers(), response.headers(), contentType);
+                writeHeaders(nettyResp.headers(), trackedResponse.headers(), contentType);
                 nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, nettyBody.readableBytes());
                 finalizeAndWrite(ctx, nettyResp, version, keepAlive, context, observation, body);
                 return;
             }
 
             var nettyResp = new DefaultHttpResponse(version, status);
-            writeHeaders(nettyResp.headers(), response.headers(), contentType);
+            writeHeaders(nettyResp.headers(), trackedResponse.headers(), contentType);
             if (declaredLength >= 0) {
                 nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
             } else {
@@ -200,16 +202,23 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
                 PROPAGATOR.inject(context, nettyResp.headers(), NettyHttpHeaderMapExchange.INSTANCE);
             }
 
-            var output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, observation, body);
+            output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, observation, body);
             body.write(output);
             output.complete();
 
         } catch (Throwable e) {
-            observation.observeError(e);
             closeBody(observation, body);
-            sendErrorResponse(ctx, version, keepAlive, observation, context, e);
+            observation.observeError(e);
+            if ((output != null && output.isStreamMode()) || e instanceof IOException || e.getCause() instanceof IOException) {
+                observation.observeResultCode(HttpResultCode.CONNECTION_ERROR);
+                observation.end();
+                ctx.close();
+            } else {
+                sendErrorResponse(ctx, version, keepAlive, observation, context, e);
+            }
         }
     }
+
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, HttpMessage msg, HttpVersion version, boolean keepAlive,
                                   Context context, HttpServerObservation observation, @Nullable HttpBodyOutput body) {
@@ -248,6 +257,9 @@ public final class KoraHttpServerHandler implements NettyHttpHandler {
         if (this.contextPropagationEnabled) {
             PROPAGATOR.inject(context, errorResp.headers(), NettyHttpHeaderMapExchange.INSTANCE);
         }
+
+        var errorKoraResponse = HttpServerResponse.of(500, io.koraframework.http.common.body.HttpBodyOutput.of(HttpHeaderValues.TEXT_PLAIN.toString(), os -> os.write(bytes)));
+        observation.observeResponse(errorKoraResponse);
 
         ctx.writeAndFlush(errorResp).addListener(future -> {
             if (!future.isSuccess()) {

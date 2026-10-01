@@ -76,16 +76,12 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
     private void switchToStreamMode() throws IOException {
         isStreamMode = true;
-
-        // Если длина ответа не была жестко прописана — выставляем CHUNKED
         if (!responseHeader.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
             responseHeader.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
             responseHeader.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
         }
-
         ensureWritability();
 
-        // Отправляем стартовые заголовки ответа и первый накопленный большой кусок
         ctx.write(responseHeader);
         if (buffer.isReadable()) {
             ctx.writeAndFlush(new DefaultHttpContent(buffer));
@@ -150,6 +146,18 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             observation.end();
             ctx.close();
         }
+    }
+
+    public boolean isStreamMode() {
+        return isStreamMode;
+    }
+
+    @Override
+    public void flush() throws IOException {
+        if (!isStreamMode) {
+            switchToStreamMode();
+        }
+        ctx.flush();
     }
 
     @Override
