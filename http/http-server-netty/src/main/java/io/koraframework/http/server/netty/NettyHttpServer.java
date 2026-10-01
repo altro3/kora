@@ -34,9 +34,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
 
-    private static final Logger logger = LoggerFactory.getLogger(NettyHttpServer.class);
+    private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
 
-    // Phaser инициализируется с 1 участником (самим сервером для контроля завершения)
     private final Phaser phaser = new Phaser(1);
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final AtomicInteger activeRequests = new AtomicInteger(0);
@@ -66,7 +65,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     @Override
     public void init() {
         try {
-            logger.debug("HTTP Server {} (Netty) starting...", name);
+            log.debug("HTTP Server {} (Netty) starting...", name);
             final long started = TimeUtils.started();
 
             var config = this.httpServerConfig.get();
@@ -100,7 +99,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             this.state.set(HttpServerState.RUN);
 
             var data = StructuredArgument.marker("port", this.port());
-            logger.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
+            log.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
         } catch (Throwable e) {
             if (e instanceof BindException || e.getCause() instanceof BindException) {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': port is already in use; stop the other process or configure a different port".formatted(name, httpServerConfig.get().port()), e);
@@ -112,30 +111,35 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     @Override
     public void release() {
-        logger.debug("Public HTTP Server (Netty) stopping...");
+        log.debug("Public HTTP Server (Netty) stopping...");
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
         this.shuttingDown = true;
 
+        ChannelFuture closeFuture = null;
         if (serverChannel != null) {
-            serverChannel.close().syncUninterruptibly();
+            closeFuture = serverChannel.close();
         }
 
         final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
         try {
-            logger.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
+            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
             phaser.awaitAdvanceInterruptibly(phaser.arrive(), shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
-            logger.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, shutdownAwait);
+            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, shutdownAwait);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            logger.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
+            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
+        }
+
+        if (closeFuture != null) {
+            closeFuture.awaitUninterruptibly();
         }
 
         if (activeRequests.get() > 0) {
-            logger.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, activeRequests.get());
+            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, activeRequests.get());
         } else {
-            logger.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
+            log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
         }
     }
 
