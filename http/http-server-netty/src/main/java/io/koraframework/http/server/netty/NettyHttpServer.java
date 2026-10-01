@@ -47,7 +47,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     @Nullable
     private final Configurer<ServerBootstrap> configurer;
 
-    private volatile Channel serverChannel;
+    private volatile @Nullable Channel serverChannel;
     private volatile boolean shuttingDown = false;
 
     public NettyHttpServer(
@@ -119,9 +119,10 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         final long started = TimeUtils.started();
         this.shuttingDown = true;
 
+        var localChannel = this.serverChannel;
         ChannelFuture closeFuture = null;
-        if (serverChannel != null) {
-            closeFuture = serverChannel.close();
+        if (localChannel != null) {
+            closeFuture = localChannel.close();
         }
 
         final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
@@ -136,7 +137,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         }
 
         if (closeFuture != null) {
-            closeFuture.awaitUninterruptibly();
+            try {
+                closeFuture.await(shutdownAwait.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         if (activeRequests.get() > 0) {
@@ -148,13 +153,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     @Override
     public int port() {
-        if (this.serverChannel == null) {
+        var localChannel = this.serverChannel;
+        if (localChannel == null) {
             return -1;
         }
-        var address = (InetSocketAddress) this.serverChannel.localAddress();
-        return address.getPort();
+        var address = (InetSocketAddress) localChannel.localAddress();
+        return address == null ? -1 : address.getPort();
     }
 
+    @Nullable
     @Override
     public ReadinessProbeFailure probe() {
         return switch (this.state.get()) {
