@@ -3,39 +3,57 @@ package io.koraframework.http.server.netty;
 import io.koraframework.http.server.common.request.HttpServerRequestHandler;
 import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.netty.request.NettyHttpServerRequest;
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufOutputStream;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpUtil;
-import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.*;
+import io.netty.util.ReferenceCountUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.util.concurrent.Phaser;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(NettyHttpServerHandler.class);
 
     private final HttpServerRequestHandler rootHandler;
+    private final AtomicInteger activeRequests;
+    private final Phaser phaser;
+    private final BooleanSupplier shuttingDown;
 
-    public NettyHttpServerHandler(HttpServerRequestHandler rootHandler) {
+    public NettyHttpServerHandler(
+        HttpServerRequestHandler rootHandler,
+        AtomicInteger activeRequests,
+        Phaser phaser,
+        BooleanSupplier shuttingDown) {
         this.rootHandler = rootHandler;
+        this.activeRequests = activeRequests;
+        this.phaser = phaser;
+        this.shuttingDown = shuttingDown;
     }
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof FullHttpRequest nettyReq) {
-            nettyReq.retain();
+            if (shuttingDown.getAsBoolean()) {
+                sendServiceUnavailable(ctx, nettyReq);
+                return;
+            }
+
+            activeRequests.incrementAndGet();
+            phaser.register();
+
             var version = nettyReq.protocolVersion();
             var keepAlive = HttpUtil.isKeepAlive(nettyReq);
+
             var koraReq = new NettyHttpServerRequest(nettyReq);
+            ReferenceCountUtil.release(nettyReq);
 
             Thread.startVirtualThread(() -> {
                 try {
@@ -50,6 +68,8 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
                         log.warn("Failed to close request body", e);
                     } finally {
                         nettyReq.release();
+                        activeRequests.decrementAndGet();
+                        phaser.arriveAndDeregister();
                     }
                 }
             });
@@ -59,7 +79,7 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
     }
 
     private void sendSuccessResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, HttpServerResponse koraResp) {
-        var buffer = ctx.alloc().buffer();
+        ByteBuf buffer = ctx.alloc().buffer();
 
         try (var bodyOutput = koraResp.body()) {
             if (bodyOutput != null) {
@@ -82,24 +102,11 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
         });
         nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
 
-        if (keepAlive) {
-            if (version.isKeepAliveDefault()) {
-                nettyResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-            }
-        } else {
-            nettyResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-        }
+        setupConnectionHeader(nettyResp, version, keepAlive);
 
-        try {
-            ctx.channel().eventLoop().execute(() -> {
-                var future = ctx.writeAndFlush(nettyResp);
-                if (!keepAlive) {
-                    future.addListener(ChannelFutureListener.CLOSE);
-                }
-            });
-        } catch (Throwable t) {
-            nettyResp.release();
-            log.error("Failed to enqueue response write task", t);
+        var future = ctx.writeAndFlush(nettyResp);
+        if (!keepAlive) {
+            future.addListener(ChannelFutureListener.CLOSE);
         }
     }
 
@@ -108,22 +115,33 @@ public final class NettyHttpServerHandler extends ChannelInboundHandlerAdapter {
         var errorResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR);
         errorResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
 
-        if (keepAlive) {
-            errorResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-        } else {
-            errorResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-        }
+        setupConnectionHeader(errorResp, version, keepAlive);
 
-        try {
-            ctx.channel().eventLoop().execute(() -> {
-                var future = ctx.writeAndFlush(errorResp);
-                if (!keepAlive) {
-                    future.addListener(ChannelFutureListener.CLOSE);
-                }
-            });
-        } catch (Throwable e) {
-            errorResp.release();
-            log.error("Failed to enqueue error response write task", e);
+        var future = ctx.writeAndFlush(errorResp);
+        if (!keepAlive) {
+            future.addListener(ChannelFutureListener.CLOSE);
+        }
+    }
+
+    private void sendServiceUnavailable(ChannelHandlerContext ctx, FullHttpRequest nettyReq) {
+        var version = nettyReq.protocolVersion();
+        var errorResp = new DefaultFullHttpResponse(version, HttpResponseStatus.SERVICE_UNAVAILABLE);
+        errorResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
+        errorResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+
+        ctx.writeAndFlush(errorResp).addListener(ChannelFutureListener.CLOSE);
+        ReferenceCountUtil.release(nettyReq);
+    }
+
+    private void setupConnectionHeader(HttpResponse response, HttpVersion version, boolean keepAlive) {
+        if (keepAlive) {
+            if (!version.isKeepAliveDefault()) {
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            }
+        } else {
+            if (version.isKeepAliveDefault()) {
+                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            }
         }
     }
 
