@@ -1,5 +1,7 @@
 package io.koraframework.http.server.netty;
 
+import io.koraframework.application.graph.ValueOf;
+import io.koraframework.application.graph.Wrapped;
 import io.koraframework.common.annotation.DefaultComponent;
 import io.koraframework.common.annotation.FactoryModule;
 import io.koraframework.config.common.Config;
@@ -20,8 +22,8 @@ public interface NettySystemHttpServerModule extends SystemHttpServerModule {
     }
 
     @DefaultComponent
-    default io.koraframework.application.graph.Wrapped<NettyResourceLifecycle.NettyResources> nettyResources(
-            io.koraframework.application.graph.ValueOf<NettyConfig> configValue) {
+    default Wrapped<NettyResourceLifecycle.NettyResources> nettyResources(
+            ValueOf<NettyConfig> configValue) {
         return new NettyResourceLifecycle(configValue);
     }
 }

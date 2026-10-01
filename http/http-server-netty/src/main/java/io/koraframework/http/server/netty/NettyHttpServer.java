@@ -12,6 +12,7 @@ import io.koraframework.http.server.common.request.HttpServerRequestHandler;
 import io.koraframework.logging.common.arg.StructuredArgument;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
@@ -35,6 +36,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     private static final Logger logger = LoggerFactory.getLogger(NettyHttpServer.class);
 
+    // Phaser инициализируется с 1 участником (самим сервером для контроля завершения)
     private final Phaser phaser = new Phaser(1);
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final AtomicInteger activeRequests = new AtomicInteger(0);
@@ -80,22 +82,27 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         ChannelPipeline p = ch.pipeline();
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        p.addLast(new NettyHttpServerHandler(rootHandler, activeRequests, () -> shuttingDown));
+                        p.addLast(new NettyHttpServerHandler(rootHandler, activeRequests, phaser, () -> shuttingDown));
                     }
                 });
 
             if (this.configurer != null) {
-                b = this.configurer.configure(b);
+                b = this.configurer.configure(b.clone());
             }
 
             int port = config.port();
-            this.serverChannel = b.bind(port).sync().channel();
+            ChannelFuture bindFuture = b.bind(port).awaitUninterruptibly();
+            if (!bindFuture.isSuccess()) {
+                throw bindFuture.cause();
+            }
+
+            this.serverChannel = bindFuture.channel();
             this.state.set(HttpServerState.RUN);
 
             var data = StructuredArgument.marker("port", this.port());
             logger.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
-        } catch (Exception e) {
-            if (e.getCause() instanceof BindException) {
+        } catch (Throwable e) {
+            if (e instanceof BindException || e.getCause() instanceof BindException) {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': port is already in use; stop the other process or configure a different port".formatted(name, httpServerConfig.get().port()), e);
             } else {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': %s; check server config, handler initialization, and network binding".formatted(name, httpServerConfig.get().port(), e.getMessage()), e);
@@ -126,10 +133,10 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         }
 
         if (activeRequests.get() > 0) {
-            logger.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, shutdownAwait);
+            logger.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, activeRequests.get());
+        } else {
+            logger.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
         }
-
-        logger.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
     }
 
     @Override

@@ -18,10 +18,14 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.uring.IoUring;
 import io.netty.channel.uring.IoUringIoHandler;
 import io.netty.channel.uring.IoUringServerSocketChannel;
+import io.netty.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.concurrent.TimeUnit;
+
 public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyResourceLifecycle.NettyResources> {
+
     private static final Logger log = LoggerFactory.getLogger(NettyResourceLifecycle.class);
 
     private final ValueOf<NettyConfig> configValue;
@@ -64,8 +68,13 @@ public final class NettyResourceLifecycle implements Lifecycle, Wrapped<NettyRes
     @Override
     public void release() {
         if (resources != null) {
-            resources.bossGroup().shutdownGracefully();
-            resources.workerGroup().shutdownGracefully();
+            log.debug("Shutting down Netty EventLoopGroups...");
+            Future<?> bossFuture = resources.bossGroup().shutdownGracefully(2, 15, TimeUnit.SECONDS);
+            Future<?> workerFuture = resources.workerGroup().shutdownGracefully(2, 15, TimeUnit.SECONDS);
+
+            bossFuture.awaitUninterruptibly();
+            workerFuture.awaitUninterruptibly();
+            log.info("Netty EventLoopGroups stopped smoothly.");
         }
     }
 
