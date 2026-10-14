@@ -11,11 +11,6 @@ dependencies {
     api libs.netty.codec.http
     api libs.netty.buffer
     api libs.netty.common
-    api libs.netty.transports
-    api libs.netty.transport.epoll
-    api libs.netty.transport.kqueue
-    api libs.netty.transport.uring
-    api libs.netty.transport.unix
 
     testImplementation testFixtures(project(":http:http-server-common"))
 }

@@ -1,40 +1,27 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.common.body.HttpBodyOutput;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.ResponseContainer;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.DefaultHttpResponse;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpMessage;
-import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpUtil;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.util.AsciiString;
-import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import io.koraframework.application.graph.*;
+import io.koraframework.http.common.body.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
+import io.netty.buffer.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import io.netty.util.*;
+import org.jspecify.annotations.*;
+import org.slf4j.*;
 
-import java.io.IOException;
+import java.io.*;
 
 @ChannelHandler.Sharable
 public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(NettyResponseWriteHandler.class);
-
     private static final AsciiString HEADER_SERVER_VALUE = AsciiString.cached("Kora");
 
-    private final HttpServerConfig httpServerConfig;
+    private final ValueOf<HttpServerConfig> httpServerConfig;
 
-    public NettyResponseWriteHandler(HttpServerConfig httpServerConfig) {
+    public NettyResponseWriteHandler(ValueOf<HttpServerConfig> httpServerConfig) {
         this.httpServerConfig = httpServerConfig;
     }
 
@@ -73,21 +60,21 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 }
                 setupConnectionHeader(nettyResp, version, keepAlive);
 
-                ctx.writeAndFlush(nettyResp);
-
                 Thread.startVirtualThread(() -> {
-                    AdaptiveNettyBodyOutputStream output;
+                    AdaptiveNettyBodyOutputStream output = null;
                     try {
-                        output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, null, body);
+                        output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body);
                         body.write(output);
                         output.complete();
                     } catch (Throwable e) {
-                        closeBody(body);
-                        if (e instanceof IOException || e.getCause() instanceof IOException) {
-                            ctx.close();
-                        } else {
-                            ctx.fireExceptionCaught(e);
+                        if (output != null) {
+                            output.close();
                         }
+                        if (body != null) {
+                            try { body.close(); } catch (IOException ignored) {}
+                        }
+                        ctx.pipeline().fireExceptionCaught(e);
+                        ctx.close();
                     }
                 });
             });
@@ -119,7 +106,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             return;
         }
 
-        AdaptiveNettyBodyOutputStream output = null;
+        AdaptiveNettyBodyOutputStream output;
         try {
             var content = body.getFullContentIfAvailable();
             if (content != null) {
@@ -140,17 +127,13 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             }
             setupConnectionHeader(nettyResp, version, keepAlive);
 
-            output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, null, body);
+            output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body);
             body.write(output);
             output.complete();
 
         } catch (Throwable e) {
             closeBody(body);
-            if ((output != null && output.isStreamMode()) || e instanceof IOException || e.getCause() instanceof IOException) {
-                ctx.close();
-            } else {
-                ctx.fireExceptionCaught(e);
-            }
+            ctx.close();
         }
     }
 
@@ -159,18 +142,14 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
 
         ctx.writeAndFlush(msg).addListener(future -> {
             closeBody(body);
-            if (future.isSuccess()) {
-                if (!keepAlive) {
-                    ctx.close();
-                }
-            } else {
+            if (!future.isSuccess() || !keepAlive) {
                 ctx.close();
             }
         });
     }
 
     private void writeHeaders(HttpHeaders nettyHeaders, io.koraframework.http.common.header.HttpHeaders koraHeaders, @Nullable String contentType) {
-        if (this.httpServerConfig.headerServerNameEnabled()) {
+        if (this.httpServerConfig.get().headerServerNameEnabled()) {
             nettyHeaders.set(HttpHeaderNames.SERVER, HEADER_SERVER_VALUE);
         }
         for (var header : koraHeaders) {
@@ -195,7 +174,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
     }
 
     private void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
-        boolean keepAliveAllowed = keepAlive && this.httpServerConfig.headerKeepAliveEnabled();
+        boolean keepAliveAllowed = keepAlive && this.httpServerConfig.get().headerKeepAliveEnabled();
         if (keepAliveAllowed) {
             if (!version.isKeepAliveDefault()) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);

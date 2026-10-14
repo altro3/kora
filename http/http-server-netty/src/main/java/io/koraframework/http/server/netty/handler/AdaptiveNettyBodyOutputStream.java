@@ -1,24 +1,16 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.common.HttpResultCode;
-import io.koraframework.http.common.body.HttpBodyOutput;
-import io.koraframework.http.server.common.telemetry.HttpServerObservation;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.CompositeByteBuf;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.DefaultHttpContent;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.LastHttpContent;
-import io.netty.util.ReferenceCountUtil;
+import io.koraframework.http.common.body.*;
+import io.koraframework.http.server.netty.*;
+import io.netty.buffer.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.util.Objects;
-import java.util.concurrent.locks.LockSupport;
+import java.io.*;
+import java.util.*;
+import java.util.concurrent.locks.*;
+
+import static io.netty.util.ReferenceCountUtil.*;
 
 final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
@@ -26,7 +18,6 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
     private static final int CHUNK_SIZE = 16 * 1024;
 
     private final ChannelHandlerContext ctx;
-    private final HttpServerObservation observation;
     private final HttpBodyOutput body;
     private final boolean keepAlive;
     private final HttpResponse responseHeader;
@@ -34,11 +25,10 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
     private CompositeByteBuf buffer;
     private boolean isStreamMode = false;
 
-    public AdaptiveNettyBodyOutputStream(ChannelHandlerContext ctx, HttpResponse responseHeader, boolean keepAlive, HttpServerObservation observation, HttpBodyOutput body) {
+    public AdaptiveNettyBodyOutputStream(ChannelHandlerContext ctx, HttpResponse responseHeader, boolean keepAlive, HttpBodyOutput body) {
         this.ctx = ctx;
         this.responseHeader = responseHeader;
         this.keepAlive = keepAlive;
-        this.observation = observation;
         this.body = body;
         this.buffer = ctx.alloc().compositeBuffer();
     }
@@ -124,26 +114,36 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             );
             fullResponse.headers().set(responseHeader.headers());
 
-            ctx.writeAndFlush(fullResponse).addListener(future -> finalizeConnection(future.isSuccess(), null));
+            ctx.writeAndFlush(fullResponse).addListener(future -> finalizeConnection(future.isSuccess()));
         } else {
             ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
-                .addListener(future -> finalizeConnection(future.isSuccess(), future.cause()));
+                .addListener(future -> finalizeConnection(future.isSuccess()));
         }
     }
 
-    private void finalizeConnection(boolean success, Throwable cause) {
-        KoraHttpServerHandler.closeBody(observation, body);
+    private void finalizeConnection(boolean success) {
+        if (buffer != null) {
+            safeRelease(buffer);
+            buffer = null;
+        }
+        if (body != null) {
+            try {
+                body.close();
+            } catch (IOException e) {
+                //
+            }
+        }
+
+        var nettyContext = NettyContext.get();
+        if (nettyContext != null) {
+            safeRelease(nettyContext.request());
+        }
+
         if (success) {
-            observation.end();
             if (!keepAlive) {
                 ctx.close();
             }
         } else {
-            observation.observeResultCode(HttpResultCode.CONNECTION_ERROR);
-            if (cause != null) {
-                observation.observeError(cause);
-            }
-            observation.end();
             ctx.close();
         }
     }
@@ -163,7 +163,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
     @Override
     public void close() {
         if (buffer != null) {
-            ReferenceCountUtil.safeRelease(buffer);
+            safeRelease(buffer);
             buffer = null;
         }
     }

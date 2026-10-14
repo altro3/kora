@@ -1,24 +1,21 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.server.common.request.HttpServerRequest;
-import io.koraframework.http.server.common.response.HttpServerResponse;
-import io.koraframework.http.server.common.router.HttpServerInvocation;
-import io.koraframework.http.server.common.router.HttpServerRouter;
-import io.koraframework.http.server.common.telemetry.HttpServerObservation;
-import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
-import io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest;
-import io.netty.channel.ChannelDuplexHandler;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelPromise;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
-import io.opentelemetry.context.Context;
+import io.koraframework.http.server.common.request.*;
+import io.koraframework.http.server.common.response.*;
+import io.koraframework.http.server.common.router.*;
+import io.koraframework.http.server.common.telemetry.*;
+import io.koraframework.http.server.netty.request.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import io.netty.util.*;
+import io.opentelemetry.api.trace.propagation.*;
+import io.opentelemetry.context.*;
 
 @ChannelHandler.Sharable
 public final class NettyTelemetryHandler extends ChannelDuplexHandler {
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
+    private static final AttributeKey<HttpServerObservation> OBSERVATION_KEY = AttributeKey.valueOf("kora.http.observation");
 
     private final HttpServerTelemetry telemetry;
     private final HttpServerRouter httpServerRouter;
@@ -40,10 +37,12 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
         var invocation = this.httpServerRouter.route(koraReq);
 
         var observation = this.telemetry.observe(invocation.routedRequest());
+        ctx.channel().attr(OBSERVATION_KEY).set(observation);
+
         var activeCtx = rootCtx.with(observation.span());
         var httpServerRequest = observation.observeRequest(invocation.routedRequest());
 
-        var container = new RequestContainer(nettyReq, httpServerRequest, invocation, activeCtx, observation);
+        var container = new RequestContainer(nettyReq, httpServerRequest, invocation, activeCtx, null);
         ctx.fireChannelRead(container);
     }
 
@@ -54,7 +53,7 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
             return;
         }
 
-        var observation = responseContainer.observation();
+        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
         if (observation != null) {
             var trackedResponse = observation.observeResponse(responseContainer.koraResponse());
             var updatedContainer = new ResponseContainer(
@@ -64,15 +63,18 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
             );
 
             promise.addListener(future -> {
-                try {
-                    if (future.isSuccess()) {
-                        observation.end();
-                    } else {
-                        observation.observeError(future.cause());
-                        observation.end();
+                var obs = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+                if (obs != null) {
+                    try {
+                        if (future.isSuccess()) {
+                            obs.end();
+                        } else {
+                            obs.observeError(future.cause());
+                            obs.end();
+                        }
+                    } catch (Throwable t) {
+                        obs.end();
                     }
-                } catch (Throwable t) {
-                    observation.end();
                 }
             });
 
@@ -82,8 +84,17 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
         }
     }
 
+
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+        if (observation != null) {
+            try (var scope = observation.span().makeCurrent()) {
+                observation.observeError(cause);
+            } finally {
+                observation.end();
+            }
+        }
         ctx.fireExceptionCaught(cause);
     }
 

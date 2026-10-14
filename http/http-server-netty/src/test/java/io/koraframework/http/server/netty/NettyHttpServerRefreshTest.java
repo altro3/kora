@@ -1,34 +1,32 @@
 package io.koraframework.http.server.netty;
 
-import io.koraframework.application.graph.ValueOf;
-import io.koraframework.http.server.common.$HttpServerConfig_ConfigValueMapper;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.telemetry.HttpServerTelemetryConfig;
-import io.koraframework.http.server.netty.handler.NettyHttpHandler;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpVersion;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Test;
+import io.koraframework.application.graph.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.request.*;
+import io.koraframework.http.server.common.response.*;
+import io.koraframework.http.server.common.router.*;
+import io.koraframework.http.server.common.telemetry.*;
+import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
+import io.koraframework.http.server.netty.handler.*;
+import io.netty.channel.*;
+import io.netty.channel.nio.*;
+import io.netty.channel.socket.nio.*;
+import org.junit.jupiter.api.*;
 
-import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URI;
-import java.util.concurrent.atomic.AtomicReference;
+import java.io.*;
+import java.net.*;
+import java.util.*;
+import java.util.concurrent.atomic.*;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.*;
 
 class NettyHttpServerRefreshTest {
 
-    private static NettyResourceLifecycle.NettyResources resources;
+    private static NettyResources resources;
 
     @BeforeAll
     static void setup() {
-        resources = new NettyResourceLifecycle.NettyResources(
+        resources = new NettyResources(
             new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
             new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory()),
             NioServerSocketChannel.class
@@ -45,17 +43,31 @@ class NettyHttpServerRefreshTest {
 
     @Test
     void servesRequestsWithHandlerReplacedByGraphRefresh() throws Exception {
-        var handler = new AtomicReference<NettyHttpHandler>((ctx, _) ->
-            ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.valueOf(418))));
-        var handlerValue = (ValueOf<NettyHttpHandler>) handler::get;
-        var server = new NettyHttpServer("test", resources, config(), handlerValue, null);
+        var config = config();
+        var currentRouter = new AtomicReference<HttpServerRouter>();
+
+        var firstHandler = HttpServerRequestHandlerImpl.get("/", _ -> HttpServerResponse.of(418));
+        currentRouter.set(new HttpServerRouter(List.of(firstHandler), List.of(), config.get()));
+
+        var routerDelegate = new TestingRouterDelegate(currentRouter, config.get());
+
+        var server = new NettyHttpServer(
+            "test",
+            resources,
+            config,
+            routerDelegate,
+            () -> new KoraVirtualThreadDispatcher(config, false),
+            () -> new NettyResponseWriteHandler(config),
+            null,
+            null
+        );
 
         server.init();
         try {
             assertThat(status(server.port())).isEqualTo(418);
 
-            handler.set((ctx, _) ->
-                ctx.writeAndFlush(new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.valueOf(204))));
+            var secondHandler = HttpServerRequestHandlerImpl.get("/", _ -> HttpServerResponse.of(204));
+            currentRouter.set(new HttpServerRouter(List.of(secondHandler), List.of(), config.get()));
 
             assertThat(status(server.port())).isEqualTo(204);
         } finally {
@@ -85,6 +97,20 @@ class NettyHttpServerRefreshTest {
             return connection.getResponseCode();
         } finally {
             connection.disconnect();
+        }
+    }
+
+    private static class TestingRouterDelegate extends HttpServerRouter {
+        private final AtomicReference<HttpServerRouter> delegate;
+
+        public TestingRouterDelegate(AtomicReference<HttpServerRouter> delegate, HttpServerConfig config) {
+            super(List.of(), List.of(), config);
+            this.delegate = delegate;
+        }
+
+        @Override
+        public HttpServerInvocation route(UnroutedHttpRequest unroutedHttpRequest) {
+            return delegate.get().route(unroutedHttpRequest);
         }
     }
 }

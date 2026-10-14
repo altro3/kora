@@ -70,7 +70,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             final long started = TimeUtils.started();
 
             if (this.manageResources) {
-                throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported without external NettyResources configuration");
+                throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported. Use external NettyResources from netty-common.");
             }
 
             var config = this.httpServerConfig.get();
@@ -182,14 +182,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        }
-        if (this.manageResources && this.resources != null) {
-            long timeoutMs = this.httpServerConfig.get().shutdownWait().toMillis();
-            long quietPeriodMs = Math.min(2000, timeoutMs);
-            var bossFuture = this.resources.bossGroup().shutdownGracefully(quietPeriodMs, timeoutMs, TimeUnit.MILLISECONDS);
-            var workerFuture = this.resources.workerGroup().shutdownGracefully(quietPeriodMs, timeoutMs, TimeUnit.MILLISECONDS);
-            bossFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
-            workerFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
         }
         if (dispatcher.getActiveRequests().get() > 0) {
             log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, dispatcher.getActiveRequests().get());

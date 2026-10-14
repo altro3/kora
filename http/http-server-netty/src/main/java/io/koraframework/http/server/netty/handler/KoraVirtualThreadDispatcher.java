@@ -1,5 +1,6 @@
 package io.koraframework.http.server.netty.handler;
 
+import io.koraframework.application.graph.*;
 import io.koraframework.common.telemetry.OpentelemetryContext;
 import io.koraframework.http.server.common.HttpServerConfig;
 import io.koraframework.http.server.common.response.HttpServerResponse;
@@ -32,13 +33,13 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
 
-    private final HttpServerConfig httpServerConfig;
+    private final ValueOf<HttpServerConfig> httpServerConfig;
     private final boolean contextPropagationEnabled;
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final Phaser phaser = new Phaser(1);
     private volatile boolean shuttingDown = false;
 
-    public KoraVirtualThreadDispatcher(HttpServerConfig httpServerConfig, boolean contextPropagationEnabled) {
+    public KoraVirtualThreadDispatcher(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled) {
         this.httpServerConfig = httpServerConfig;
         this.contextPropagationEnabled = contextPropagationEnabled;
     }
@@ -120,7 +121,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     }
 
     private void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
-        boolean keepAliveAllowed = keepAlive && this.httpServerConfig.headerKeepAliveEnabled();
+        boolean keepAliveAllowed = keepAlive && this.httpServerConfig.get().headerKeepAliveEnabled();
         if (keepAliveAllowed) {
             if (!version.isKeepAliveDefault()) {
                 response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);

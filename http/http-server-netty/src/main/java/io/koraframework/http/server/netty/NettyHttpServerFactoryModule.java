@@ -46,15 +46,15 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @DefaultComponent
     @Tag(Tag.Factory.class)
     public KoraVirtualThreadDispatcher virtualThreadDispatcher(
-        @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig
+        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig
     ) {
-        return new KoraVirtualThreadDispatcher(httpServerConfig, httpServerConfig.telemetry().logging().enabled());
+        return new KoraVirtualThreadDispatcher(httpServerConfig, httpServerConfig.get().telemetry().logging().enabled());
     }
 
     @DefaultComponent
     @Tag(Tag.Factory.class)
     public NettyResponseWriteHandler responseWriteHandler(
-        @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig
+        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig
     ) {
         return new NettyResponseWriteHandler(httpServerConfig);
     }

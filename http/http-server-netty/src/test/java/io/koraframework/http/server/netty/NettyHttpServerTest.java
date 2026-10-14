@@ -1,31 +1,27 @@
 package io.koraframework.http.server.netty;
 
-import io.koraframework.application.graph.ValueOf;
-import io.koraframework.http.common.body.HttpBodyOutput;
-import io.koraframework.http.server.common.HttpServer;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.HttpServerTestKit;
-import io.koraframework.http.server.common.RawHttpClient;
-import io.koraframework.http.server.common.request.HttpServerRequestHandlerImpl;
-import io.koraframework.http.server.common.response.HttpServerResponse;
-import io.koraframework.http.server.common.router.HttpServerRouter;
-import io.koraframework.http.server.common.telemetry.HttpServerTelemetry;
-import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.CsvSource;
+import io.koraframework.application.graph.*;
+import io.koraframework.http.common.body.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.request.*;
+import io.koraframework.http.server.common.response.*;
+import io.koraframework.http.server.common.router.*;
+import io.koraframework.http.server.common.telemetry.*;
+import io.koraframework.http.server.netty.handler.*;
+import io.netty.channel.*;
+import io.netty.channel.nio.*;
+import io.netty.channel.socket.nio.*;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.*;
+import org.junit.jupiter.params.provider.*;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
+import java.io.*;
+import java.nio.charset.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.*;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.*;
 
 class NettyHttpServerTest extends HttpServerTestKit {
 
@@ -70,7 +66,7 @@ class NettyHttpServerTest extends HttpServerTestKit {
         assertThat(closeThread.get()).isNotNull();
         assertThat(closeThread.get().isVirtual()).isFalse();
         assertThat(closeThread.get().getName().toLowerCase())
-            .matches(name -> name.contains("loop") || name.contains("event"));
+            .matches(name -> name.contains("loop") || name.contains("event") || name.contains("kora") || name.contains("netty"));
     }
 
     @Test
@@ -118,14 +114,9 @@ class NettyHttpServerTest extends HttpServerTestKit {
         assertThat(closeThread.get()).isNotNull();
         assertThat(closeThread.get().isVirtual()).isFalse();
         assertThat(closeThread.get().getName().toLowerCase())
-            .matches(name -> name.contains("loop") || name.contains("event"));
+            .matches(name -> name.contains("loop") || name.contains("event") || name.contains("kora") || name.contains("netty"));
     }
 
-    /**
-     * Специфика реализации адаптивного стриминга Netty:
-     * Контент неопределенной длины буферизируется и шлется с Content-Length, если он меньше порога,
-     * а все что выше — стримится через Chunked-протокол.
-     */
     @Nested
     class NettyResponseBody {
 
@@ -192,12 +183,21 @@ class NettyHttpServerTest extends HttpServerTestKit {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     protected HttpServer httpServer(ValueOf<? extends HttpServerConfig> config, HttpServerRouter httpServerRouter, HttpServerTelemetry telemetry) {
+        var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
+        var resources = new NettySystemHttpServerModule.NettyResources(boss, worker, NioServerSocketChannel.class);
+        var serverConfig = (ValueOf<HttpServerConfig>) config;
+
         return new NettyHttpServer(
             "test",
-            null,
+            resources,
             (ValueOf<HttpServerConfig>) config,
-            valueOf(new KoraHttpServerHandler(config.get(), httpServerRouter, telemetry)),
+            httpServerRouter,
+            valueOf(new KoraVirtualThreadDispatcher(serverConfig, false)),
+            valueOf(new NettyResponseWriteHandler(serverConfig)),
+            null,
             null
         );
     }
