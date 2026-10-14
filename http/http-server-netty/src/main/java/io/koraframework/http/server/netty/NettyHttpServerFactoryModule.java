@@ -1,18 +1,14 @@
 package io.koraframework.http.server.netty;
 
-import io.koraframework.application.graph.ValueOf;
-import io.koraframework.common.Configurer;
-import io.koraframework.common.annotation.DefaultComponent;
-import io.koraframework.common.annotation.Root;
-import io.koraframework.common.annotation.Tag;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.HttpServerFactoryModule;
-import io.koraframework.http.server.common.router.HttpServerRouter;
-import io.koraframework.http.server.common.telemetry.HttpServerTelemetryFactory;
-import io.koraframework.http.server.netty.handler.KoraHttpServerHandler;
-import io.koraframework.http.server.netty.handler.NettyHttpHandler;
-import io.netty.bootstrap.ServerBootstrap;
-import org.jspecify.annotations.Nullable;
+import io.koraframework.application.graph.*;
+import io.koraframework.common.*;
+import io.koraframework.common.annotation.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.router.*;
+import io.koraframework.http.server.common.telemetry.*;
+import io.koraframework.http.server.netty.handler.*;
+import io.netty.bootstrap.*;
+import org.jspecify.annotations.*;
 
 public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
 
@@ -27,19 +23,52 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @Tag(Tag.Factory.class)
     public NettyHttpServer server(
         NettyResourceLifecycle.NettyResources resources,
-        @Tag(Tag.Factory.class) ValueOf<NettyHttpHandler> httpHandler,
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
-        @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer) {
-        return new NettyHttpServer(this.name, resources, httpServerConfig, httpHandler, configurer);
+        HttpServerRouter httpServerRouter,
+        @Tag(Tag.Factory.class) ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
+        @Tag(Tag.Factory.class) ValueOf<NettyResponseWriteHandler> responseWriteHandler,
+        @Tag(Tag.Factory.class) @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler,
+        @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer
+    ) {
+        return new NettyHttpServer(
+            this.name,
+            resources,
+            httpServerConfig,
+            httpServerRouter,
+            virtualThreadDispatcher,
+            responseWriteHandler,
+            telemetryHandler,
+            configurer
+        );
     }
 
     @DefaultComponent
     @Tag(Tag.Factory.class)
-    public NettyHttpHandler handler(
+    public KoraVirtualThreadDispatcher virtualThreadDispatcher(
+        @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig
+    ) {
+        return new KoraVirtualThreadDispatcher(httpServerConfig, httpServerConfig.telemetry().logging().enabled());
+    }
+
+    @DefaultComponent
+    @Tag(Tag.Factory.class)
+    public NettyResponseWriteHandler responseWriteHandler(
+        @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig
+    ) {
+        return new NettyResponseWriteHandler(httpServerConfig);
+    }
+
+    @DefaultComponent
+    @Tag(Tag.Factory.class)
+    public @Nullable NettyTelemetryHandler telemetryHandler(
         @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig,
         @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
-        HttpServerTelemetryFactory telemetryFactory) {
+        HttpServerTelemetryFactory telemetryFactory
+    ) {
+        if (!httpServerConfig.telemetry().logging().enabled() && !httpServerConfig.telemetry().metrics().enabled() && !httpServerConfig.telemetry().tracing().enabled()) {
+            return null;
+        }
         var telemetry = telemetryFactory.get(this.name, httpServerConfig.port(), httpServerConfig.telemetry());
-        return new KoraHttpServerHandler(httpServerConfig, httpServerRouter, telemetry);
+        return new NettyTelemetryHandler(telemetry, httpServerRouter);
     }
 }
