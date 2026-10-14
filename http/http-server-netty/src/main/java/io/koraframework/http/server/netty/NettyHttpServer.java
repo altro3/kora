@@ -101,6 +101,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         var config = httpServerConfig.get();
                         var telemetry = telemetryValue != null ? telemetryValue.get() : null;
                         p.addLast(new HttpServerCodec());
+                        p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
                         var readTimeout = config.socketReadTimeout();
                         if (!readTimeout.isZero()) {
                             p.addLast(new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
@@ -140,7 +141,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                                 ctx.fireUserEventTriggered(evt);
                             }
                         });
-                        p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
                         if (telemetry != null) {
                             p.addLast(telemetry);
                         } else {
