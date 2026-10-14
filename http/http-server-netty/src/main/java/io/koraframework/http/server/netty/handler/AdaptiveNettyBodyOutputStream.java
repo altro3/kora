@@ -146,6 +146,8 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         if (success) {
             if (!keepAlive) {
                 ctx.close();
+            } else {
+                ctx.channel().config().setAutoRead(true);
             }
         } else {
             ctx.close();

@@ -76,9 +76,10 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
-        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
+        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
         if (observation != null) {
             observation.observeError(new IOException("Connection closed by peer prematurely"));
+            observation.end();
         }
         ctx.fireChannelInactive();
     }
@@ -86,7 +87,7 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.info("[DEBUG] NettyTelemetryHandler.exceptionCaught! Cause: {}", cause.getClass().getName());
-        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
+        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
         log.info("[DEBUG] Observation in exceptionCaught: {}", observation != null);
         if (observation != null) {
             try (var scope = observation.span().makeCurrent()) {

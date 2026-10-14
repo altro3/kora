@@ -100,11 +100,12 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         ChannelPipeline p = ch.pipeline();
                         var config = httpServerConfig.get();
                         var telemetry = telemetryValue != null ? telemetryValue.get() : null;
+
                         p.addLast(new HttpServerCodec());
-                        p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
+
                         var readTimeout = config.socketReadTimeout();
                         if (!readTimeout.isZero()) {
-                            p.addLast(new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
+                            p.addLast("readTimeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
                         }
                         var writeTimeout = config.socketWriteTimeout();
                         if (!writeTimeout.isZero()) {
@@ -112,35 +113,65 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         }
 
                         p.addLast(new ChannelInboundHandlerAdapter() {
-                            private HttpRequest currentRequest;
+                            private io.koraframework.http.server.netty.request.NettyRequestHttpBody activeBody;
 
                             @Override
                             public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
                                 if (msg instanceof HttpRequest req) {
-                                    this.currentRequest = req;
+                                    if (req instanceof FullHttpRequest fullReq) {
+                                        ctx.fireChannelRead(fullReq.retain());
+                                        return;
+                                    }
+
+                                    var fullReq = new DefaultFullHttpRequest(
+                                        req.protocolVersion(),
+                                        req.method(),
+                                        req.uri(),
+                                        io.netty.buffer.Unpooled.EMPTY_BUFFER,
+                                        req.headers(),
+                                        io.netty.handler.codec.http.EmptyHttpHeaders.INSTANCE
+                                    );
+
+                                    this.activeBody = new io.koraframework.http.server.netty.request.NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
+                                    ctx.channel().attr(io.netty.util.AttributeKey.valueOf("kora.active.body")).set(activeBody);
+
+                                    ctx.fireChannelRead(fullReq);
+                                    return;
                                 }
+
+                                if (msg instanceof HttpContent content) {
+                                    if (activeBody != null) {
+                                        activeBody.addContent(content);
+                                    } else {
+                                        content.release();
+                                    }
+                                    return;
+                                }
+
                                 ctx.fireChannelRead(msg);
+                            }
+
+                            @Override
+                            public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+                                if (activeBody != null) {
+                                    activeBody.setException(new java.io.IOException("Connection closed prematurely"));
+                                }
+                                ctx.fireChannelInactive();
                             }
 
                             @Override
                             public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
                                 if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
-                                    if (currentRequest != null) {
-                                        var fullReq = new io.netty.handler.codec.http.DefaultFullHttpRequest(
-                                            currentRequest.protocolVersion(),
-                                            currentRequest.method(),
-                                            currentRequest.uri(),
-                                            io.netty.buffer.Unpooled.EMPTY_BUFFER,
-                                            currentRequest.headers(),
-                                            io.netty.handler.codec.http.EmptyHttpHeaders.INSTANCE
-                                        );
-                                        ctx.fireChannelRead(fullReq);
-                                        return;
+                                    if (activeBody != null) {
+                                        activeBody.setException(new java.net.SocketTimeoutException("Read timeout"));
                                     }
+                                    ctx.close();
+                                    return;
                                 }
                                 ctx.fireUserEventTriggered(evt);
                             }
                         });
+
                         if (telemetry != null) {
                             p.addLast(telemetry);
                         } else {

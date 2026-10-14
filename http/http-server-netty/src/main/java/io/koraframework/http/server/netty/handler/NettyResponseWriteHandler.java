@@ -3,7 +3,7 @@ package io.koraframework.http.server.netty.handler;
 import io.koraframework.application.graph.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
-import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
@@ -70,7 +70,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                         body.write(output);
                         output.complete();
                     } catch (Throwable e) {
-                        var observation = ctx.channel().attr(OBSERVATION_KEY).get(); // Сначала просто получаем, НЕ зануляем!
+                        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
 
                         if (observation != null) {
                             var errorResponse = HttpServerResponse.of(500);
@@ -84,6 +84,8 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                             output.close();
                         }
                         closeBody(body);
+                        ReferenceCountUtil.release(nettyReq);
+                        ctx.channel().config().setAutoRead(true);
 
                         if (output != null && !output.isStreamMode() && ctx.channel().isActive()) {
                             var message = e.getMessage() != null ? e.getMessage() : "Internal Server Error";
@@ -94,19 +96,10 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                             errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
                             errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
 
-                            if (keepAlive) {
-                                if (!version.isKeepAliveDefault()) {
-                                    errResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
-                                }
-                            } else {
-                                if (version.isKeepAliveDefault()) {
-                                    errResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
-                                }
-                            }
-
+                            setupConnectionHeader(errResp, version, keepAlive);
                             ctx.writeAndFlush(errResp).addListener(_ -> ctx.close());
                         } else {
-                            ctx.pipeline().fireExceptionCaught(e);
+                            ctx.fireExceptionCaught(e);
                             ctx.close();
                         }
                     }
@@ -178,6 +171,8 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             closeBody(body);
             if (!future.isSuccess() || !keepAlive) {
                 ctx.close();
+            } else {
+                ctx.channel().config().setAutoRead(true);
             }
         });
     }

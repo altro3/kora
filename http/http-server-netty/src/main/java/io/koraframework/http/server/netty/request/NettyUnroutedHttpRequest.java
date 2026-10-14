@@ -103,10 +103,19 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     }
 
     private HttpBodyInput getContent() throws IOException {
+        var attrKey = io.netty.util.AttributeKey.valueOf("kora.active.body");
+        var nettyContext = io.koraframework.http.server.netty.NettyContext.get();
+        if (nettyContext != null) {
+            var streamingBody = (NettyRequestHttpBody) nettyContext.channelContext().channel().attr(attrKey).getAndSet(null);
+            if (streamingBody != null) {
+                return streamingBody;
+            }
+        }
+
         if (nettyRequest.content().readableBytes() == 0) {
             return HttpBody.empty();
         }
-        var nettyBody = new NettyRequestHttpBody(nettyRequest);
+        var nettyBody = new NettyRequestHttpBody(nettyRequest, null, 10 * 1024 * 1024);
         nettyBody.prepare();
         return nettyBody;
     }
