@@ -8,12 +8,14 @@ import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.netty.NettySystemHttpServerModule.NettyResources;
 import io.koraframework.http.server.netty.handler.*;
+import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.timeout.*;
+import io.opentelemetry.context.Context;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 import java.net.*;
@@ -117,11 +119,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                                     if (msg instanceof FullHttpRequest nettyReq) {
                                         var koraReq = new io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest(nettyReq);
                                         var invocation = currentRouter.route(koraReq);
-                                        var container = new NettyTelemetryHandler.RequestContainer(
+                                        var container = new RequestContainer(
                                             nettyReq,
                                             invocation.routedRequest(),
                                             invocation,
-                                            io.opentelemetry.context.Context.root(),
+                                            Context.root(),
                                             null
                                         );
                                         ctx.fireChannelRead(container);

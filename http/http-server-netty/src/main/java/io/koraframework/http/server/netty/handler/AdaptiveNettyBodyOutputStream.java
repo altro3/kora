@@ -54,11 +54,12 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             int written = 0;
             while (written < len) {
                 ensureWritability();
-
                 int chunkLen = Math.min(len - written, CHUNK_SIZE);
                 ByteBuf chunk = ctx.alloc().directBuffer(chunkLen).writeBytes(b, off + written, chunkLen);
-
-                ctx.writeAndFlush(new DefaultHttpContent(chunk));
+                ChannelFuture future = ctx.writeAndFlush(new DefaultHttpContent(chunk)).awaitUninterruptibly();
+                if (!future.isSuccess()) {
+                    throw new IOException("Connection broken during streaming", future.cause());
+                }
                 written += chunkLen;
             }
         }
@@ -74,7 +75,10 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
         ctx.write(responseHeader);
         if (buffer.isReadable()) {
-            ctx.writeAndFlush(new DefaultHttpContent(buffer));
+            ChannelFuture future = ctx.writeAndFlush(new DefaultHttpContent(buffer)).awaitUninterruptibly();
+            if (!future.isSuccess()) {
+                throw new IOException("Failed to flush initial buffer to severed connection", future.cause());
+            }
         } else {
             ctx.writeAndFlush(Unpooled.EMPTY_BUFFER);
             buffer.release();

@@ -189,6 +189,7 @@ class NettyHttpServerTest extends HttpServerTestKit {
         var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         var resources = new NettySystemHttpServerModule.NettyResources(boss, worker, NioServerSocketChannel.class);
         var serverConfig = (ValueOf<HttpServerConfig>) config;
+        var telemetryHandler = new NettyTelemetryHandler(telemetry, httpServerRouter);
 
         return new NettyHttpServer(
             "test",
@@ -197,7 +198,7 @@ class NettyHttpServerTest extends HttpServerTestKit {
             httpServerRouter,
             valueOf(new KoraVirtualThreadDispatcher(serverConfig, false)),
             valueOf(new NettyResponseWriteHandler(serverConfig)),
-            null,
+            valueOf(telemetryHandler),
             null
         );
     }

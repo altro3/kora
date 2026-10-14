@@ -67,6 +67,10 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                         body.write(output);
                         output.complete();
                     } catch (Throwable e) {
+                        log.info("[DEBUG] Catch in Virtual Thread! Error: {} -> {}", e.getClass().getName(), e.getMessage());
+                        var observationKey = io.netty.util.AttributeKey.valueOf("kora.http.observation");
+                        var obs = ctx.channel().attr(observationKey).get();
+                        log.info("[DEBUG] Is observation present in channel inside catch? {}", obs != null);
                         if (output != null) {
                             output.close();
                         }

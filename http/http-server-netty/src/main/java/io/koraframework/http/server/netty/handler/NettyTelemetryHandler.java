@@ -10,9 +10,14 @@ import io.netty.handler.codec.http.*;
 import io.netty.util.*;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
+import org.slf4j.*;
+
+import java.io.IOException;
 
 @ChannelHandler.Sharable
 public final class NettyTelemetryHandler extends ChannelDuplexHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(NettyTelemetryHandler.class);
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
     private static final AttributeKey<HttpServerObservation> OBSERVATION_KEY = AttributeKey.valueOf("kora.http.observation");
@@ -48,46 +53,37 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-        if (!(msg instanceof ResponseContainer responseContainer)) {
-            ctx.write(msg, promise);
-            return;
-        }
-
         var observation = ctx.channel().attr(OBSERVATION_KEY).get();
-        if (observation != null) {
-            var trackedResponse = observation.observeResponse(responseContainer.koraResponse());
-            var updatedContainer = new ResponseContainer(
-                responseContainer.nettyReq(),
-                trackedResponse,
-                null
-            );
 
-            promise.addListener(future -> {
-                var obs = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
-                if (obs != null) {
-                    try {
-                        if (future.isSuccess()) {
-                            obs.end();
-                        } else {
+        if (observation != null) {
+            if (msg instanceof HttpResponse nettyResponse) {
+                var koraResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(
+                    nettyResponse.status().code()
+                );
+                observation.observeResponse(koraResponse);
+            }
+
+            if (msg instanceof FullHttpResponse || msg instanceof LastHttpContent) {
+                promise.addListener(future -> {
+                    var obs = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+                    if (obs != null) {
+                        if (!future.isSuccess()) {
                             obs.observeError(future.cause());
-                            obs.end();
                         }
-                    } catch (Throwable t) {
                         obs.end();
                     }
-                }
-            });
-
-            ctx.write(updatedContainer, promise);
-        } else {
-            ctx.write(responseContainer, promise);
+                });
+            }
         }
-    }
 
+        ctx.write(msg, promise);
+    }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+        log.info("[DEBUG] NettyTelemetryHandler.exceptionCaught! Cause: {}", cause.getClass().getName());
+        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
+        log.info("[DEBUG] Observation in exceptionCaught: {}", observation != null);
         if (observation != null) {
             try (var scope = observation.span().makeCurrent()) {
                 observation.observeError(cause);
@@ -96,6 +92,15 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
             }
         }
         ctx.fireExceptionCaught(cause);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) {
+        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
+        if (observation != null) {
+            observation.observeError(new IOException("Connection closed by peer prematurely"));
+        }
+        ctx.fireChannelInactive();
     }
 
     public record RequestContainer(
