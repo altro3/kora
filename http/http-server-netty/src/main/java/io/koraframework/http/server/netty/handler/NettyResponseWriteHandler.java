@@ -3,6 +3,7 @@ package io.koraframework.http.server.netty.handler;
 import io.koraframework.application.graph.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
@@ -69,28 +70,52 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                         body.write(output);
                         output.complete();
                     } catch (Throwable e) {
-                        log.info("[KORA_DEBUG] !!! Поймали ошибку в виртуальном потоке стрима !!!", e);
+                        var observation = ctx.channel().attr(OBSERVATION_KEY).get(); // Сначала просто получаем, НЕ зануляем!
 
-                        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
                         if (observation != null) {
-                            var koraResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(200);
-                            observation.observeResponse(koraResponse);
+                            var errorResponse = HttpServerResponse.of(500);
+                            observation.observeResponse(errorResponse);
                             observation.observeError(e);
                             observation.end();
+                            ctx.channel().attr(OBSERVATION_KEY).set(null);
                         }
+
                         if (output != null) {
                             output.close();
                         }
                         closeBody(body);
-                        ctx.pipeline().fireExceptionCaught(e);
-                        ctx.close();
+
+                        if (output != null && !output.isStreamMode() && ctx.channel().isActive()) {
+                            var message = e.getMessage() != null ? e.getMessage() : "Internal Server Error";
+                            var bytes = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                            var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
+
+                            var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
+                            errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
+                            errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
+
+                            if (keepAlive) {
+                                if (!version.isKeepAliveDefault()) {
+                                    errResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                                }
+                            } else {
+                                if (version.isKeepAliveDefault()) {
+                                    errResp.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+                                }
+                            }
+
+                            ctx.writeAndFlush(errResp).addListener(_ -> ctx.close());
+                        } else {
+                            ctx.pipeline().fireExceptionCaught(e);
+                            ctx.close();
+                        }
                     }
                 });
             });
         }
     }
 
-    private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, io.koraframework.http.server.common.response.HttpServerResponse response, boolean isHead) {
+    private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
 
