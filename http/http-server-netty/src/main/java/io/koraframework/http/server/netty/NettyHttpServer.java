@@ -14,6 +14,7 @@ import io.netty.bootstrap.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
+import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
 import io.opentelemetry.context.Context;
 import org.jspecify.annotations.*;
@@ -102,6 +103,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         var telemetry = telemetryValue != null ? telemetryValue.get() : null;
 
                         p.addLast(new HttpServerCodec());
+                        p.addLast(new HttpServerKeepAliveHandler());
+                        p.addLast(new ChunkedWriteHandler());
 
                         var readTimeout = config.socketReadTimeout();
                         if (!readTimeout.isZero()) {
@@ -217,6 +220,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
         }
     }
+
 
     @Override
     public void release() {

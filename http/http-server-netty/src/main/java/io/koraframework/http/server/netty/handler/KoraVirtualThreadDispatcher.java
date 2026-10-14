@@ -92,10 +92,6 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                     response = invocation.proceed(httpServerRequest);
                     if (observation != null) {
                         observation.observeResponse(response);
-//                        if (!ctx.channel().isActive()) {
-//                            observation.end();
-//                            ctx.channel().attr(OBSERVATION_KEY).set(null);
-//                        }
                     }
                 } catch (Throwable e) {
                     if (e instanceof HttpServerResponse rs) {
