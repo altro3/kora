@@ -6,7 +6,7 @@ import io.koraframework.common.readiness.*;
 import io.koraframework.common.util.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.router.*;
-import io.koraframework.http.server.netty.NettySystemHttpServerModule.NettyResources;
+import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
 import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.koraframework.logging.common.arg.*;
@@ -16,9 +16,10 @@ import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
-import io.opentelemetry.context.Context;
+import io.opentelemetry.context.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
+
 import java.net.*;
 import java.time.*;
 import java.util.concurrent.*;
@@ -103,7 +104,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         var telemetry = telemetryValue != null ? telemetryValue.get() : null;
 
                         p.addLast(new HttpServerCodec());
-                        p.addLast(new HttpServerKeepAliveHandler());
                         p.addLast(new ChunkedWriteHandler());
 
                         var readTimeout = config.socketReadTimeout();
@@ -122,7 +122,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                             public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
                                 if (msg instanceof HttpRequest req) {
                                     if (req instanceof FullHttpRequest fullReq) {
-                                        ctx.fireChannelRead(fullReq.retain());
+                                        this.activeBody = null;
+                                        ctx.fireChannelRead(fullReq);
                                         return;
                                     }
 
@@ -145,8 +146,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                                 if (msg instanceof HttpContent content) {
                                     if (activeBody != null) {
                                         activeBody.addContent(content);
+                                        if (content instanceof LastHttpContent) {
+                                            this.activeBody = null;
+                                        }
                                     } else {
-                                        content.release();
+                                        ctx.fireChannelRead(content);
                                     }
                                     return;
                                 }
@@ -158,6 +162,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                             public void channelInactive(ChannelHandlerContext ctx) throws Exception {
                                 if (activeBody != null) {
                                     activeBody.setException(new java.io.IOException("Connection closed prematurely"));
+                                    this.activeBody = null;
                                 }
                                 ctx.fireChannelInactive();
                             }
@@ -167,6 +172,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                                 if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
                                     if (activeBody != null) {
                                         activeBody.setException(new java.net.SocketTimeoutException("Read timeout"));
+                                        this.activeBody = null;
                                     }
                                     ctx.close();
                                     return;
@@ -220,7 +226,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
         }
     }
-
 
     @Override
     public void release() {

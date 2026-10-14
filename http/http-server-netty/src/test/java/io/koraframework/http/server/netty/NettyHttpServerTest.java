@@ -1,8 +1,10 @@
 package io.koraframework.http.server.netty;
 
 import io.koraframework.application.graph.*;
+import io.koraframework.common.util.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.interceptor.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.router.*;
@@ -17,10 +19,12 @@ import org.junit.jupiter.params.provider.*;
 
 import java.io.*;
 import java.nio.charset.*;
+import java.time.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
+import static io.koraframework.http.common.HttpMethod.GET;
 import static org.assertj.core.api.Assertions.*;
 
 class NettyHttpServerTest extends HttpServerTestKit {
@@ -201,5 +205,160 @@ class NettyHttpServerTest extends HttpServerTestKit {
             valueOf(telemetryHandler),
             null
         );
+    }
+
+    @Test
+    void keepAliveConnectionIsReusedAcrossAllResponseKinds2() throws Exception {
+        var small = "small".getBytes(StandardCharsets.UTF_8);
+        var medium = payload(10 * 1024, 1);
+        var unknownLength = payload(200 * 1024 + 5, 2);
+        var knownLength = payload(300 * 1024 + 9, 3);
+        startServer(
+            handler(GET, "/small", _ -> HttpServerResponse.of(200, HttpBody.octetStream(small))),
+            handler(GET, "/medium", _ -> HttpServerResponse.of(200, HttpBodyOutput.octetStream(os -> os.write(medium)))),
+            handler(GET, "/unknown-length", _ -> HttpServerResponse.of(200, HttpBodyOutput.octetStream(os -> write(os, unknownLength, WritePattern.RANDOM_SLICES, 2)))),
+            handler(GET, "/known-length", _ -> HttpServerResponse.of(200, HttpBodyOutput.octetStream(knownLength.length, os -> write(os, knownLength, WritePattern.RANDOM_SLICES, 3)))),
+            handler(GET, "/empty", _ -> HttpServerResponse.of(200)),
+            handler(GET, "/error", _ -> {
+                throw new IllegalStateException("boom");
+            }),
+            handler("HEAD", "/head", _ -> HttpServerResponse.of(200, HttpBodyOutput.octetStream(knownLength.length, os -> os.write(knownLength))))
+        );
+
+        try (var raw = new RawHttpClient(port())) {
+            for (var round = 0; round < 2; round++) {
+                try {
+                    System.out.println("[DEBUG_ROUND] Отправляем GET /small");
+                    assertRawBody(raw.exchange("GET", "/small"), 200, small);
+
+                    System.out.println("[DEBUG_ROUND] Отправляем GET /medium");
+                    assertRawBody(raw.exchange("GET", "/medium"), 200, medium);
+
+                    assertRawBody(raw.exchange("GET", "/unknown-length"), 200, unknownLength);
+                    assertRawBody(raw.exchange("GET", "/known-length"), 200, knownLength);
+                    assertRawBody(raw.exchange("GET", "/empty"), 200, new byte[0]);
+                    assertRawBody(raw.exchange("GET", "/error"), 500, "boom".getBytes(StandardCharsets.UTF_8));
+                    var head = raw.exchange("HEAD", "/head");
+                    assertRawBody(head, 200, new byte[0]);
+                    assertThat(head.header("Content-Length")).isEqualTo(Integer.toString(knownLength.length));
+                } catch (Throwable t) {
+                    System.out.println("[DEBUG_FATAL_TEST] Ошибка прямо внутри цикла теста: " + t.getClass().getName() + " -> " + t.getMessage());
+                    t.printStackTrace();
+                    throw t;
+                }
+            }
+        }
+    }
+
+    private static HttpServerRequestHandler handler(String method, String route, HttpServerRequestHandler.HandlerFunction handler) {
+        return new HttpServerRequestHandler() {
+            @Override
+            public String method() {
+                return method;
+            }
+
+            @Override
+            public String routeTemplate() {
+                return route;
+            }
+
+            @Override
+            public HttpServerResponse handle(HttpServerRequest request) throws Exception {
+                return handler.apply(request);
+            }
+        };
+    }
+
+    enum WritePattern {
+        SINGLE_WRITE,
+        RANDOM_SLICES,
+        BYTE_BY_BYTE,
+        WITH_EMPTY_WRITES
+    }
+
+    private static void write(OutputStream os, byte[] data, WritePattern pattern, long seed) throws IOException {
+        switch (pattern) {
+            case SINGLE_WRITE -> os.write(data);
+            case BYTE_BY_BYTE -> {
+                for (var b : data) {
+                    os.write(b);
+                }
+            }
+            case RANDOM_SLICES -> {
+                // written from a larger array at a non-zero offset, in sizes up to 48 KiB
+                var padded = new byte[data.length + 32];
+                System.arraycopy(data, 0, padded, 16, data.length);
+                var random = new SplittableRandom(seed);
+                for (var offset = 0; offset < data.length; ) {
+                    var length = Math.min(data.length - offset, 1 + random.nextInt(48 * 1024));
+                    os.write(padded, 16 + offset, length);
+                    offset += length;
+                }
+            }
+            case WITH_EMPTY_WRITES -> {
+                var half = data.length / 2;
+                os.write(new byte[0]);
+                os.write(data, 0, 0);
+                os.write(data, 0, half);
+                os.write(data, half, 0);
+                os.write(data, half, data.length - half);
+                os.write(new byte[0]);
+            }
+        }
+    }
+
+    private static void assertRawBody(RawHttpClient.Response response, int code, byte[] body) {
+        System.out.println("[DEBUG_TEST] Проверяем ответ. Ожидаем код: " + code + ", получили: " + response.code());
+        System.out.println("[DEBUG_TEST] Длина ожидаемого тела: " + body.length + ", полученного: " + (response.body() != null ? response.body().length : "null"));
+
+        if (response.code() != code) {
+            System.out.println("[DEBUG_TEST] !! МИССМАТЧ КОДА ОТВЕТА !!");
+        }
+
+        // Сравниваем массивы побайтово вручную для 100% гарантии в логах
+        if (!Arrays.equals(response.body(), body)) {
+            System.out.println("[DEBUG_TEST] !! МИССМАТЧ СОДЕРЖИМОГО ТЕЛА !!");
+            System.out.println("Ожидалось: " + new String(body, java.nio.charset.StandardCharsets.UTF_8));
+            System.out.println("Получено: " + (response.body() != null ? new String(response.body(), java.nio.charset.StandardCharsets.UTF_8) : "null"));
+        }
+
+        // Родной метод AssertJ для побайтового сравнения массивов
+        assertThat(response.code()).isEqualTo(code);
+        assertThat(response.body()).containsExactly(body);
+    }
+
+    protected void startServer(HttpServerRequestHandler... handlers) {
+        this.startServer(List.of(), handlers);
+    }
+
+    protected void startServer(List<HttpServerInterceptor> interceptors, HttpServerRequestHandler... handlers) {
+        startServer(false, interceptors, handlers);
+    }
+
+    protected void startServer(boolean ignoreTrailingSlash, List<HttpServerInterceptor> interceptors, HttpServerRequestHandler... handlers) {
+        var config = new $HttpServerConfig_ConfigValueMapper.HttpServerConfig_Impl(
+            0,
+            ignoreTrailingSlash,
+            Duration.ofSeconds(10),
+            Duration.ofSeconds(10),
+            false,
+            false,
+            false,
+            true,
+            Duration.ofSeconds(5),
+            Size.of(1, Size.Type.GiB),
+            new $HttpServerTelemetryConfig_ConfigValueMapper.HttpServerTelemetryConfig_Impl(
+                new $HttpServerTelemetryConfig_HttpServerLoggingConfig_ConfigValueMapper.HttpServerLoggingConfig_Defaults(),
+                new $HttpServerTelemetryConfig_HttpServerMetricsConfig_ConfigValueMapper.HttpServerMetricsConfig_Defaults(),
+                new $HttpServerTelemetryConfig_HttpServerTracingConfig_ConfigValueMapper.HttpServerTracingConfig_Defaults()
+            )
+        );
+        var publicApiHandler = new HttpServerRouter(List.of(handlers), interceptors, config);
+        this.httpServer = this.httpServer(valueOf(config), publicApiHandler, this.telemetry);
+        try {
+            this.httpServer.init();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 }

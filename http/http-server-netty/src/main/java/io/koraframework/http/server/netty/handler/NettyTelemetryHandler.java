@@ -10,15 +10,9 @@ import io.netty.handler.codec.http.*;
 import io.netty.util.*;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
-import org.slf4j.*;
-
-import java.io.IOException;
-import java.nio.channels.ClosedChannelException;
 
 @ChannelHandler.Sharable
 public final class NettyTelemetryHandler extends ChannelDuplexHandler {
-
-    private static final Logger log = LoggerFactory.getLogger(NettyTelemetryHandler.class);
 
     public static final AttributeKey<HttpServerObservation> OBSERVATION_KEY = AttributeKey.valueOf("kora.http.observation");
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
@@ -41,9 +35,7 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
         var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
         var koraReq = new NettyUnroutedHttpRequest(nettyReq);
         var invocation = this.httpServerRouter.route(koraReq);
-
         var observation = this.telemetry.observe(invocation.routedRequest());
-        ctx.channel().attr(OBSERVATION_KEY).set(observation);
 
         var activeCtx = rootCtx.with(observation.span());
         var httpServerRequest = observation.observeRequest(invocation.routedRequest());
@@ -54,48 +46,17 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-        var observation = ctx.channel().attr(OBSERVATION_KEY).get();
-
-        if (observation != null && msg instanceof LastHttpContent) {
-            promise.addListener(future -> {
-                var obs = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
-                if (obs != null) {
-                    if (!future.isSuccess()) {
-                        var cause = future.cause();
-                        if (!(cause instanceof ClosedChannelException) && ctx.channel().isActive()) {
-                            obs.observeError(cause);
-                        }
-                    }
-                    obs.end();
-                }
-            });
-        }
-
         ctx.write(msg, promise);
     }
 
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
-        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
-        if (observation != null) {
-            observation.observeError(new IOException("Connection closed by peer prematurely"));
-            observation.end();
-        }
         ctx.fireChannelInactive();
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.info("[DEBUG] NettyTelemetryHandler.exceptionCaught! Cause: {}", cause.getClass().getName());
-        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
-        log.info("[DEBUG] Observation in exceptionCaught: {}", observation != null);
-        if (observation != null) {
-            try (var scope = observation.span().makeCurrent()) {
-                observation.observeError(cause);
-            } finally {
-                observation.end();
-            }
-        }
+        System.out.println("[DEBUG EXCEPTION] Исключение в пайплайне Netty: " + cause.getMessage());
         ctx.fireExceptionCaught(cause);
     }
 

@@ -1,34 +1,23 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.application.graph.*;
-import io.koraframework.common.telemetry.OpentelemetryContext;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.http.server.common.response.HttpServerResponse;
-import io.koraframework.http.server.netty.NettyContext;
-import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.RequestContainer;
-import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.ResponseContainer;
-import io.koraframework.logging.common.MDC;
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaderValues;
-import io.netty.handler.codec.http.HttpMessage;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpUtil;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.util.ReferenceCountUtil;
-import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator;
-import io.opentelemetry.context.Context;
+import io.koraframework.common.telemetry.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.http.server.common.response.*;
+import io.koraframework.http.server.netty.*;
+import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
+import io.koraframework.logging.common.*;
+import io.netty.buffer.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import io.netty.util.*;
+import io.opentelemetry.api.trace.propagation.*;
+import io.opentelemetry.context.*;
 
-import java.nio.charset.StandardCharsets;
-import java.util.Objects;
+import java.nio.charset.*;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
-
-import static io.koraframework.http.server.netty.handler.NettyTelemetryHandler.OBSERVATION_KEY;
 
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
@@ -48,6 +37,9 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        if (msg instanceof NettyTelemetryHandler.RequestContainer container) {
+            System.out.println("[DEBUG DISPATCHER] Входящий запрос: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead до=" + ctx.channel().config().isAutoRead());
+        }
         if (!(msg instanceof NettyTelemetryHandler.RequestContainer container)) {
             ctx.fireChannelRead(msg);
             return;
@@ -105,10 +97,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                             var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
                             observation.observeError(e);
                             observation.observeResponse(errorResponse);
-                            if (!ctx.channel().isActive()) {
-                                observation.end();
-                                ctx.channel().attr(io.netty.util.AttributeKey.valueOf("kora.http.observation")).set(null);
-                            }
+                            observation.end();
                         }
                         sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
                         return;
@@ -136,6 +125,8 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         ctx.writeAndFlush(errorResp).addListener(_ -> {
             if (!keepAlive) {
                 ctx.close();
+            } else {
+                ctx.channel().config().setAutoRead(true);
             }
         });
     }

@@ -4,6 +4,7 @@ import io.koraframework.application.graph.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.response.*;
+import io.koraframework.http.server.common.telemetry.*;
 import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
@@ -39,6 +40,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
         var version = nettyReq.protocolVersion();
         var keepAlive = HttpUtil.isKeepAlive(nettyReq);
         var response = container.koraResponse();
+        var observation = container.observation();
         boolean isHead = nettyReq.method() == HttpMethod.HEAD;
 
         var body = response.body();
@@ -46,12 +48,15 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
 
         if (body == null || isHead || content != null) {
             if (ctx.executor().inEventLoop()) {
-                prepareAndSendResponse(ctx, version, keepAlive, response, isHead);
+                prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
             } else {
-                ctx.executor().execute(() -> prepareAndSendResponse(ctx, version, keepAlive, response, isHead));
+                ctx.executor().execute(() -> prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation));
             }
-        } else {
-            ctx.executor().execute(() -> {
+            return;
+        }
+
+        ctx.executor().execute(() -> {
+            Thread.startVirtualThread(() -> {
                 var status = HttpResponseStatus.valueOf(response.code());
                 var nettyResp = new DefaultHttpResponse(version, status);
                 writeHeaders(nettyResp.headers(), response.headers(), body.contentType());
@@ -63,52 +68,49 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 }
                 setupConnectionHeader(nettyResp, version, keepAlive);
 
-                Thread.startVirtualThread(() -> {
-                    AdaptiveNettyBodyOutputStream output = null;
-                    try {
-                        output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body);
-                        body.write(output);
-                        output.complete();
-                    } catch (Throwable e) {
-                        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+                AdaptiveNettyBodyOutputStream output = null;
+                try {
+                    output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body, nettyReq, observation);
+                    output.writeBody();
+                    output.complete();
 
-                        if (observation != null) {
-                            var errorResponse = HttpServerResponse.of(500);
-                            observation.observeResponse(errorResponse);
-                            observation.observeError(e);
-                            observation.end();
-                            ctx.channel().attr(OBSERVATION_KEY).set(null);
-                        }
-
-                        if (output != null) {
-                            output.close();
-                        }
-                        closeBody(body);
-                        ReferenceCountUtil.release(nettyReq);
-                        ctx.channel().config().setAutoRead(true);
-
-                        if (output != null && !output.isStreamMode() && ctx.channel().isActive()) {
-                            var message = e.getMessage() != null ? e.getMessage() : "Internal Server Error";
-                            var bytes = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                            var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
-
-                            var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
-                            errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
-                            errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
-
-                            setupConnectionHeader(errResp, version, keepAlive);
-                            ctx.writeAndFlush(errResp).addListener(_ -> ctx.close());
-                        } else {
-                            ctx.fireExceptionCaught(e);
-                            ctx.close();
-                        }
+                    if (nettyReq != null) {
+                        io.netty.util.ReferenceCountUtil.safeRelease(nettyReq);
                     }
-                });
+
+                    var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
+                    if (dispatcher != null) {
+                        dispatcher.getActiveRequests().decrementAndGet();
+                        dispatcher.getPhaser().arriveAndDeregister();
+                    }
+
+                } catch (Throwable e) {
+                    if (output != null) {
+                        output.close();
+                    }
+                    closeBody(body);
+                    ctx.channel().config().setAutoRead(true);
+
+                    if (output != null && !output.isStreamMode() && ctx.channel().isActive()) {
+                        var message = e.getMessage() != null ? e.getMessage() : "Internal Server Error";
+                        var bytes = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                        var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
+
+                        var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
+                        errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
+                        errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
+
+                        setupConnectionHeader(errResp, version, keepAlive);
+                        ctx.writeAndFlush(errResp).addListener(_ -> ctx.close());
+                    } else {
+                        ctx.close();
+                    }
+                }
             });
-        }
+        });
     }
 
-    private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead) {
+    private void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
 
@@ -116,7 +118,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
             writeHeaders(nettyResp.headers(), response.headers(), null);
             nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, 0);
-            finalizeAndWrite(ctx, nettyResp, version, keepAlive, null);
+            finalizeAndWrite(ctx, nettyReq, nettyResp, version, keepAlive, null, observation);
             return;
         }
 
@@ -129,11 +131,10 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             if (declaredLength >= 0) {
                 nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
             }
-            finalizeAndWrite(ctx, nettyResp, version, keepAlive, body);
+            finalizeAndWrite(ctx, nettyReq, nettyResp, version, keepAlive, body, observation);
             return;
         }
 
-        AdaptiveNettyBodyOutputStream output;
         try {
             var content = body.getFullContentIfAvailable();
             if (content != null) {
@@ -141,7 +142,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 var nettyResp = new DefaultFullHttpResponse(version, status, nettyBody);
                 writeHeaders(nettyResp.headers(), response.headers(), contentType);
                 nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, nettyBody.readableBytes());
-                finalizeAndWrite(ctx, nettyResp, version, keepAlive, body);
+                finalizeAndWrite(ctx, nettyReq, nettyResp, version, keepAlive, body, observation);
                 return;
             }
 
@@ -154,25 +155,54 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             }
             setupConnectionHeader(nettyResp, version, keepAlive);
 
-            output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body);
+            var output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body, nettyReq, observation);
             body.write(output);
             output.complete();
 
         } catch (Throwable e) {
+            if (observation != null) {
+                observation.observeError(e);
+                observation.end();
+            }
             closeBody(body);
+            ReferenceCountUtil.safeRelease(nettyReq);
             ctx.close();
         }
     }
 
-    private void finalizeAndWrite(ChannelHandlerContext ctx, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body) {
+    private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
+        var statusStr = (msg instanceof HttpResponse res) ? res.status().toString() : "unknown";
+
         setupConnectionHeader(msg, version, keepAlive);
+
+        if (keepAlive) {
+            ctx.channel().config().setAutoRead(true);
+        }
 
         ctx.writeAndFlush(msg).addListener(future -> {
             closeBody(body);
+
+            var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
+            if (dispatcher != null) {
+                dispatcher.getActiveRequests().decrementAndGet();
+                dispatcher.getPhaser().arriveAndDeregister();
+            }
+
+
+            if (observation != null) {
+                if (!future.isSuccess()) {
+                    observation.observeError(future.cause());
+                }
+                observation.end();
+            }
+
+            if (nettyReq != null) {
+                ReferenceCountUtil.safeRelease(nettyReq);
+            }
+
+            // Если запись провалилась или это не Keep-Alive, только тогда принудительно закрываем
             if (!future.isSuccess() || !keepAlive) {
                 ctx.close();
-            } else {
-                ctx.channel().config().setAutoRead(true);
             }
         });
     }
