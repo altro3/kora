@@ -6,6 +6,7 @@ import io.koraframework.common.annotation.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.common.telemetry.*;
+import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
 import io.netty.bootstrap.*;
 import org.jspecify.annotations.*;
@@ -22,7 +23,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @Root
     @Tag(Tag.Factory.class)
     public NettyHttpServer server(
-        NettyResourceLifecycle.NettyResources resources,
+        NettyResources resources,
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
         HttpServerRouter httpServerRouter,
         @Tag(Tag.Factory.class) ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,

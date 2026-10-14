@@ -6,19 +6,16 @@ import io.koraframework.common.readiness.*;
 import io.koraframework.common.util.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.router.*;
-import io.koraframework.http.server.netty.NettyResourceLifecycle.*;
+import io.koraframework.http.server.netty.NettySystemHttpServerModule.NettyResources;
 import io.koraframework.http.server.netty.handler.*;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
 import io.netty.channel.*;
-import io.netty.channel.nio.*;
 import io.netty.channel.socket.*;
-import io.netty.channel.socket.nio.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.timeout.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
-
 import java.net.*;
 import java.time.*;
 import java.util.concurrent.*;
@@ -26,7 +23,9 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.*;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
+
     private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
+
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final String name;
     private final ValueOf<HttpServerConfig> httpServerConfig;
@@ -34,8 +33,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher;
     private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
     private final @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler;
-    @Nullable
-    private final Configurer<ServerBootstrap> configurer;
+    private final @Nullable Configurer<ServerBootstrap> configurer;
     private final boolean manageResources;
     private volatile NettyResources resources;
     private volatile @Nullable Channel serverChannel;
@@ -70,21 +68,22 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         try {
             log.debug("HTTP Server {} (Netty) starting...", name);
             final long started = TimeUtils.started();
+
             if (this.manageResources) {
-                var boss = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-                var worker = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-                this.resources = new NettyResources(boss, worker, NioServerSocketChannel.class);
+                throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported without external NettyResources configuration");
             }
+
             var config = this.httpServerConfig.get();
             var bootstrap = new ServerBootstrap();
             bootstrap.group(resources.bossGroup(), resources.workerGroup())
                 .channel(resources.channelClass())
                 .option(ChannelOption.SO_BACKLOG, 1024);
+
             if (this.configurer != null) {
                 bootstrap = this.configurer.configure(bootstrap.clone());
             }
-            var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
 
+            var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
             var telemetryValue = this.telemetryHandler;
             var currentRouter = this.httpServerRouter;
             var dispatcherValue = this.virtualThreadDispatcher;
@@ -108,7 +107,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         }
                         p.addLast(new HttpServerCodec());
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-
                         var telemetry = telemetryValue != null ? telemetryValue.get() : null;
                         if (telemetry != null) {
                             p.addLast(telemetry);
@@ -133,11 +131,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                                 }
                             });
                         }
-
                         p.addLast(dispatcherValue.get());
                         p.addLast(writeHandlerValue.get());
                     }
                 });
+
             int port = config.port();
             ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
             if (!bindFuture.isSuccess()) {
@@ -161,7 +159,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         log.debug("HTTP Server {} (Netty) stopping...", name);
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
-
         var dispatcher = this.virtualThreadDispatcher.get();
         dispatcher.setShuttingDown(true);
         try {
@@ -178,7 +175,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             Thread.currentThread().interrupt();
             log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
         }
-
         var localChannel = this.serverChannel;
         if (localChannel != null) {
             try {
@@ -187,7 +183,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 Thread.currentThread().interrupt();
             }
         }
-
         if (this.manageResources && this.resources != null) {
             long timeoutMs = this.httpServerConfig.get().shutdownWait().toMillis();
             long quietPeriodMs = Math.min(2000, timeoutMs);
@@ -196,7 +191,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             bossFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
             workerFuture.awaitUninterruptibly(timeoutMs, TimeUnit.MILLISECONDS);
         }
-
         if (dispatcher.getActiveRequests().get() > 0) {
             log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, dispatcher.getActiveRequests().get());
         } else {
