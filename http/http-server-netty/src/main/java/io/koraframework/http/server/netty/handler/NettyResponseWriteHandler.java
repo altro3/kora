@@ -13,6 +13,8 @@ import org.slf4j.*;
 
 import java.io.*;
 
+import static io.koraframework.http.server.netty.handler.NettyTelemetryHandler.OBSERVATION_KEY;
+
 @ChannelHandler.Sharable
 public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapter {
 
@@ -67,16 +69,19 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                         body.write(output);
                         output.complete();
                     } catch (Throwable e) {
-                        log.info("[DEBUG] Catch in Virtual Thread! Error: {} -> {}", e.getClass().getName(), e.getMessage());
-                        var observationKey = io.netty.util.AttributeKey.valueOf("kora.http.observation");
-                        var obs = ctx.channel().attr(observationKey).get();
-                        log.info("[DEBUG] Is observation present in channel inside catch? {}", obs != null);
+                        log.info("[KORA_DEBUG] !!! Поймали ошибку в виртуальном потоке стрима !!!", e);
+
+                        var observation = ctx.channel().attr(OBSERVATION_KEY).getAndSet(null);
+                        if (observation != null) {
+                            var koraResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(200);
+                            observation.observeResponse(koraResponse);
+                            observation.observeError(e);
+                            observation.end();
+                        }
                         if (output != null) {
                             output.close();
                         }
-                        if (body != null) {
-                            try { body.close(); } catch (IOException ignored) {}
-                        }
+                        closeBody(body);
                         ctx.pipeline().fireExceptionCaught(e);
                         ctx.close();
                     }

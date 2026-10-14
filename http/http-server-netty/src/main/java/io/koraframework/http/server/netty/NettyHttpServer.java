@@ -99,6 +99,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                     protected void initChannel(SocketChannel ch) {
                         ChannelPipeline p = ch.pipeline();
                         var config = httpServerConfig.get();
+                        var telemetry = telemetryValue != null ? telemetryValue.get() : null;
+                        p.addLast(new HttpServerCodec());
                         var readTimeout = config.socketReadTimeout();
                         if (!readTimeout.isZero()) {
                             p.addLast(new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
@@ -107,9 +109,38 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                         if (!writeTimeout.isZero()) {
                             p.addLast(new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
                         }
-                        p.addLast(new HttpServerCodec());
+
+                        p.addLast(new ChannelInboundHandlerAdapter() {
+                            private HttpRequest currentRequest;
+
+                            @Override
+                            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+                                if (msg instanceof HttpRequest req) {
+                                    this.currentRequest = req;
+                                }
+                                ctx.fireChannelRead(msg);
+                            }
+
+                            @Override
+                            public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+                                if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
+                                    if (currentRequest != null) {
+                                        var fullReq = new io.netty.handler.codec.http.DefaultFullHttpRequest(
+                                            currentRequest.protocolVersion(),
+                                            currentRequest.method(),
+                                            currentRequest.uri(),
+                                            io.netty.buffer.Unpooled.EMPTY_BUFFER,
+                                            currentRequest.headers(),
+                                            io.netty.handler.codec.http.EmptyHttpHeaders.INSTANCE
+                                        );
+                                        ctx.fireChannelRead(fullReq);
+                                        return;
+                                    }
+                                }
+                                ctx.fireUserEventTriggered(evt);
+                            }
+                        });
                         p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-                        var telemetry = telemetryValue != null ? telemetryValue.get() : null;
                         if (telemetry != null) {
                             p.addLast(telemetry);
                         } else {

@@ -28,6 +28,8 @@ import java.util.Objects;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
+import static io.koraframework.http.server.netty.handler.NettyTelemetryHandler.OBSERVATION_KEY;
+
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
 
@@ -77,6 +79,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         var rootCtx = container.telemetryContext();
         var invocation = container.invocation();
         var httpServerRequest = container.httpServerRequest();
+        var observation = container.observation();
 
         ScopedValue.where(NettyContext.VALUE, new NettyContext(nettyReq, ctx))
             .where(MDC.VALUE, new MDC())
@@ -85,17 +88,36 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 HttpServerResponse response;
                 try {
                     response = invocation.proceed(httpServerRequest);
+                    if (observation != null) {
+                        observation.observeResponse(response);
+                        if (!ctx.channel().isActive()) {
+                            observation.end();
+                            ctx.channel().attr(OBSERVATION_KEY).set(null);
+                        }
+                    }
                 } catch (Throwable e) {
                     if (e instanceof HttpServerResponse rs) {
                         response = rs;
+                        if (observation != null) {
+                            observation.observeError(e);
+                            observation.observeResponse(response);
+                        }
                     } else {
+                        if (observation != null) {
+                            var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
+                            observation.observeError(e);
+                            observation.observeResponse(errorResponse);
+                            if (!ctx.channel().isActive()) {
+                                observation.end();
+                                ctx.channel().attr(io.netty.util.AttributeKey.valueOf("kora.http.observation")).set(null);
+                            }
+                        }
                         sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
                         return;
                     }
                 }
-
-                var responseContainer = new ResponseContainer(nettyReq, response, container.observation());
-                ctx.fireChannelRead(responseContainer);
+                var responseContainer = new ResponseContainer(nettyReq, response, observation);
+                ctx.executor().execute(() -> ctx.fireChannelRead(responseContainer));
             });
     }
 
