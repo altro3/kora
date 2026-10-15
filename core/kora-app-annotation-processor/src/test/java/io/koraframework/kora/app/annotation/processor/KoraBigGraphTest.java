@@ -21,15 +21,11 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
     }
 
     @Test
-    public void testRealisticGraphColdStart() throws Exception {
-        int nodesCount = 1500;
-        int layersCount = 15; // Глубина архитектуры (15 ярусов)
+    public void testRealisticEnterpriseGraphColdStart() throws Exception {
+        int nodesCount = 250;  // Реалистичный размер боевого микросервиса
+        int layersCount = 5;   // 5 слоев архитектуры по твоим правилам
 
-        if (layersCount < 4) {
-            throw new IllegalArgumentException("layersCount must be at least 4 for full layered architecture");
-        }
-
-        // 1. Распределяем ноды по слоям
+        // 1. Распределяем ноды по слоям (равномерно по ~120 нод на слой)
         int nodesPerLayer = nodesCount / layersCount;
         int[] nodeToLayerMap = new int[nodesCount];
         java.util.List<Integer>[] layerToNodesMap = new java.util.List[layersCount];
@@ -46,21 +42,23 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             layerToNodesMap[currentLayer].add(i);
         }
 
-        // 2. Генерируем Java-код графа
+        // 2. Генерируем Java-код графа по твоим строгим правилам
         var sb = new StringBuilder("\n")
             .append("@KoraApp\n")
             .append("public interface ExampleApplication {\n");
 
-        // Уникальные интерфейсы-маркеры
+        // Уникальные типы-маркеры
         for (int i = 0; i < nodesCount; i++) {
             sb.append("  interface Type").append(i).append(" {}\n");
         }
 
+        var random = new java.util.Random(42); // Фиксированный seed
+
         for (int i = 0; i < nodesCount; i++) {
             int layer = nodeToLayerMap[i];
 
-            // Финальный слой (Контроллеры) гарантированно помечаем как @Root
-            if (layer == layersCount - 1) {
+            // Контроллеры (слой 4) и 20% сервисов помечаем как @Root
+            if (layer == layersCount - 1 || (layer > 1 && i % 5 == 0)) {
                 sb.append("  @Root\n");
             }
 
@@ -69,37 +67,45 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             java.util.List<Integer> deps = new java.util.ArrayList<>();
 
             if (layer == 0) {
-                // Properties: базовый слой, зависимостей нет
+                // Слой 0 (Properties): зависимостей нет
             } else if (layer == 1) {
-                // Repositories: жестко привязываем к соответствующей по индексу ноде Properties
-                int propIdx = i % layerToNodesMap[0].size();
-                deps.add(layerToNodesMap[0].get(propIdx));
+                // Слой 1 (Repositories): зависят только от Properties (Слой 0)
+                var propNodes = layerToNodesMap[0];
+                deps.add(propNodes.get(i % propNodes.size()));
+                deps.add(propNodes.get((i + 1) % propNodes.size()));
             } else if (layer == layersCount - 1) {
-                // Controllers: каждый контроллер берет 1 свой базовый сервис + 1 свой базовый проперти
-                int serviceLayer = layersCount - 2;
-                int serviceIdx = i % layerToNodesMap[serviceLayer].size();
-                deps.add(layerToNodesMap[serviceLayer].get(serviceIdx));
+                // Слой 4 (Controllers): только на нижний слой (Слой 3) и Properties (Слой 0)
+                var propNodes = layerToNodesMap[0];
+                deps.add(propNodes.get(i % propNodes.size()));
 
-                int propIdx = i % layerToNodesMap[0].size();
-                deps.add(layerToNodesMap[0].get(propIdx));
+                var prevLayerNodes = layerToNodesMap[layersCount - 2]; // Слой 3 (Services)
+                deps.add(prevLayerNodes.get(i % prevLayerNodes.size()));
+                deps.add(prevLayerNodes.get((i + 1) % prevLayerNodes.size()));
             } else {
-                // Промежуточные Services: каждый сервис жестко зависит от сервиса/репозитория с предыдущего яруса
-                int prevLayer = layer - 1;
-                int prevLayerSize = layerToNodesMap[prevLayer].size();
+                // Слой 2 и 3 (Services/Components): могут ссылаться на всё, кроме контроллеров
 
-                // Основная цепочка связи слоев (детерминированный шаг)
-                int depIdx1 = i % prevLayerSize;
-                deps.add(layerToNodesMap[prevLayer].get(depIdx1));
+                // А. Ссылаемся на Properties (Слой 0)
+                var propNodes = layerToNodesMap[0];
+                deps.add(propNodes.get(i % propNodes.size()));
 
-                // Дополнительный шаг для перекрестных связей, чтобы граф был плотным
-                int depIdx2 = (i + 1) % prevLayerSize;
-                if (depIdx1 != depIdx2) {
-                    deps.add(layerToNodesMap[prevLayer].get(depIdx2));
+                // Б. Ссылаемся на Repositories (Слой 1)
+                var repoNodes = layerToNodesMap[1];
+                deps.add(repoNodes.get(i % repoNodes.size()));
+
+                // В. Ссылаемся на предыдущие Services (если мы на Слое 3, можем сослаться на Слой 2)
+                if (layer == 3) {
+                    var serviceLayer2Nodes = layerToNodesMap[2];
+                    deps.add(serviceLayer2Nodes.get(i % serviceLayer2Nodes.size()));
                 }
 
-                // Каждый сервис также подтягивает конфигурацию (Слой 0)
-                int propIdx = i % layerToNodesMap[0].size();
-                deps.add(layerToNodesMap[0].get(propIdx));
+                // Г. НАСТОЯЩИЙ ПОЛНОЦЕННЫЙ ГРАФ: Горизонтальные связи внутри текущего слоя
+                var currentLayerNodes = layerToNodesMap[layer];
+                int internalIdx = currentLayerNodes.indexOf(i);
+                if (internalIdx > 2) {
+                    // Зависим от нескольких соседей слева на своем же этаже архитектуры
+                    deps.add(currentLayerNodes.get(internalIdx - 1));
+                    deps.add(currentLayerNodes.get(internalIdx - 2));
+                }
             }
 
             // Записываем аргументы в метод
@@ -115,8 +121,6 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
         // 3. Компиляция и замер
         var draw = compile(sb.toString());
-
-        // Теперь ассерт сработает со 100% точностью на 1500 нод
         assertThat(draw.getNodes()).hasSize(nodesCount);
 
         var startNano = System.nanoTime();
@@ -127,7 +131,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             ==================================================
             ❄️ KORA COLD START REALISTIC GRAPH BENCHMARK ❄️
             ==================================================
-            🚀 Total Nodes    : %d
+            🚀 Total Nodes    : %d (Realistic Microservice)
             📐 Graph Depth    : %d layers
             ⏱️ Startup Time   : %.2f ms
             ==================================================
