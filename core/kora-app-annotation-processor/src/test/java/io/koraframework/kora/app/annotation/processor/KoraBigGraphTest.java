@@ -23,8 +23,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 250;  // Компактный реалистичный микросервис
-        int layersCount = 5;   // 5 слоев архитектуры
+        int nodesCount = 2500; // Наш новый масштаб
+        int layersCount = 50;  // 50 слоев архитектуры
 
         int nodesPerLayer = nodesCount / layersCount;
         int[] nodeToLayerMap = new int[nodesCount];
@@ -54,7 +54,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         for (int i = 0; i < nodesCount; i++) {
             int layer = nodeToLayerMap[i];
 
-            if (layer == layersCount - 1 || (layer > 1 && i % 5 == 0)) {
+            // Последний слой (Controllers) и каждая нода в цепочке должны быть достижимы
+            if (layer == layersCount - 1 || i == nodesCount - 1) {
                 sb.append("  @Root\n");
             }
 
@@ -68,34 +69,27 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
                 // Слой 0 (Properties): зависимостей нет
             } else if (layer == 1) {
                 // Слой 1 (Repositories): зависят от Properties (Слой 0)
-                var propNodes = layerToNodesMap[0]; // Читаем Слой 0 из массива
+                var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
             } else if (layer == layersCount - 1) {
-                // Слой 4 (Controllers): только на нижний слой (Слой 3) и Properties (Слой 0)
+                // Слой Controllers: жестко зависит от предыдущей ноды и Properties (Слой 0)
                 var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
 
-                var prevLayerNodes = layerToNodesMap[layersCount - 2]; // Читаем Слой 3 из массива
-                deps.add(prevLayerNodes.get(i % prevLayerNodes.size()));
+                // Обязательная непрерывная связь с концом цепочки сервисов
+                deps.add(i - 1);
             } else {
-                // Слой 2 и 3 (Services/Components): могут ссылаться на всё, кроме контроллеров
+                // Слой 2, 3...48 (Services/Components):
+                // 1. Связываем абсолютно ВСЕ ноды в единую неразрывную сквозную цепь-лестницу
+                deps.add(i - 1);
+
+                // 2. Добавляем системную зависимость от конфигурации (Слой 0)
                 var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
 
-                var repoNodes = layerToNodesMap[1]; // Читаем Слой 1 из массива
+                // 3. Вертикальная связь с репозиторием (Слой 1) для плотности
+                var repoNodes = layerToNodesMap[1];
                 deps.add(repoNodes.get(i % repoNodes.size()));
-
-                if (layer == 3) {
-                    var serviceLayer2Nodes = layerToNodesMap[2]; // Читаем Слой 2 из массива
-                    deps.add(serviceLayer2Nodes.get(i % serviceLayer2Nodes.size()));
-                }
-
-                // ГОРИЗОНТАЛЬНЫЕ СВЯЗИ внутри слоя (Настоящий граф)
-                var currentLayerNodes = layerToNodesMap[layer];
-                int internalIdx = currentLayerNodes.indexOf(i);
-                if (internalIdx > 1) {
-                    deps.add(currentLayerNodes.get(internalIdx - 1));
-                }
             }
 
             // Записываем аргументы с тегами через .class контракт
@@ -111,6 +105,11 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
         var draw = compile(sb.toString());
         assertThat(draw.getNodes()).hasSize(nodesCount);
+
+//        for (int i = 0; i <= 100; i++) {
+//            var warmupGraph = draw.init();
+//            warmupGraph.release();
+//        }
 
         var startNano = System.nanoTime();
         var graph = draw.init();
