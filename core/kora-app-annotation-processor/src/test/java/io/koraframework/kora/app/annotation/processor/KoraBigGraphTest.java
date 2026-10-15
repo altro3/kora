@@ -22,6 +22,37 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
     }
 
     @Test
+    public void testColdStart() throws Exception {
+        int nodesCount = 1500;
+        var sb = new StringBuilder("\n")
+            .append("@KoraApp\n")
+            .append("public interface ExampleApplication {\n");
+        for (int i = 0; i < nodesCount; i++) {
+            sb.append("  @Root\n");
+            sb.append("  default String component").append(i).append("() { return \"\"; }\n");
+        }
+        sb.append("}\n");
+
+        var draw = compile(sb.toString());
+        assertThat(draw.getNodes()).hasSize(nodesCount);
+
+        var startNano = System.nanoTime();
+        var graph = draw.init();
+        var durationMs = (System.nanoTime() - startNano) / 1_000_000.0;
+
+        System.out.printf("""
+            ==================================================
+            ❄️ KORA COLD START GRAPH BENCHMARK ❄️
+            ==================================================
+            🚀 Nodes Count   : %d
+            ⏱️ Startup Time : %.2f ms
+            ==================================================
+            """, draw.size(), durationMs);
+
+        assertThat(graph).isNotNull();
+    }
+
+    @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
         int nodesCount = 2500;
         int layersCount = 50;
