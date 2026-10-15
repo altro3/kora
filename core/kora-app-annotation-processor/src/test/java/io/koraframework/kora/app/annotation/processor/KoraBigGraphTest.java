@@ -23,8 +23,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 2500; // Наш новый масштаб
-        int layersCount = 50;  // 50 слоев архитектуры
+        int nodesCount = 2500;
+        int layersCount = 50;
 
         int nodesPerLayer = nodesCount / layersCount;
         int[] nodeToLayerMap = new int[nodesCount];
@@ -46,7 +46,6 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             .append("@KoraApp\n")
             .append("public interface ExampleApplication {\n");
 
-        // Генерируем ультралегкие интерфейсы-теги прямо внутри кода приложения
         for (int i = 0; i < nodesCount; i++) {
             sb.append("  interface Comp").append(i).append(" {}\n");
         }
@@ -54,45 +53,33 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         for (int i = 0; i < nodesCount; i++) {
             int layer = nodeToLayerMap[i];
 
-            // Последний слой (Controllers) и каждая нода в цепочке должны быть достижимы
             if (layer == layersCount - 1 || i == nodesCount - 1) {
                 sb.append("  @Root\n");
             }
 
-            // Передаем класс-тег: @Tag(CompX.class)
             sb.append("  @Tag(Comp").append(i).append(".class)\n");
             sb.append("  default String component").append(i).append("(");
 
             java.util.List<Integer> deps = new java.util.ArrayList<>();
 
             if (layer == 0) {
-                // Слой 0 (Properties): зависимостей нет
             } else if (layer == 1) {
-                // Слой 1 (Repositories): зависят от Properties (Слой 0)
                 var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
             } else if (layer == layersCount - 1) {
-                // Слой Controllers: жестко зависит от предыдущей ноды и Properties (Слой 0)
                 var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
 
-                // Обязательная непрерывная связь с концом цепочки сервисов
                 deps.add(i - 1);
             } else {
-                // Слой 2, 3...48 (Services/Components):
-                // 1. Связываем абсолютно ВСЕ ноды в единую неразрывную сквозную цепь-лестницу
                 deps.add(i - 1);
 
-                // 2. Добавляем системную зависимость от конфигурации (Слой 0)
                 var propNodes = layerToNodesMap[0];
                 deps.add(propNodes.get(i % propNodes.size()));
-
-                // 3. Вертикальная связь с репозиторием (Слой 1) для плотности
                 var repoNodes = layerToNodesMap[1];
                 deps.add(repoNodes.get(i % repoNodes.size()));
             }
 
-            // Записываем аргументы с тегами через .class контракт
             for (int d = 0; d < deps.size(); d++) {
                 int depId = deps.get(d);
                 sb.append("@Tag(Comp").append(depId).append(".class) String dep").append(depId);
