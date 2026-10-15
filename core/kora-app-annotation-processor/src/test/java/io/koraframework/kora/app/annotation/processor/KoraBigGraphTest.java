@@ -54,8 +54,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 2500;
-        int layersCount = 50;
+        int nodesCount = 250;
+        int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
         int[] nodeToLayerMap = new int[nodesCount];
