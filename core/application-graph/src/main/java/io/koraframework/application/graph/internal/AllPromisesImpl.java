@@ -4,31 +4,42 @@ import io.koraframework.application.graph.*;
 
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
+import java.util.function.Function;
 
 public final class AllPromisesImpl<T> implements All<PromiseOf<T>> {
-    private final List<PromiseOf<T>> values;
+    private final Graph graph;
+    private final ArrayList<PromiseWrapper<?, T>> values;
 
     @SafeVarargs
     public AllPromisesImpl(Graph graph, NodeWithMapper<?, T>... nodes) {
-        var list = new ArrayList<PromiseOf<T>>(nodes.length);
+        this.graph = graph;
+        this.values = new ArrayList<>(nodes.length);
         for (var node : nodes) {
-            var condition = node.node().condition();
-            if (condition == null || condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
-                list.add(getPromise(graph, node));
-            }
+            this.values.add(new PromiseWrapper<>(graph, node));
         }
-        this.values = List.copyOf(list);
     }
 
-    private static <N, V> PromiseOf<V> getPromise(Graph graph, NodeWithMapper<N, V> element) {
-        var promise = graph.promiseOf(element.node());
-        var mapper = element.mapper();
-        return promise.map(mapper::apply);
+    private record PromiseWrapper<N, V>(PromiseOf<? extends N> promise, Function<N, V> mapper, Node<? extends N> node) {
+        public PromiseWrapper(Graph graph, NodeWithMapper<N, V> element) {
+            var promise = graph.promiseOf(element.node());
+            this(promise, element.mapper(), element.node());
+        }
+
+        public PromiseOf<V> get() {
+            return promise.map(mapper::apply);
+        }
     }
 
     @Override
     public Iterator<PromiseOf<T>> iterator() {
-        return values.iterator();
+        var list = new ArrayList<PromiseOf<T>>();
+        for (var value : this.values) {
+            var condition = value.node().condition();
+            if (condition == null || condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
+                list.add(value.get());
+            }
+        }
+        return list.iterator();
     }
+
 }

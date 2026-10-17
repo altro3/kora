@@ -4,31 +4,41 @@ import io.koraframework.application.graph.*;
 
 import java.util.ArrayList;
 import java.util.Iterator;
-import java.util.List;
+import java.util.function.Function;
 
 public final class AllValuesImpl<T> implements All<ValueOf<T>> {
-    private final List<ValueOf<T>> values;
+    private final Graph graph;
+    private final ArrayList<ValueWrapper<?, T>> values;
 
     @SafeVarargs
     public AllValuesImpl(Graph graph, NodeWithMapper<?, T>... nodes) {
-        var list = new ArrayList<ValueOf<T>>(nodes.length);
+        this.graph = graph;
+        this.values = new ArrayList<>(nodes.length);
         for (var node : nodes) {
-            var condition = node.node().condition();
-            if (condition == null || condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
-                list.add(getValue(graph, node));
-            }
+            this.values.add(new ValueWrapper<>(graph, node));
         }
-        values = List.copyOf(list);
     }
 
-    private static <N, V> ValueOf<V> getValue(Graph graph, NodeWithMapper<N, V> element) {
-        var value = graph.valueOf(element.node());
-        var mapper = element.mapper();
-        return value.map(mapper::apply);
+    private record ValueWrapper<N, V>(ValueOf<? extends N> value, Function<N, V> mapper, Node<? extends N> node) {
+        public ValueWrapper(Graph graph, NodeWithMapper<N, V> element) {
+            var promise = graph.valueOf(element.node());
+            this(promise, element.mapper(), element.node());
+        }
+
+        public ValueOf<V> get() {
+            return value.map(mapper::apply);
+        }
     }
 
     @Override
     public Iterator<ValueOf<T>> iterator() {
-        return values.iterator();
+        var list = new ArrayList<ValueOf<T>>();
+        for (var value : this.values) {
+            var condition = value.node().condition();
+            if (condition == null || condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
+                list.add(value.get());
+            }
+        }
+        return list.iterator();
     }
 }
