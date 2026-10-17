@@ -1,7 +1,9 @@
 package io.koraframework.kora.app.annotation.processor;
 
+import io.koraframework.application.graph.*;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -23,8 +25,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
     }
 
     @Test
-    public void testRealisticEnterpriseGraphColdStart() {
-        int nodesCount = 2500;
+    public void testPureRealisticGraphDrawBuildTime() {
+        int nodesCount = 150;
         int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
@@ -43,70 +45,62 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             layerToNodesMap[currentLayer].add(i);
         }
 
-        var sb = new StringBuilder("\n")
-            .append("@KoraApp\n")
-            .append("public interface ExampleApplication {\n");
+        var startPureNano = System.nanoTime();
 
-        for (int i = 0; i < nodesCount; i++) {
-            sb.append("  interface Comp").append(i).append(" {}\n");
-        }
+        var draw = new ApplicationGraphDraw(ExampleApplication.class);
+        List<Node<?>> allNodes = new ArrayList<>(nodesCount);
 
         for (int i = 0; i < nodesCount; i++) {
             int layer = nodeToLayerMap[i];
-
-            if (layer == layersCount - 1 || i == nodesCount - 1) {
-                sb.append("  @Root\n");
-            }
-
-            sb.append("  @Tag(Comp").append(i).append(".class)\n");
-            sb.append("  default String component").append(i).append("(");
-
-            List<Integer> deps = new ArrayList<>();
+            List<Node<?>> deps = new ArrayList<>();
 
             if (layer == 0) {
             } else if (layer == 1) {
                 var propNodes = layerToNodesMap[0];
-                deps.add(propNodes.get(i % propNodes.size()));
+                deps.add(allNodes.get(propNodes.get(i % propNodes.size())));
             } else if (layer == layersCount - 1) {
                 var propNodes = layerToNodesMap[0];
-                deps.add(propNodes.get(i % propNodes.size()));
-                deps.add(i - 1);
+                deps.add(allNodes.get(propNodes.get(i % propNodes.size())));
+                deps.add(allNodes.get(i - 1));
             } else {
-                deps.add(i - 1);
+                deps.add(allNodes.get(i - 1));
                 var propNodes = layerToNodesMap[0];
-                deps.add(propNodes.get(i % propNodes.size()));
+                deps.add(allNodes.get(propNodes.get(i % propNodes.size())));
                 var repoNodes = layerToNodesMap[1];
-                deps.add(repoNodes.get(i % repoNodes.size()));
+                deps.add(allNodes.get(repoNodes.get(i % repoNodes.size())));
             }
 
-            for (int d = 0; d < deps.size(); d++) {
-                int depId = deps.get(d);
-                sb.append("@Tag(Comp").append(depId).append(".class) String dep").append(depId);
-                if (d < deps.size() - 1) sb.append(", ");
-            }
+            Type fakeType = new FakeType(i);
+            Class<?> fakeTag = FakeTag.class;
 
-            sb.append(") { return \"\"; }\n");
+            var node = draw.addNode(fakeType, fakeTag, null, deps, List.of(), List.of(), graph -> "");
+            allNodes.add(node);
+
+            draw.findNodeByType(fakeType);
         }
-        sb.append("}\n");
 
-        var startNano = System.nanoTime();
-        var draw = compile(sb.toString());
-        var totalNano = System.nanoTime() - startNano;
+        var totalPureNano = System.nanoTime() - startPureNano;
 
-        var durationMs = totalNano / 1_000_000.0;
-        var avgPerNodeNano = totalNano / nodesCount;
+        var durationMs = totalPureNano / 1_000_000.0;
+        var avgPerNodeNano = totalPureNano / nodesCount;
 
         System.out.printf("""
             ==================================================
-            ❄️ KORA DRAW COLD START BENCHMARK (150 NODES) ❄️
+            🎯 PURE KORA GRAPH DRAW BENCHMARK (NO JAVAC) 🎯
             ==================================================
             🚀 Total Nodes        : %d
             📐 Graph Depth        : %d layers
-            ⏱️ Draw & Reg Time    : %.2f ms
+            ⏱️ Clean Draw Time    : %.4f ms
             📊 Avg Time per Node  : %d ns
             ==================================================
             """, draw.size(), layersCount, durationMs, avgPerNodeNano);
 
         assertThat(draw.getNodes()).hasSize(nodesCount);
+    }
+
+    private interface ExampleApplication {}
+    private interface FakeTag {}
+    private record FakeType(int id) implements Type {
+        @Override public String getTypeName() { return "Comp" + id; }
     }
 }
