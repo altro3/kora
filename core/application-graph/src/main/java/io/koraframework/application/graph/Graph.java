@@ -60,32 +60,45 @@ public interface Graph {
 
     @SafeVarargs
     private static <T, V> NodeWithMapper<T, V> getOneNodeMatchingCondition(Graph graph, NodeWithMapper<T, V>... nodes) {
-        var lastValue = (@Nullable NodeWithMapper<T, V>) null;
-        var errors = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Failed>>(nodes.length);
-        var matchedNodes = new ArrayList<NodeWithMapper<? extends T, V>>(nodes.length);
-        var matchReasons = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Matched>>(nodes.length);
+        NodeWithMapper<T, V> firstMatched = null;
+        int matchCount = 0;
+
         for (var node : nodes) {
             var condition = node.node().condition();
             if (condition == null) {
-                lastValue = node;
-                matchedNodes.add(node);
-                matchReasons.add(Map.entry(node.node(), new GraphCondition.ConditionResult.Matched("Node %s has no conditions".formatted(node.toString()))));
+                matchCount++;
+                if (matchCount == 1) {
+                    firstMatched = node;
+                }
             } else {
-                switch (condition.apply(graph)) {
-                    case GraphCondition.ConditionResult.Failed failed -> errors.add(Map.entry(node.node(), failed));
-                    case GraphCondition.ConditionResult.Matched matched -> {
-                        lastValue = node;
-                        matchedNodes.add(node);
-                        matchReasons.add(Map.entry(node.node(), matched));
+                if (condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
+                    matchCount++;
+                    if (matchCount == 1) {
+                        firstMatched = node;
                     }
                 }
             }
         }
-        if (matchedNodes.size() == 1) {
-            assert lastValue != null;
-            return lastValue;
+
+        if (matchCount == 1) {
+            return firstMatched;
         }
-        if (matchedNodes.isEmpty()) {
+
+        var errors = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Failed>>(nodes.length);
+        var matchReasons = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Matched>>(nodes.length);
+        for (var node : nodes) {
+            var condition = node.node().condition();
+            if (condition == null) {
+                matchReasons.add(Map.entry(node.node(), new GraphCondition.ConditionResult.Matched("Node %s has no conditions".formatted(node.toString()))));
+            } else {
+                switch (condition.apply(graph)) {
+                    case GraphCondition.ConditionResult.Failed failed -> errors.add(Map.entry(node.node(), failed));
+                    case GraphCondition.ConditionResult.Matched matched -> matchReasons.add(Map.entry(node.node(), matched));
+                }
+            }
+        }
+
+        if (matchCount == 0) {
             throw new NoneOfConditionalNodeMatches(errors);
         } else {
             throw new MoreThanOneConditionalNodeMatches(matchReasons);

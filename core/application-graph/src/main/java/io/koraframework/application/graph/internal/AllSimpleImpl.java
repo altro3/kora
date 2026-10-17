@@ -6,21 +6,22 @@ import io.koraframework.application.graph.GraphCondition;
 import io.koraframework.application.graph.NodeWithMapper;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 
 public final class AllSimpleImpl<T> implements All<T> {
-    private final ArrayList<T> values;
+    private final List<T> values;
 
     @SafeVarargs
     public AllSimpleImpl(Graph graph, NodeWithMapper<?, T>... nodes) {
-        this.values = new ArrayList<T>(nodes.length);
+        var list = new ArrayList<T>(nodes.length);
         for (var node : nodes) {
             var condition = node.node().condition();
             if (condition == null || condition.apply(graph) instanceof GraphCondition.ConditionResult.Matched) {
-                this.values.add(get(graph, node));
+                list.add(get(graph, node));
             }
         }
+        this.values = List.copyOf(list);
     }
 
     private static <N, V> V get(Graph graph, NodeWithMapper<N, V> node) {
@@ -29,6 +30,6 @@ public final class AllSimpleImpl<T> implements All<T> {
 
     @Override
     public Iterator<T> iterator() {
-        return Collections.unmodifiableCollection(this.values).iterator();
+        return values.iterator();
     }
 }

@@ -3,16 +3,18 @@ package io.koraframework.application.graph;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Arrays;
-import java.util.Objects;
-import java.util.stream.Collectors;
 
 public class TypeRef<T> implements ParameterizedType {
     private final Class<T> rawType;
     private final Type[] actualTypeArguments;
+    private final int hashCode;
 
     private TypeRef(Class<T> rawType, Type... actualTypeArguments) {
         this.rawType = rawType;
         this.actualTypeArguments = actualTypeArguments;
+        int result = rawType.hashCode();
+        result = 31 * result + Arrays.hashCode(actualTypeArguments);
+        this.hashCode = result;
     }
 
     @SuppressWarnings("unchecked")
@@ -28,12 +30,12 @@ public class TypeRef<T> implements ParameterizedType {
 
     @Override
     public Type[] getActualTypeArguments() {
-        return this.actualTypeArguments;
+        return actualTypeArguments;
     }
 
     @Override
     public Class<T> getRawType() {
-        return this.rawType;
+        return rawType;
     }
 
     @Override
@@ -47,48 +49,42 @@ public class TypeRef<T> implements ParameterizedType {
             return true;
         }
         if (o instanceof ParameterizedType that) {
-
-            var thatOwner = that.getOwnerType();
-            var thatRawType = that.getRawType();
-
-            return
-                Objects.equals(getOwnerType(), thatOwner) &&
-                Objects.equals(getRawType(), thatRawType) &&
-                Arrays.equals(getActualTypeArguments(), that.getActualTypeArguments());
-        } else if (o instanceof Class<?> type && this.actualTypeArguments.length == 0) {
-            return this.rawType.equals(type);
-        } else {
-            return false;
+            if (rawType != that.getRawType()) {
+                return false;
+            }
+            if (that.getOwnerType() != null) {
+                return false;
+            }
+            return Arrays.equals(actualTypeArguments, that.getActualTypeArguments());
+        } else if (o instanceof Class<?> type && actualTypeArguments.length == 0) {
+            return rawType.equals(type);
         }
+        return false;
     }
 
     @Override
     public int hashCode() {
-        int result = Objects.hash(rawType);
-        result = 31 * result + Arrays.hashCode(actualTypeArguments);
-        return result;
+        return hashCode;
     }
 
     @Override
     public String toString() {
-        var rawTypeString = rawType.getCanonicalName();
-//            .replace("class ", "")
-//            .replace("interface ", "");
+        var rawTypeString = rawType.getName();
         if (actualTypeArguments.length == 0) {
-            return "" + rawTypeString;
+            return rawTypeString;
         }
-        var typeParams = Arrays.stream(actualTypeArguments)
-            .map(t -> t instanceof Class<?> c
-                    ? c.getCanonicalName()
-                    : t.getTypeName()
-//                .replace("class ", "")
-//                .replace("interface ", "")
-            )
-            .collect(Collectors.joining(", ", "<", ">"));
-        return "" + rawTypeString + typeParams;
+        var sb = new StringBuilder(rawTypeString).append("<");
+        for (int i = 0; i < actualTypeArguments.length; i++) {
+            Type t = actualTypeArguments[i];
+            if (t instanceof Class<?> c) {
+                sb.append(c.getName());
+            } else {
+                sb.append(t.getTypeName());
+            }
+            if (i < actualTypeArguments.length - 1) {
+                sb.append(", ");
+            }
+        }
+        return sb.append(">").toString();
     }
-
-//    private static String typeToString(Type type) {
-//
-//    }
 }
