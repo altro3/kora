@@ -10,7 +10,6 @@ import java.util.function.*;
 public class ApplicationGraphDraw {
 
     private static final String ANY_TAG_NAME = "io.koraframework.common.Tag.Any";
-
     private static final @Nullable Class<?> ANY_TAG_CLASS;
 
     static {
@@ -60,18 +59,18 @@ public class ApplicationGraphDraw {
             type,
             tag,
             condition,
-            this.graphNodes.size(),
+            graphNodes.size(),
             createDependencies,
             refreshDependencies,
             interceptors,
             factory
         );
-        this.graphNodes.add(node);
+        graphNodes.add(node);
 
-        var existingList = this.typeIndex.get(type);
+        var existingList = typeIndex.get(type);
         if (existingList == null) {
             existingList = new ArrayList<>(2);
-            this.typeIndex.put(type, existingList);
+            typeIndex.put(type, existingList);
         }
         existingList.add(node);
 
@@ -85,16 +84,16 @@ public class ApplicationGraphDraw {
     }
 
     public List<Node<?>> getNodes() {
-        return Collections.unmodifiableList(this.graphNodes);
+        return Collections.unmodifiableList(graphNodes);
     }
 
     public int size() {
-        return this.graphNodes.size();
+        return graphNodes.size();
     }
 
     @Nullable
     public Node<?> findNodeByType(Type type) {
-        var nodes = this.typeIndex.get(type);
+        var nodes = typeIndex.get(type);
         if (nodes == null) {
             return null;
         }
@@ -108,9 +107,9 @@ public class ApplicationGraphDraw {
     }
 
     public List<Node<?>> findNodesByType(Type type, @Nullable Class<?> tag) {
-        var nodes = this.typeIndex.get(type);
+        var nodes = typeIndex.get(type);
         if (nodes == null) {
-            return new ArrayList<>();
+            return List.of();
         }
 
         var result = new ArrayList<Node<?>>();
@@ -129,8 +128,8 @@ public class ApplicationGraphDraw {
         var newNode = new NodeImpl<T>(
             this, casted.type, casted.tag, casted.condition, casted.index, List.of(), List.of(), List.of(), factory
         );
-        this.graphNodes.set(casted.index, newNode);
-        var list = this.typeIndex.get(casted.type);
+        graphNodes.set(casted.index, newNode);
+        var list = typeIndex.get(casted.type);
         if (list != null) {
             for (int i = 0; i < list.size(); i++) {
                 if (list.get(i).index == casted.index) {
@@ -146,8 +145,8 @@ public class ApplicationGraphDraw {
         var newNode = new NodeImpl<T>(
             this, casted.type, casted.tag, casted.condition, casted.index, casted.createDependencies, casted.refreshDependencies, List.of(), factory
         );
-        this.graphNodes.set(casted.index, newNode);
-        var list = this.typeIndex.get(casted.type);
+        graphNodes.set(casted.index, newNode);
+        var list = typeIndex.get(casted.type);
         if (list != null) {
             for (int i = 0; i < list.size(); i++) {
                 if (list.get(i).index == casted.index) {
@@ -222,8 +221,9 @@ public class ApplicationGraphDraw {
         return draw;
     }
 
+    @SuppressWarnings("unchecked")
     public ApplicationGraphDraw subgraph(List<Node<?>> excludeTransitive, Iterable<Node<?>> rootNodes) {
-        var maxNodes = this.graphNodes.size();
+        var maxNodes = graphNodes.size();
 
         int[] seen = new int[maxNodes];
         Arrays.fill(seen, -1);
@@ -233,7 +233,7 @@ public class ApplicationGraphDraw {
             excludeTransitiveBits.set(((NodeImpl<?>) excludeTransitive.get(i)).index);
         }
 
-        var subgraph = new ApplicationGraphDraw(this.root);
+        var subgraph = new ApplicationGraphDraw(root);
 
         int[] stack = new int[maxNodes];
         int stackPtr = 0;
@@ -249,7 +249,7 @@ public class ApplicationGraphDraw {
 
         while (stackPtr > 0) {
             int currentIdx = stack[stackPtr - 1];
-            var node = this.graphNodes.get(currentIdx);
+            var node = graphNodes.get(currentIdx);
 
             if (state[currentIdx] == 0) {
                 state[currentIdx] = 1;
@@ -275,19 +275,29 @@ public class ApplicationGraphDraw {
                 state[currentIdx] = 2;
 
                 if (seen[currentIdx] == -1) {
-                    var dependencyNodes = new ArrayList<Node<?>>(node.createDependencies.size());
-                    if (!excludeTransitiveBits.get(currentIdx)) {
-                        for (var j = 0; j < node.createDependencies.size(); j++) {
+                    var createDepSize = node.createDependencies.size();
+                    List<Node<?>> dependencyNodes;
+                    if (createDepSize == 0 || excludeTransitiveBits.get(currentIdx)) {
+                        dependencyNodes = List.of();
+                    } else {
+                        dependencyNodes = new ArrayList<>(createDepSize);
+                        for (var j = 0; j < createDepSize; j++) {
                             if (node.createDependencies.get(j) instanceof NodeImpl<?> v) {
                                 dependencyNodes.add(subgraph.graphNodes.get(seen[v.index]));
                             }
                         }
                     }
 
-                    var interceptors = new ArrayList<Node<? extends GraphInterceptor<Object>>>(node.interceptors.size());
-                    for (var j = 0; j < node.interceptors.size(); j++) {
-                        int interIdx = ((NodeImpl<?>) node.interceptors.get(j)).index;
-                        interceptors.add((Node<? extends GraphInterceptor<Object>>) subgraph.graphNodes.get(seen[interIdx]));
+                    var interceptorsSize = node.interceptors.size();
+                    List<Node<? extends GraphInterceptor<Object>>> interceptors;
+                    if (interceptorsSize == 0) {
+                        interceptors = List.of();
+                    } else {
+                        interceptors = new ArrayList<>(interceptorsSize);
+                        for (var j = 0; j < interceptorsSize; j++) {
+                            int interIdx = ((NodeImpl<?>) node.interceptors.get(j)).index;
+                            interceptors.add((Node<? extends GraphInterceptor<Object>>) subgraph.graphNodes.get(seen[interIdx]));
+                        }
                     }
 
                     Graph.Factory<Object> factory = graph -> ((NodeImpl<Object>) node).factory.get(new RemappedGraphProxy(graph, subgraph, seen));
