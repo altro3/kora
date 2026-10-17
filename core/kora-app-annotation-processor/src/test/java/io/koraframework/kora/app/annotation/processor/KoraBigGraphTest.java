@@ -1,5 +1,6 @@
 package io.koraframework.kora.app.annotation.processor;
 
+import io.koraframework.application.graph.*;
 import io.koraframework.application.graph.internal.*;
 import org.junit.jupiter.api.*;
 
