@@ -205,8 +205,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     private void initializeSubgraph(int startFrom) {
         logger.trace("Materializing graph objects {}", startFrom);
 
-        var tmpGraph = new OptimizedTmpGraph(this);
-        var isDebug = logger.isDebugEnabled();
         var nodes = draw.getNodes();
         int size = nodes.size();
 
@@ -251,9 +249,20 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
         }
 
+        final boolean isDebug = logger.isDebugEnabled();
+        final boolean isTrace = logger.isTraceEnabled();
+
+        var tmpGraph = new OptimizedTmpGraph(this);
         CompletableFuture<Void>[] futures = new CompletableFuture[size];
         final var errors = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
         var virtualThreadExecutor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().factory());
+
+        int[] temporaryDepCounts = new int[size];
+        @SuppressWarnings("unchecked")
+        List<Integer>[] downstream = new List[size];
+        for (int i = 0; i < size; i++) {
+            downstream[i] = new ArrayList<>();
+        }
 
         for (int i = 0; i < size; i++) {
             if (i < startFrom || !dependentNodes.get(i)) {
@@ -261,70 +270,91 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 continue;
             }
 
+            futures[i] = new CompletableFuture<>();
             var node = (NodeImpl<?>) nodes.get(i);
+
+            int depCount = 0;
             var createDeps = node.createDependencies;
+            for (int j = 0; j < createDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) createDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx].add(i);
+                    depCount++;
+                }
+            }
             var refreshDeps = node.refreshDependencies;
+            for (int j = 0; j < refreshDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) refreshDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx].add(i);
+                    depCount++;
+                }
+            }
             var interceptorDeps = node.interceptors;
+            for (int j = 0; j < interceptorDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) interceptorDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx].add(i);
+                    depCount++;
+                }
+            }
+            temporaryDepCounts[i] = depCount;
+        }
 
-            int depCount = createDeps.size() + refreshDeps.size() + interceptorDeps.size();
-            CompletableFuture<Void> allDepsReady;
+        var remainingDepsArray = new java.util.concurrent.atomic.AtomicIntegerArray(size);
+        for (int i = 0; i < size; i++) {
+            remainingDepsArray.set(i, temporaryDepCounts[i]);
+        }
 
-            if (depCount == 0) {
-                allDepsReady = null;
-            } else {
-                CompletableFuture<?>[] depArray = new CompletableFuture[depCount];
-                int idx = 0;
-                for (int j = 0; j < createDeps.size(); j++) {
-                    depArray[idx++] = futures[((NodeImpl<?>) createDeps.get(j)).index];
-                }
-                for (int j = 0; j < refreshDeps.size(); j++) {
-                    depArray[idx++] = futures[((NodeImpl<?>) refreshDeps.get(j)).index];
-                }
-                for (int j = 0; j < interceptorDeps.size(); j++) {
-                    depArray[idx++] = futures[((NodeImpl<?>) interceptorDeps.get(j)).index];
-                }
-                allDepsReady = CompletableFuture.allOf(depArray);
+        final class NodeTask implements Runnable {
+            private final int targetIndex;
+
+            NodeTask(int targetIndex) {
+                this.targetIndex = targetIndex;
             }
 
-            if (allDepsReady == null) {
-                futures[i] = CompletableFuture.runAsync(() -> {
-                    if (!errors.isEmpty()) {
-                        return;
-                    }
-                    long start = isDebug ? System.nanoTime() : 0L;
-                    try {
-                        tmpGraph.createNode(node, startFrom);
-                        if (isDebug) {
-                            long tookNanos = System.nanoTime() - start;
-                            if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
-                                logger.debug("Initialized node {} at index {} in {}ms", node.type(), node.index, tookNanos / 1_000_000);
-                            }
+            @Override
+            public void run() {
+                if (!errors.isEmpty()) {
+                    futures[targetIndex].complete(null);
+                    return;
+                }
+
+                var currentNode = (NodeImpl<?>) nodes.get(targetIndex);
+                long start = isDebug ? System.nanoTime() : 0L;
+                try {
+                    tmpGraph.createNode(currentNode, startFrom, isTrace);
+                    if (isDebug) {
+                        long tookNanos = System.nanoTime() - start;
+                        if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
+                            logger.debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
                         }
-                    } catch (Throwable throwable) {
-                        errors.add(throwable);
-                        throw new CompletionException(throwable);
                     }
-                }, virtualThreadExecutor);
-            } else {
-                futures[i] = allDepsReady.handleAsync((_, depError) -> {
-                    if (depError != null || !errors.isEmpty()) {
-                        throw new CompletionException(new DependencyInitializationFailedException());
-                    }
-                    long start = isDebug ? System.nanoTime() : 0L;
-                    try {
-                        tmpGraph.createNode(node, startFrom);
-                        if (isDebug) {
-                            long tookNanos = System.nanoTime() - start;
-                            if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
-                                logger.debug("Initialized node {} at index {} in {}ms", node.type(), node.index, tookNanos / 1_000_000);
-                            }
+                    futures[targetIndex].complete(null);
+
+                    var nextNodes = downstream[targetIndex];
+                    for (int k = 0; k < nextNodes.size(); k++) {
+                        int nextIdx = nextNodes.get(k);
+                        if (remainingDepsArray.decrementAndGet(nextIdx) == 0) {
+                            virtualThreadExecutor.execute(new NodeTask(nextIdx));
                         }
-                    } catch (Throwable throwable) {
-                        errors.add(throwable);
-                        throw new CompletionException(throwable);
                     }
-                    return null;
-                }, virtualThreadExecutor);
+                } catch (Throwable throwable) {
+                    errors.add(throwable);
+                    futures[targetIndex].completeExceptionally(throwable);
+
+                    var nextNodes = downstream[targetIndex];
+                    for (int k = 0; k < nextNodes.size(); k++) {
+                        int nextIdx = nextNodes.get(k);
+                        futures[nextIdx].complete(null);
+                    }
+                }
+            }
+        }
+
+        for (int i = startFrom; i < size; i++) {
+            if (dependentNodes.get(i) && temporaryDepCounts[i] == 0) {
+                virtualThreadExecutor.execute(new NodeTask(i));
             }
         }
 
@@ -332,17 +362,11 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             CompletableFuture.allOf(futures).join();
         } catch (Throwable t) {
             tmpGraph.rollback();
-            Throwable rootCause = null;
-            for (Throwable err : errors) {
-                if (!(err instanceof DependencyInitializationFailedException) &&
-                    !(err.getCause() instanceof DependencyInitializationFailedException)) {
-                    rootCause = err;
-                    break;
-                }
-            }
-            if (rootCause == null) {
-                rootCause = t;
-            }
+        }
+
+        if (!errors.isEmpty()) {
+            tmpGraph.rollback();
+            var rootCause = errors.get(0);
             if (rootCause instanceof CompletionException ce) {
                 rootCause = ce.getCause();
             }

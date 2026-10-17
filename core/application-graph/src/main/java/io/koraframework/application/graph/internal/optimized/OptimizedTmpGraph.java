@@ -130,8 +130,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     }
 
     @SuppressWarnings("unchecked")
-    public <T> void createNode(NodeImpl<T> node, int startFrom) throws Exception {
-        final boolean isTrace = rootGraph.logger.isTraceEnabled();
+    public <T> void createNode(NodeImpl<T> node, int startFrom, boolean isTrace) throws Exception {
         var oldObject = (T) rootRawObjects.get(node.index);
 
         if (oldObject != null && node.index != startFrom) {
