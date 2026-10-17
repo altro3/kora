@@ -249,36 +249,30 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
         }
 
-        final boolean isDebug = logger.isDebugEnabled();
-        final boolean isTrace = logger.isTraceEnabled();
+        var isDebug = logger.isDebugEnabled();
+        var isTrace = logger.isTraceEnabled();
 
         var tmpGraph = new OptimizedTmpGraph(this);
-        CompletableFuture<Void>[] futures = new CompletableFuture[size];
         final var errors = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
-        var virtualThreadExecutor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().factory());
 
         int[] temporaryDepCounts = new int[size];
-        @SuppressWarnings("unchecked")
-        List<Integer>[] downstream = new List[size];
-        for (int i = 0; i < size; i++) {
-            downstream[i] = new ArrayList<>();
-        }
+        int[] downstreamCounts = new int[size];
+        int totalDependentTasks = 0;
 
         for (int i = 0; i < size; i++) {
             if (i < startFrom || !dependentNodes.get(i)) {
-                futures[i] = CompletableFuture.completedFuture(null);
                 continue;
             }
 
-            futures[i] = new CompletableFuture<>();
+            totalDependentTasks++;
             var node = (NodeImpl<?>) nodes.get(i);
-
             int depCount = 0;
+
             var createDeps = node.createDependencies;
             for (int j = 0; j < createDeps.size(); j++) {
                 int depIdx = ((NodeImpl<?>) createDeps.get(j)).index;
                 if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
-                    downstream[depIdx].add(i);
+                    downstreamCounts[depIdx]++;
                     depCount++;
                 }
             }
@@ -286,7 +280,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             for (int j = 0; j < refreshDeps.size(); j++) {
                 int depIdx = ((NodeImpl<?>) refreshDeps.get(j)).index;
                 if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
-                    downstream[depIdx].add(i);
+                    downstreamCounts[depIdx]++;
                     depCount++;
                 }
             }
@@ -294,11 +288,52 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             for (int j = 0; j < interceptorDeps.size(); j++) {
                 int depIdx = ((NodeImpl<?>) interceptorDeps.get(j)).index;
                 if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
-                    downstream[depIdx].add(i);
+                    downstreamCounts[depIdx]++;
                     depCount++;
                 }
             }
             temporaryDepCounts[i] = depCount;
+        }
+
+        if (totalDependentTasks == 0) {
+            tmpGraph.commit(startFrom);
+            fireRefreshListeners();
+            return;
+        }
+
+        int[][] downstream = new int[size][];
+        for (int i = 0; i < size; i++) {
+            if (downstreamCounts[i] > 0) {
+                downstream[i] = new int[downstreamCounts[i]];
+            }
+        }
+
+        int[] downstreamOffsets = new int[size];
+        for (int i = startFrom; i < size; i++) {
+            if (!dependentNodes.get(i)) continue;
+            var node = (NodeImpl<?>) nodes.get(i);
+
+            var createDeps = node.createDependencies;
+            for (int j = 0; j < createDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) createDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx][downstreamOffsets[depIdx]++] = i;
+                }
+            }
+            var refreshDeps = node.refreshDependencies;
+            for (int j = 0; j < refreshDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) refreshDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx][downstreamOffsets[depIdx]++] = i;
+                }
+            }
+            var interceptorDeps = node.interceptors;
+            for (int j = 0; j < interceptorDeps.size(); j++) {
+                int depIdx = ((NodeImpl<?>) interceptorDeps.get(j)).index;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) {
+                    downstream[depIdx][downstreamOffsets[depIdx]++] = i;
+                }
+            }
         }
 
         var remainingDepsArray = new java.util.concurrent.atomic.AtomicIntegerArray(size);
@@ -306,62 +341,62 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             remainingDepsArray.set(i, temporaryDepCounts[i]);
         }
 
-        final class NodeTask implements Runnable {
-            private final int targetIndex;
+        final var latch = new CountDownLatch(totalDependentTasks);
+        final Runnable[] tasks = new Runnable[size];
 
-            NodeTask(int targetIndex) {
-                this.targetIndex = targetIndex;
-            }
+        try (var virtualThreadExecutor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().factory())) {
 
-            @Override
-            public void run() {
-                if (!errors.isEmpty()) {
-                    futures[targetIndex].complete(null);
-                    return;
-                }
-
-                var currentNode = (NodeImpl<?>) nodes.get(targetIndex);
-                long start = isDebug ? System.nanoTime() : 0L;
-                try {
-                    tmpGraph.createNode(currentNode, startFrom, isTrace);
-                    if (isDebug) {
-                        long tookNanos = System.nanoTime() - start;
-                        if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
-                            logger.debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
+            for (int i = startFrom; i < size; i++) {
+                if (dependentNodes.get(i)) {
+                    final int targetIndex = i;
+                    tasks[i] = () -> {
+                        if (!errors.isEmpty()) {
+                            latch.countDown();
+                            return;
                         }
-                    }
-                    futures[targetIndex].complete(null);
 
-                    var nextNodes = downstream[targetIndex];
-                    for (int k = 0; k < nextNodes.size(); k++) {
-                        int nextIdx = nextNodes.get(k);
-                        if (remainingDepsArray.decrementAndGet(nextIdx) == 0) {
-                            virtualThreadExecutor.execute(new NodeTask(nextIdx));
+                        var currentNode = (NodeImpl<?>) nodes.get(targetIndex);
+                        long start = isDebug ? System.nanoTime() : 0L;
+                        try {
+                            tmpGraph.createNode(currentNode, startFrom, isTrace);
+                            if (isDebug) {
+                                long tookNanos = System.nanoTime() - start;
+                                if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
+                                    logger.debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
+                                }
+                            }
+                            latch.countDown();
+
+                            var nextNodes = downstream[targetIndex];
+                            if (nextNodes != null) {
+                                for (int k = 0; k < nextNodes.length; k++) {
+                                    int nextIdx = nextNodes[k];
+                                    if (remainingDepsArray.decrementAndGet(nextIdx) == 0) {
+                                        virtualThreadExecutor.execute(tasks[nextIdx]);
+                                    }
+                                }
+                            }
+                        } catch (Throwable throwable) {
+                            errors.add(throwable);
+                            latch.countDown();
+                            cascadeCancel(targetIndex, downstream, latch);
                         }
-                    }
-                } catch (Throwable throwable) {
-                    errors.add(throwable);
-                    futures[targetIndex].completeExceptionally(throwable);
-
-                    var nextNodes = downstream[targetIndex];
-                    for (int k = 0; k < nextNodes.size(); k++) {
-                        int nextIdx = nextNodes.get(k);
-                        futures[nextIdx].complete(null);
-                    }
+                    };
                 }
             }
-        }
 
-        for (int i = startFrom; i < size; i++) {
-            if (dependentNodes.get(i) && temporaryDepCounts[i] == 0) {
-                virtualThreadExecutor.execute(new NodeTask(i));
+            for (int i = startFrom; i < size; i++) {
+                if (dependentNodes.get(i) && temporaryDepCounts[i] == 0) {
+                    virtualThreadExecutor.execute(tasks[i]);
+                }
             }
-        }
 
-        try {
-            CompletableFuture.allOf(futures).join();
-        } catch (Throwable t) {
-            tmpGraph.rollback();
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                errors.add(e);
+            }
         }
 
         if (!errors.isEmpty()) {
@@ -383,6 +418,17 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         fireRefreshListeners();
     }
 
+    private void cascadeCancel(int index, int[][] downstream, CountDownLatch latch) {
+        int[] nextNodes = downstream[index];
+        if (nextNodes != null) {
+            for (int k = 0; k < nextNodes.length; k++) {
+                int nextIdx = nextNodes[k];
+                latch.countDown();
+                cascadeCancel(nextIdx, downstream, latch);
+            }
+        }
+    }
+
     AtomicReferenceArray<@Nullable Object> getRawObjects() {
         return objects;
     }
@@ -395,12 +441,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         return conditionResultsCache;
     }
 
-    private static class DependencyInitializationFailedException extends RuntimeException {
-        @Override
-        public Throwable fillInStackTrace() {
-            return this;
-        }
-    }
+//    private static class DependencyInitializationFailedException extends RuntimeException {
+//        @Override
+//        public Throwable fillInStackTrace() {
+//            return this;
+//        }
+//    }
 
     static final class ConditionFailedValue {
         final String reason;
