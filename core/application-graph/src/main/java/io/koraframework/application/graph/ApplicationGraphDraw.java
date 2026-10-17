@@ -79,7 +79,7 @@ public class ApplicationGraphDraw {
     }
 
     public InitializedGraph init() {
-        var graph = new GraphImpl(this);
+        var graph = new OptimizedGraphImpl(this);
         graph.init();
         return graph;
     }

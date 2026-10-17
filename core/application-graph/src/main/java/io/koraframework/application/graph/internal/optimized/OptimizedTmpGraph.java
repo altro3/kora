@@ -11,54 +11,16 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
-/// An isolated, transactional scratchpad implementation of [RefreshableGraph]
-/// that facilitates atomic dependency updates and guarantees container state consistency.
-///
-/// OptimizedTmpGraph acts as a sequential **Unit of Work** during container bootstrap and refresh phases.
-/// It isolates in-flight component materialization from the active, live application state,
-/// preventing incomplete or broken graphs from corrupting the running container.
-///
-/// ### Operational Design & State Isolation
-///
-/// * **Transactional Isolation:** Upon creation, it references a flat, atomic snapshot of current
-///   active references (rootRawObjects). Any new bean instantiation writes strictly to a temporary
-///   tmpArray mapped directly via the node's unique, constant node.index.
-/// * **Lock-Free Execution Guard:** By leveraging the compiler-guaranteed topological sorting, the single-threaded
-///   traversal loop sequentially materializes components without any synchronization overhead, lock contention,
-///   or execution bottlenecks.
-/// * **Allocation-Free Mutation Tracking:** Tracks mutated slots using a primitive byte[] changedNodes
-///   array. This completely bypasses dynamic collection allocations and reduces change tracking state lookup
-///   to a single-tact CPU array instruction (O(1) access).
-///
-/// ### Core Transactional Mechanics
-///
-/// 1. **Materialization ([#createNode(NodeImpl, int)]):**
-///    Invoked sequentially by the parent graph during linear graph traversal. It evaluates
-///    [GraphCondition] configurations, triggers the factory lambda, invokes init() lifecycle hooks,
-///    and decorates instances via compiled [GraphInterceptor] chains before saving them into the scratchpad.
-///
-/// 2. **Transactional Commit ([#commit(int)]):**
-///    Triggered by the parent graph only when the entire target sub-graph is materialized without errors.
-///    It performs a bulk, atomic reference swap into the live container state, re-binds live [ValueOf]
-///    and [PromiseOf] proxies, and safely activates a volatile delegate redirecting ongoing lookups
-///    from long-lived proxies to the main container. Finally, it gracefully terminates stale replaced components
-///    in reverse topological order.
-///
-/// 3. **Transactional Rollback ([#rollback()]):**
-///    Invoked abruptly if any component factory or lifecycle hook throws an unhandled exception.
-///    It instantly cleans up and closes all partially instantiated temporary resources within this
-///    scratchpad scope, leaving the master application state completely untouched and perfectly stable.
-///
-/// @see OptimizedGraphImpl
 public final class OptimizedTmpGraph implements RefreshableGraph {
 
     private final OptimizedGraphImpl rootGraph;
     private final AtomicReferenceArray<@Nullable Object> tmpArray;
     private final AtomicReferenceArray<@Nullable Object> rootRawObjects;
     private final AtomicReferenceArray<@Nullable ConditionResult> conditionCache;
-    private final @Nullable TmpValueOf<?>[] valueOfs;
-    private final @Nullable BasePromiseOf<?>[] promises;
+    private final AtomicReferenceArray<@Nullable TmpValueOf<?>> valueOfs;
+    private final AtomicReferenceArray<@Nullable BasePromiseOf<?>> promises;
     private final byte[] changedNodes;
+    private final byte[] localRefreshListeners;
     private volatile @Nullable OptimizedGraphImpl delegate;
 
     public OptimizedTmpGraph(OptimizedGraphImpl rootGraph) {
@@ -69,10 +31,11 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         for (var i = 0; i < length; i++) {
             this.tmpArray.set(i, this.rootRawObjects.get(i));
         }
-        this.valueOfs = new TmpValueOf<?>[length];
-        this.promises = new BasePromiseOf<?>[length];
+        this.valueOfs = new AtomicReferenceArray<>(length);
+        this.promises = new AtomicReferenceArray<>(length);
         this.conditionCache = new AtomicReferenceArray<>(length);
         this.changedNodes = new byte[length];
+        this.localRefreshListeners = new byte[length];
     }
 
     @Override
@@ -92,8 +55,8 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         if (val == null) {
             throw new IllegalStateException("Node not initialized: " + index);
         }
-        if (val instanceof ConditionFailedValue) {
-            throw new IllegalStateException("Graph node value was not initialized because condition failed: " + ((ConditionFailedValue) val).reason);
+        if (val instanceof ConditionFailedValue failedValue) {
+            throw new IllegalStateException("Graph node value was not initialized because condition failed: " + failedValue.reason);
         }
         return (T) val;
     }
@@ -110,6 +73,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             if (cached != null) {
                 return cached;
             }
+            var rootCache = rootGraph.getConditionResultsCache().get(index);
+            if (rootCache != null && changedNodes[index] == 0) {
+                return rootCache;
+            }
             var computed = get(node).eval();
             if (conditionCache.compareAndSet(index, null, computed)) {
                 return computed;
@@ -124,7 +91,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         var casted = (NodeImpl<T>) node;
         var fixed = (NodeImpl<T>) rootGraph.draw().getNodes().get(casted.index);
         var value = new TmpValueOf<>(fixed, this);
-        valueOfs[casted.index] = value;
+        valueOfs.set(casted.index, value);
         return value;
     }
 
@@ -134,7 +101,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         var casted = (NodeImpl<T>) node;
         var fixed = (NodeImpl<T>) rootGraph.draw().getNodes().get(casted.index);
         var promise = new PromiseOfImpl<>(fixed);
-        promises[casted.index] = promise;
+        promises.set(casted.index, promise);
         return promise;
     }
 
@@ -157,7 +124,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
         var promise = new PromiseOfOneConditionalImpl<N, V>(fixedNodes);
         if (primaryIndex >= 0) {
-            promises[primaryIndex] = promise;
+            promises.set(primaryIndex, promise);
         }
         return promise;
     }
@@ -200,8 +167,14 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         }
 
         if (isTrace) {
-            var dependenciesStr = node.createDependencies.stream().map(Node::toString).collect(java.util.stream.Collectors.joining(",", "[", "]"));
-            rootGraph.logger.trace("Creating node {}, dependencies {}", node.index, dependenciesStr);
+            var createDeps = node.createDependencies;
+            var sb = new StringBuilder("[");
+            for (int i = 0; i < createDeps.size(); i++) {
+                if (i > 0) sb.append(",");
+                sb.append(createDeps.get(i));
+            }
+            sb.append("]");
+            rootGraph.logger.trace("Creating node {}, dependencies {}", node.index, sb);
         }
 
         var newObject = Objects.requireNonNull(node.factory.get(this));
@@ -222,7 +195,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         changedNodes[node.index] = 1;
 
         if (newObject instanceof RefreshListener) {
-            rootGraph.getRefreshListenerIndices().set(node.index);
+            localRefreshListeners[node.index] = 1;
         }
 
         if (isTrace) {
@@ -288,11 +261,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     throw new IllegalStateException("Graph interceptor failed with checked exception for node %s and interceptor %s".formatted(node.type, interceptorNode.type), e);
                 }
             }
-            tmpArray.set(node.index, newObject);
         }
+        tmpArray.set(node.index, newObject);
     }
 
-    @SuppressWarnings("unchecked")
     public void commit(int startFrom) {
         var length = changedNodes.length;
         var oldValuesToRelease = new Object[length];
@@ -306,15 +278,27 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 }
             }
         }
+
+        var rootListeners = rootGraph.getRefreshListenerIndices();
         for (var i = 0; i < length; i++) {
-            var v = valueOfs[i];
+            if (changedNodes[i] == 1) {
+                if (localRefreshListeners[i] == 1) {
+                    rootListeners.set(i);
+                } else {
+                    rootListeners.clear(i);
+                }
+            }
+        }
+
+        for (var i = 0; i < length; i++) {
+            var v = valueOfs.get(i);
             if (v != null) {
                 v.tmpGraph = rootGraph;
             }
         }
 
         for (var i = 0; i < length; i++) {
-            var p = promises[i];
+            var p = promises.get(i);
             if (p != null) {
                 p.graph = rootGraph;
             }
@@ -325,7 +309,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         for (var i = 0; i < condCacheLength; i++) {
             var cond = conditionCache.get(i);
             if (cond != null) {
-                cache.put(i, cond);
+                cache.set(i, cond);
             }
         }
 

@@ -30,12 +30,8 @@ public final class KoraApplication {
             var initEnd = System.nanoTime();
             var initTook = (initEnd - initStart) / 1_000_000;
             try {
-                if (Boolean.getBoolean("kora.log.jvm.uptime")) {
-                    var uptimeTook = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
-                    logger.info("Application initialized in {}ms (JVM running for {}s)", initTook, uptimeTook);
-                } else {
-                    logger.info("Application initialized in {}ms", initTook);
-                }
+                var uptimeTook = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
+                logger.info("Application initialized in {}ms (JVM running for {}s)", initTook, uptimeTook);
             } catch (Throwable ex) {
                 logger.info("Application initialized in {}ms", initTook);
             }
