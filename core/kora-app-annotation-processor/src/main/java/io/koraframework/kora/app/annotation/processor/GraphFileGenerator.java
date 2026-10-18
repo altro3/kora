@@ -52,7 +52,7 @@ public class GraphFileGenerator {
         int holders = 0;
 
         var typeRefClassName = ClassName.get("io.koraframework.application.graph", "TypeRef");
-        var holderCache = (HolderCache) null;
+        HolderCache holderCache = null;
 
         for (int i = 0; i < components.size(); i++) {
             var componentNumber = i % KoraAppProcessor.COMPONENTS_PER_HOLDER_CLASS;
@@ -76,14 +76,34 @@ public class GraphFileGenerator {
                     currentConstructor.addParameter(graphTypeName.nestedClass("ComponentHolder" + j), "ComponentHolder" + j);
                 }
                 holderCache = this.buildHolderCache(typeRefClassName, components, i);
-                int typeIdx = 0;
-                for (var typeCode : holderCache.types.values()) {
-                    currentConstructor.addStatement("var type_$L = $L", typeIdx++, typeCode);
+                for (var entry : holderCache.types.values()) {
+                    if (entry.assignedIndex != null) {
+                        currentConstructor.addStatement("var type_$L = $L", entry.assignedIndex, entry.value);
+                    }
                 }
 
-                int tagIdx = 0;
-                for (var tagStr : holderCache.tags.values()) {
-                    currentConstructor.addStatement("var tag_$L = $L.class", tagIdx++, tagStr);
+                for (var entry : holderCache.tags.values()) {
+                    if (entry.assignedIndex != null) {
+                        String tagStr = entry.value;
+                        String[] parts = tagStr.split("\\.");
+                        int firstClassIdx = -1;
+                        for (int p = 0; p < parts.length; p++) {
+                            if (!parts[p].isEmpty() && Character.isUpperCase(parts[p].charAt(0))) {
+                                firstClassIdx = p;
+                                break;
+                            }
+                        }
+                        ClassName tagClassName;
+                        if (firstClassIdx != -1 && firstClassIdx > 0) {
+                            String packageName = String.join(".", Arrays.copyOfRange(parts, 0, firstClassIdx));
+                            String outerClassName = parts[firstClassIdx];
+                            String[] nestedClasses = Arrays.copyOfRange(parts, firstClassIdx + 1, parts.length);
+                            tagClassName = ClassName.get(packageName, outerClassName, nestedClasses);
+                        } else {
+                            tagClassName = ClassName.bestGuess(tagStr);
+                        }
+                        currentConstructor.addStatement("var tag_$L = $T.class", entry.assignedIndex, tagClassName);
+                    }
                 }
             }
 
@@ -103,11 +123,18 @@ public class GraphFileGenerator {
 
             currentClass.addField(FieldSpec.builder(ParameterizedTypeName.get(CommonClassNames.node, componentTypeName), component.fieldName(), Modifier.PRIVATE, Modifier.FINAL).build());
             CodeBlock currentComponentTypeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
-            int targetTypeIdx = new ArrayList<>(holderCache.types.keySet()).indexOf(currentComponentTypeCode.toString());
-            var statement = this.generateComponentStatement(graphTypeName, component, holderCache.tags, "type_" + targetTypeIdx);
+            var typeEntry = holderCache.types.get(currentComponentTypeCode.toString());
+
+            String typeExpression;
+            if (typeEntry.assignedIndex != null) {
+                typeExpression = "type_" + typeEntry.assignedIndex;
+            } else {
+                typeExpression = currentComponentTypeCode.toString();
+            }
+
+            var statement = generateComponentStatement(graphTypeName, component, holderCache, typeExpression);
             currentConstructor.addStatement(statement);
         }
-
         if (!components.isEmpty()) {
             var lastComponentNumber = components.size() / KoraAppProcessor.COMPONENTS_PER_HOLDER_CLASS;
             if (components.size() % KoraAppProcessor.COMPONENTS_PER_HOLDER_CLASS == 0) {
@@ -147,10 +174,17 @@ public class GraphFileGenerator {
                 .build())
             .build();
     }
+    private static final class CacheEntry<T> {
+        final T value;
+        int count = 1;
+        Integer assignedIndex = null;
+
+        CacheEntry(T value) { this.value = value; }
+    }
 
     private static final class HolderCache {
-        final Map<String, CodeBlock> types = new LinkedHashMap<>();
-        final Map<String, String> tags = new LinkedHashMap<>();
+        final Map<String, CacheEntry<CodeBlock>> types = new LinkedHashMap<>();
+        final Map<String, CacheEntry<String>> tags = new LinkedHashMap<>();
     }
 
     private HolderCache buildHolderCache(ClassName typeRefClassName, List<ResolvedComponent> components, int startIndex) {
@@ -174,12 +208,39 @@ public class GraphFileGenerator {
             }
 
             CodeBlock typeCode = buildTypeInitializer(typeRefClassName, compTypeName);
-            cache.types.put(typeCode.toString(), typeCode);
+            String typeKey = typeCode.toString();
+            var typeEntry = cache.types.get(typeKey);
+            if (typeEntry == null) {
+                cache.types.put(typeKey, new CacheEntry<>(typeCode));
+            } else {
+                typeEntry.count++;
+            }
 
             if (comp.tag() != null) {
-                cache.tags.put(comp.tag(), comp.tag());
+                String tagKey = comp.tag();
+                var tagEntry = cache.tags.get(tagKey);
+                if (tagEntry == null) {
+                    cache.tags.put(tagKey, new CacheEntry<>(tagKey));
+                } else {
+                    tagEntry.count++;
+                }
             }
         }
+
+        int typeIdx = 0;
+        for (var entry : cache.types.values()) {
+            if (entry.count > 1) {
+                entry.assignedIndex = typeIdx++;
+            }
+        }
+
+        int tagIdx = 0;
+        for (var entry : cache.tags.values()) {
+            if (entry.count > 1) {
+                entry.assignedIndex = tagIdx++;
+            }
+        }
+
         return cache;
     }
 
@@ -233,17 +294,21 @@ public class GraphFileGenerator {
         }
     }
 
-    private CodeBlock generateComponentStatement(ClassName graphTypeName, ResolvedComponent component, Map<String, String> tagsCache, String cachedTypeVar) {
+    private CodeBlock generateComponentStatement(ClassName graphTypeName, ResolvedComponent component, HolderCache holderCache, String typeExpression) {
         var statement = CodeBlock.builder();
         var declaration = component.declaration();
         var componentHolder = component.holderName();
         var componentField = component.fieldName();
-        statement.add("$L = graphDraw.addNode($L, ", componentField, cachedTypeVar);
+        statement.add("$L = graphDraw.addNode($L, ", componentField, typeExpression);
         if (component.tag() == null) {
             statement.add("null, \n");
         } else {
-            int tagIdx = new ArrayList<>(tagsCache.keySet()).indexOf(component.tag());
-            statement.add("tag_$L, \n", tagIdx);
+            var tagEntry = holderCache.tags.get(component.tag());
+            if (tagEntry.assignedIndex != null) {
+                statement.add("tag_$L, \n", tagEntry.assignedIndex);
+            } else {
+                statement.add("$L.class, \n", component.tag());
+            }
         }
         if (component.parentConditions().isEmpty() && component.declaration().condition() == null) {
             statement.add("null,\n");
