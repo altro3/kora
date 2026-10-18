@@ -45,7 +45,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 //    @Disabled("For real performance tests")
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 150;
+        int nodesCount = 1500;
         int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
@@ -116,10 +116,10 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         assertThat(draw.getNodes()).hasSize(nodesCount);
 
         // For profiling
-        for (int i = 0; i <= 100000; i++) {
-            var warmupGraph = draw.init();
-            warmupGraph.release();
-        }
+//        for (int i = 0; i <= 100000; i++) {
+//            var warmupGraph = draw.init();
+//            warmupGraph.release();
+//        }
 
         var startNano = System.nanoTime();
         var graph = draw.init();
