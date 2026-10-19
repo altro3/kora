@@ -294,7 +294,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
         var startPureNano = System.nanoTime();
 
-        var draw = new ApplicationGraphDraw(ExampleApplication.class, nodesCount, expectedCreateEdges, 0, 0);
+        var draw = new ApplicationGraphDraw(ExampleApplication.class, nodesCount, expectedCreateEdges, 0, 0, expectedCreateEdges);
         List<Node<?>> allNodes = new ArrayList<>(nodesCount);
 
         for (int i = 0; i < nodesCount; i++) {
@@ -320,7 +320,15 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             Type fakeType = new FakeType(i);
             Class<?> fakeTag = FakeTag.class;
 
-            var node = draw.addNode(fakeType, fakeTag, null, deps, List.of(), List.of(), graph -> "");
+            int[] createDeps = null;
+            if (!deps.isEmpty()) {
+                createDeps = new int[deps.size()];
+                for (int d = 0; d < deps.size(); d++) {
+                    createDeps[d] = ((NodeImpl<?>) deps.get(d)).index;
+                }
+            }
+
+            var node = draw.addNode(fakeType, fakeTag, null, createDeps, null, null, null, graph -> "");
             allNodes.add(node);
 
             draw.findNodeByType(fakeType);

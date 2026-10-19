@@ -212,8 +212,8 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                holderStaticBlock.addStatement("$L = graphDraw.addNode($L, $L, $L, \n$L, \n$L, \n$L, \n$L, \n$L)",
-                    component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, interceptorBuilder, factoryLambdaCode, downstreamCode);
+                holderStaticBlock.addStatement("$L = graphDraw.addNode($L,\n$L,\n$L,\n$L,\n$L,\n$L,\n$L,\n$L)",
+                    component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, factoryLambdaCode);
             }
 
             holderClassBuilder.addStaticBlock(holderStaticBlock.build());

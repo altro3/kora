@@ -43,8 +43,8 @@ public class ApplicationGraphDraw {
     private final Type[] nodeTypes;
     private final @Nullable Class<?>[] nodeTags;
     private final @Nullable Function<Graph, GraphCondition.ConditionResult>[] nodeConditions;
-
-    private final Map<Type, int[]> typeIndex;
+    private final Map<Type, Integer> typeFirstIndex;
+    private final int[] nextTypeNode;
 
     public ApplicationGraphDraw(Class<?> root, int expectedNodes, int expectedCreateEdges, int expectedRefreshEdges, int expectedInterceptorEdges, int expectedDownstreamEdges) {
         this.root = root;
@@ -59,7 +59,9 @@ public class ApplicationGraphDraw {
         this.interceptorEdges = new int[expectedInterceptorEdges];
         this.downstreamEdges = new int[expectedDownstreamEdges];
 
-        this.typeIndex = new HashMap<>(expectedNodes);
+        this.typeFirstIndex = new HashMap<>(expectedNodes);
+        this.nextTypeNode = new int[expectedNodes];
+        Arrays.fill(this.nextTypeNode, -1);
         this.nodeTypes = new Type[expectedNodes];
         this.nodeTags = new Class<?>[expectedNodes];
         this.nodeConditions = new Function[expectedNodes];
@@ -130,13 +132,12 @@ public class ApplicationGraphDraw {
         graphNodes[currentIndex] = node;
         size++;
 
-        int[] existing = typeIndex.get(type);
-        if (existing == null) {
-            typeIndex.put(type, new int[] {currentIndex});
+        Integer firstIdx = typeFirstIndex.get(type);
+        if (firstIdx == null) {
+            typeFirstIndex.put(type, currentIndex);
         } else {
-            int[] updated = Arrays.copyOf(existing, existing.length + 1);
-            updated[existing.length] = currentIndex;
-            typeIndex.put(type, updated);
+            nextTypeNode[currentIndex] = firstIdx;
+            typeFirstIndex.put(type, currentIndex);
         }
 
         return node;
@@ -154,32 +155,33 @@ public class ApplicationGraphDraw {
 
     @Nullable
     public Node<?> findNodeByType(Type type) {
-        int[] nodes = typeIndex.get(type);
-        if (nodes == null) {
-            return null;
-        }
-        for (int i = 0; i < nodes.length; i++) {
-            var graphNode = graphNodes[nodes[i]];
+        Integer current = typeFirstIndex.get(type);
+        while (current != null && current != -1) {
+            var graphNode = graphNodes[current];
             if (graphNode.tag() == null) {
                 return graphNode;
             }
+            int next = nextTypeNode[current];
+            current = next == -1 ? null : next;
         }
         return null;
     }
 
     public List<Node<?>> findNodesByType(Type type, @Nullable Class<?> tag) {
-        int[] nodes = typeIndex.get(type);
-        if (nodes == null) {
+        Integer current = typeFirstIndex.get(type);
+        if (current == null) {
             return List.of();
         }
 
-        var result = new ArrayList<Node<?>>(nodes.length);
+        var result = new ArrayList<Node<?>>();
         boolean isAnyTag = tag != null && tag == ANY_TAG_CLASS;
-        for (int i = 0; i < nodes.length; i++) {
-            var graphNode = graphNodes[nodes[i]];
+        while (current != null && current != -1) {
+            var graphNode = graphNodes[current];
             if (isAnyTag || Objects.equals(tag, graphNode.tag())) {
                 result.add(graphNode);
             }
+            int next = nextTypeNode[current];
+            current = next == -1 ? null : next;
         }
         return result;
     }
@@ -211,12 +213,12 @@ public class ApplicationGraphDraw {
         System.arraycopy(createOffsets, 0, draw.createOffsets, 0, size + 1);
         System.arraycopy(refreshOffsets, 0, draw.refreshOffsets, 0, size + 1);
         System.arraycopy(interceptorOffsets, 0, draw.interceptorOffsets, 0, size + 1);
-        System.arraycopy(downstreamOffsets, 0, draw.downstreamOffsets, 0, size + 1); // Клонируем downstream оффсеты
+        System.arraycopy(downstreamOffsets, 0, draw.downstreamOffsets, 0, size + 1);
 
         System.arraycopy(createEdges, 0, draw.createEdges, 0, createEdgesSize);
         System.arraycopy(refreshEdges, 0, draw.refreshEdges, 0, refreshEdgesSize);
         System.arraycopy(interceptorEdges, 0, draw.interceptorEdges, 0, interceptorEdgesSize);
-        System.arraycopy(downstreamEdges, 0, draw.downstreamEdges, 0, downstreamEdgesSize); // Клонируем downstream ребра
+        System.arraycopy(downstreamEdges, 0, draw.downstreamEdges, 0, downstreamEdgesSize);
 
         System.arraycopy(nodeTypes, 0, draw.nodeTypes, 0, size);
         System.arraycopy(nodeTags, 0, draw.nodeTags, 0, size);
@@ -231,22 +233,19 @@ public class ApplicationGraphDraw {
         for (int i = 0; i < size; i++) {
             var node = graphNodes[i];
             var condition = nodeConditions[i];
-            var replacedFactory = new ReplacedGraphFactory<>(draw.graphNodes, (NodeImpl<Object>) node);
 
             if (condition != null) {
-                draw.nodeConditions[i] = graph -> condition.apply(ReplacedGraphFactory.replaced(draw.graphNodes, graph));
+                draw.nodeConditions[i] = new ReplacedCondition(condition, draw.graphNodes);
             }
 
-            var replacedNode = new NodeImpl<>(draw, i, replacedFactory);
-            draw.graphNodes[i] = replacedNode;
+            draw.graphNodes[i] = new NodeImpl<>(draw, i, new ReplacedSingleFactory<>(draw.graphNodes, (NodeImpl<Object>) node));
 
-            int[] existing = draw.typeIndex.get(nodeTypes[i]);
-            if (existing == null) {
-                draw.typeIndex.put(nodeTypes[i], new int[] {i});
+            Integer firstIdx = draw.typeFirstIndex.get(nodeTypes[i]);
+            if (firstIdx == null) {
+                draw.typeFirstIndex.put(nodeTypes[i], i);
             } else {
-                int[] updated = Arrays.copyOf(existing, existing.length + 1);
-                updated[existing.length] = i;
-                draw.typeIndex.put(nodeTypes[i], updated);
+                draw.nextTypeNode[i] = firstIdx;
+                draw.typeFirstIndex.put(nodeTypes[i], i);
             }
         }
         return draw;
@@ -369,19 +368,16 @@ public class ApplicationGraphDraw {
             subgraph.nodeTags[i] = nodeTags[oldIdx];
 
             var condition = nodeConditions[oldIdx];
-            subgraph.nodeConditions[i] = condition == null ? null : new SubgraphIndexedCondition(condition, seen);
+            subgraph.nodeConditions[i] = condition == null ? null : new SharedSeenCondition(condition, seen);
 
-            var subFactory = new SubgraphIndexFactory<>(graphNodes[oldIdx].factory, seen);
-            var subNode = new NodeImpl<>(subgraph, i, subFactory);
-            subgraph.graphNodes[i] = subNode;
+            subgraph.graphNodes[i] = new NodeImpl<>(subgraph, i, new SharedSeenFactory<>(graphNodes[oldIdx].factory, seen));
 
-            int[] existing = subgraph.typeIndex.get(subgraph.nodeTypes[i]);
-            if (existing == null) {
-                subgraph.typeIndex.put(subgraph.nodeTypes[i], new int[] {i});
+            Integer firstIdx = subgraph.typeFirstIndex.get(subgraph.nodeTypes[i]);
+            if (firstIdx == null) {
+                subgraph.typeFirstIndex.put(subgraph.nodeTypes[i], i);
             } else {
-                int[] updated = Arrays.copyOf(existing, existing.length + 1);
-                updated[existing.length] = i;
-                subgraph.typeIndex.put(subgraph.nodeTypes[i], updated);
+                subgraph.nextTypeNode[i] = firstIdx;
+                subgraph.typeFirstIndex.put(subgraph.nodeTypes[i], i);
             }
         }
 
@@ -576,6 +572,120 @@ public class ApplicationGraphDraw {
                 fixed[i] = new NodeWithMapper<>((Node<N>) nodes[n.index], oneOfNodes[i].mapper());
             }
             return graph.getOnePromiseOf(fixed);
+        }
+    }
+
+    static final class ReplacedCondition implements Function<Graph, GraphCondition.ConditionResult> {
+        private final Function<Graph, GraphCondition.ConditionResult> delegate;
+        private final NodeImpl<?>[] targetNodes;
+
+        ReplacedCondition(Function<Graph, GraphCondition.ConditionResult> delegate, NodeImpl<?>[] targetNodes) {
+            this.delegate = delegate;
+            this.targetNodes = targetNodes;
+        }
+
+        @Override
+        public GraphCondition.ConditionResult apply(Graph graph) {
+            return delegate.apply(new ReplacedGraphProxy(graph, targetNodes));
+        }
+    }
+
+    static final class ReplacedSingleFactory<T> implements Graph.Factory<T> {
+        private final NodeImpl<?>[] targetNodes;
+        private final NodeImpl<T> originalNode;
+
+        ReplacedSingleFactory(NodeImpl<?>[] targetNodes, NodeImpl<T> originalNode) {
+            this.targetNodes = targetNodes;
+            this.originalNode = originalNode;
+        }
+
+        @Override
+        public T get(RefreshableGraph graph) throws Exception {
+            return originalNode.factory.get(new ReplacedGraphProxy(graph, targetNodes));
+        }
+    }
+
+    static final class SharedSeenCondition implements Function<Graph, GraphCondition.ConditionResult> {
+        private final Function<Graph, GraphCondition.ConditionResult> delegate;
+        private final int[] seen;
+
+        SharedSeenCondition(Function<Graph, GraphCondition.ConditionResult> delegate, int[] seen) {
+            this.delegate = delegate;
+            this.seen = seen;
+        }
+
+        @Override
+        public GraphCondition.ConditionResult apply(Graph graph) {
+            return delegate.apply(new SubgraphGraphProxy(graph, seen));
+        }
+    }
+
+    static final class SharedSeenFactory<T> implements Graph.Factory<T> {
+        private final Graph.Factory<T> delegate;
+        private final int[] seen;
+
+        SharedSeenFactory(Graph.Factory<T> delegate, int[] seen) {
+            this.delegate = delegate;
+            this.seen = seen;
+        }
+
+        @Override
+        public T get(RefreshableGraph graph) throws Exception {
+            return delegate.get(new SubgraphGraphProxy(graph, seen));
+        }
+    }
+
+    static final class SubgraphGraphProxy implements RefreshableGraph {
+        private final Graph delegate;
+        private final int[] seen;
+
+        SubgraphGraphProxy(Graph delegate, int[] seen) {
+            this.delegate = delegate;
+            this.seen = seen;
+        }
+
+        @Override
+        public void refresh(Node<?> fromNode) {
+            var n = (NodeImpl<?>) fromNode;
+            ((RefreshableGraph) delegate).refresh(delegate.draw().getNodeByIndex(seen[n.index]));
+        }
+
+        @Override
+        public ApplicationGraphDraw draw() {
+            return delegate.draw();
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <N> N get(Node<? extends N> node) {
+            var n = (NodeImpl<?>) node;
+            return delegate.get((Node<N>) delegate.draw().getNodeByIndex(seen[n.index]));
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <N> ValueOf<N> valueOf(Node<? extends N> node) {
+            var n = (NodeImpl<?>) node;
+            return delegate.valueOf((Node<N>) delegate.draw().getNodeByIndex(seen[n.index]));
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <N> PromiseOf<N> promiseOf(Node<? extends N> node) {
+            var n = (NodeImpl<?>) node;
+            return delegate.promiseOf((Node<N>) delegate.draw().getNodeByIndex(seen[n.index]));
+        }
+
+        @Override
+        @SafeVarargs
+        @SuppressWarnings("unchecked")
+        public final <N, V> PromiseOf<V> getOnePromiseOf(NodeWithMapper<N, V>... oneOfNodes) {
+            var fixed = new NodeWithMapper[oneOfNodes.length];
+            for (var i = 0; i < oneOfNodes.length; i++) {
+                var n = (NodeImpl<?>) oneOfNodes[i].node();
+                fixed[i] = new NodeWithMapper<>((Node<N>) delegate.draw().getNodeByIndex(seen[n.index]), oneOfNodes[i].mapper());
+            }
+            return delegate.getOnePromiseOf(fixed);
         }
     }
 }

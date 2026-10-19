@@ -14,8 +14,8 @@ import java.util.concurrent.atomic.*;
 public final class OptimizedTmpGraph implements RefreshableGraph {
 
     private final OptimizedGraphImpl rootGraph;
-    private final AtomicReferenceArray<@Nullable Object> tmpArray;
-    private final AtomicReferenceArray<@Nullable Object> rootRawObjects;
+    private final Object[] tmpArray;
+    private final Object[] rootRawObjects;
     private final AtomicReferenceArray<@Nullable ConditionResult> conditionCache;
     private final AtomicReferenceArray<@Nullable TmpValueOf<?>> valueOfs;
     private final AtomicReferenceArray<@Nullable BasePromiseOf<?>> promises;
@@ -25,12 +25,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     public OptimizedTmpGraph(OptimizedGraphImpl rootGraph) {
         this.rootGraph = rootGraph;
-        this.rootRawObjects = rootGraph.getRawObjects();
-        var length = this.rootRawObjects.length();
-        this.tmpArray = new AtomicReferenceArray<>(length);
-        for (var i = 0; i < length; i++) {
-            this.tmpArray.set(i, this.rootRawObjects.get(i));
-        }
+        this.rootRawObjects = rootGraph.graphObjects;
+        var length = this.rootRawObjects.length;
+        this.tmpArray = new Object[length];
+        System.arraycopy(this.rootRawObjects, 0, this.tmpArray, 0, length);
         this.valueOfs = new AtomicReferenceArray<>(length);
         this.promises = new AtomicReferenceArray<>(length);
         this.conditionCache = new AtomicReferenceArray<>(length);
@@ -51,7 +49,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             return del.get(node);
         }
         var index = ((NodeImpl<?>) node).index;
-        var val = tmpArray.get(index);
+        var val = tmpArray[index];
         if (val == null) {
             throw new IllegalStateException("Node not initialized: " + index);
         }
@@ -130,7 +128,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     @SuppressWarnings("unchecked")
     public <T> void createNode(NodeImpl<T> node, int startFrom, boolean isTrace) throws Exception {
-        var oldObject = (T) rootRawObjects.get(node.index);
+        var oldObject = (T) rootRawObjects[node.index];
         var draw = rootGraph.draw();
 
         if (oldObject != null && node.index != startFrom) {
@@ -165,7 +163,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 if (isTrace) {
                     rootGraph.logger.trace("Creating node {} canceled: {}", node.index, failed.reason());
                 }
-                tmpArray.set(node.index, new ConditionFailedValue(failed));
+                tmpArray[node.index] = new ConditionFailedValue(failed.reason());
                 changedNodes[node.index] = 1;
                 return;
             }
@@ -194,11 +192,14 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         }
 
         if (isUnchanged) {
-            if (newObject instanceof Lifecycle lifecycle) {lifecycle.release();} else if (newObject instanceof Closeable closeable) closeable.close();
+            if (newObject instanceof Lifecycle lifecycle) {
+                lifecycle.release();
+            } else if (newObject instanceof Closeable closeable) {
+                closeable.close();
+            }
             return;
         }
-
-        tmpArray.set(node.index, newObject);
+        tmpArray[node.index] = newObject;
         changedNodes[node.index] = 1;
 
         if (newObject instanceof RefreshListener) {
@@ -248,7 +249,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         if (interStart != interEnd) {
             for (int i = interStart; i < interEnd; i++) {
                 int interceptorIndex = iEdges[i];
-                var interceptorObject = (GraphInterceptor<T>) tmpArray.get(interceptorIndex);
+                var interceptorObject = (GraphInterceptor<T>) tmpArray[interceptorIndex];
 
                 if (isTrace) {
                     rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {}", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass());
@@ -272,7 +273,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 }
             }
         }
-        tmpArray.set(node.index, newObject);
+        tmpArray[node.index] = newObject;
     }
 
     public void commit(int startFrom) {
@@ -281,10 +282,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
         for (var i = 0; i < length; i++) {
             if (changedNodes[i] == 1) {
-                var newVal = tmpArray.get(i);
+                var newVal = tmpArray[i];
                 if (newVal != null) {
-                    oldValuesToRelease[i] = rootRawObjects.get(i);
-                    rootRawObjects.set(i, newVal);
+                    oldValuesToRelease[i] = rootRawObjects[i];
+                    rootRawObjects[i] = newVal;
                 }
             }
         }
@@ -340,7 +341,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                         int interceptorIndex = iEdges[j];
                         var interceptorObject = (GraphInterceptor<Object>) oldValuesToRelease[interceptorIndex];
                         if (interceptorObject == null) {
-                            interceptorObject = (GraphInterceptor<Object>) rootRawObjects.get(interceptorIndex);
+                            interceptorObject = (GraphInterceptor<Object>) rootRawObjects[interceptorIndex];
                         }
                         if (interceptorObject != null) {
                             oldVal = interceptorObject.beforeRelease(oldVal);
@@ -360,10 +361,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     }
 
     public void rollback() {
-        var length = tmpArray.length();
+        var length = tmpArray.length;
         for (var i = length - 1; i >= 0; i--) {
-            var currentTmp = tmpArray.get(i);
-            var original = rootRawObjects.get(i);
+            var currentTmp = tmpArray[i];
+            var original = rootRawObjects[i];
             if (currentTmp != original && currentTmp != null) {
                 try {
                     if (currentTmp instanceof Lifecycle lifecycle) {
