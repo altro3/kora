@@ -45,7 +45,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 //    @Disabled("For real performance tests")
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 150;
+        int nodesCount = 10000;
         int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
