@@ -1,11 +1,13 @@
 package io.koraframework.application.graph.internal.optimized;
 
 import io.koraframework.application.graph.*;
+import io.koraframework.application.graph.GraphCondition.*;
 import io.koraframework.application.graph.internal.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
-import java.lang.invoke.*;
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -16,7 +18,6 @@ import static io.koraframework.application.graph.GraphCondition.*;
 public final class OptimizedGraphImpl implements InitializedGraph {
 
     private static final long SLOW_NODE_INIT_THRESHOLD_NANOS = Long.parseLong(System.getProperty("kora.graph.slowNodeInitThresholdMillis", "100")) * 1_000_000L;
-
     private static final VarHandle REMAINING_DEPS_VH = MethodHandles.arrayElementVarHandle(int[].class);
     private static final VarHandle OBJECTS_VH = MethodHandles.arrayElementVarHandle(Object[].class);
     private static final VarHandle GLOBAL_REMAINING_VH;
@@ -141,6 +142,24 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
     }
 
+    @Override
+    public void release() {
+        this.mutationLock.lock();
+        logger.debug("Dependency container releasing...");
+        final long started = System.nanoTime();
+        try {
+            this.releaseAllInternal();
+            if (logger.isDebugEnabled()) {
+                logger.debug("Dependency container released in {}ms", tookForLogging(started));
+            }
+        } catch (Exception e) {
+            logger.debug("Dependency container releasing failed", e);
+            throw e;
+        } finally {
+            this.mutationLock.unlock();
+        }
+    }
+
     private void initializeSubgraph(int startFrom) {
         logger.trace("Materializing graph objects {}", startFrom);
 
@@ -198,29 +217,47 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         int[] iEdges = draw.getInterceptorEdges();
         int[] iOffsets = draw.getInterceptorOffsets();
 
+        int[] visited = new int[size];
         for (int i = 0; i < size; i++) {
             if (i < startFrom || !dependentNodes.get(i)) {
                 continue;
             }
             totalDependentTasks++;
             int depCount = 0;
+            Arrays.fill(visited, 0);
 
             int start = cOffsets[i], end = cOffsets[i + 1];
             for (int j = start; j < end; j++) {
                 int depIdx = cEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx)) depCount++;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx) && visited[depIdx] == 0) {
+                    visited[depIdx] = 1;
+                    depCount++;
+                }
             }
             start = rOffsets[i]; end = rOffsets[i + 1];
             for (int j = start; j < end; j++) {
                 int depIdx = rEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx)) depCount++;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx) && visited[depIdx] == 0) {
+                    visited[depIdx] = 1;
+                    depCount++;
+                }
             }
             start = iOffsets[i]; end = iOffsets[i + 1];
             for (int j = start; j < end; j++) {
                 int depIdx = iEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx)) depCount++;
+                if (depIdx >= startFrom && dependentNodes.get(depIdx) && visited[depIdx] == 0) {
+                    visited[depIdx] = 1;
+                    depCount++;
+                }
             }
             temporaryDepCounts[i] = depCount;
+        }
+
+        System.out.println("[KORA-LOG] --- START --- totalDependentTasks=" + totalDependentTasks);
+        for (int i = 0; i < size; i++) {
+            if (dependentNodes.get(i)) {
+                System.out.println("[KORA-LOG] Node " + i + " initial deps count: " + temporaryDepCounts[i]);
+            }
         }
 
         if (totalDependentTasks == 0) {
@@ -230,83 +267,79 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
 
         int[] downstreamHead = new int[size + 1];
-        int[] downstreamEdges = draw.getDownstreamEdges();
-        int[] downstreamOffsets = draw.getDownstreamOffsets();
+        int[] currentOffsets = new int[size];
+        for (int i = startFrom; i < size; i++) {
+            if (!dependentNodes.get(i)) continue;
 
-        if (downstreamEdges == null || downstreamEdges.length == 0) {
-            int[] currentOffsets = new int[size];
-            for (int i = startFrom; i < size; i++) {
-                if (!dependentNodes.get(i)) continue;
-
-                int start = cOffsets[i], end = cOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = cEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
-                }
-                start = rOffsets[i]; end = rOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = rEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
-                }
-                start = iOffsets[i]; end = iOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = iEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
-                }
+            int start = cOffsets[i], end = cOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = cEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
             }
-
-            int currentSum = 0;
-            for (int i = 0; i < size; i++) {
-                downstreamHead[i] = currentSum;
-                currentSum += currentOffsets[i];
+            start = rOffsets[i]; end = rOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = rEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
             }
-            downstreamHead[size] = currentSum;
-            System.arraycopy(downstreamHead, 0, currentOffsets, 0, size);
-
-            downstreamEdges = new int[cEdges.length + rEdges.length + iEdges.length];
-            for (int i = startFrom; i < size; i++) {
-                if (!dependentNodes.get(i)) continue;
-
-                int start = cOffsets[i], end = cOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = cEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
-                }
-                start = rOffsets[i]; end = rOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = rEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
-                }
-                start = iOffsets[i]; end = iOffsets[i + 1];
-                for (int j = start; j < end; j++) {
-                    int depIdx = iEdges[j];
-                    if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
-                }
+            start = iOffsets[i]; end = iOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = iEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) currentOffsets[depIdx]++;
             }
-        } else {
-            downstreamHead = downstreamOffsets;
         }
+
+        int currentSum = 0;
+        for (int i = 0; i < size; i++) {
+            downstreamHead[i] = currentSum;
+            currentSum += currentOffsets[i];
+        }
+        downstreamHead[size] = currentSum;
+        System.arraycopy(downstreamHead, 0, currentOffsets, 0, size);
+
+        int[] downstreamEdges = new int[cEdges.length + rEdges.length + iEdges.length];
+        for (int i = startFrom; i < size; i++) {
+            if (!dependentNodes.get(i)) continue;
+
+            int start = cOffsets[i], end = cOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = cEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
+            }
+            start = rOffsets[i]; end = rOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = rEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
+            }
+            start = iOffsets[i]; end = iOffsets[i + 1];
+            for (int j = start; j < end; j++) {
+                int depIdx = iEdges[j];
+                if (depIdx >= startFrom && dependentNodes.get(depIdx)) downstreamEdges[currentOffsets[depIdx]++] = i;
+            }
+        }
+
+        int[] finalDownstreamHead = downstreamHead;
+        int[] finalDownstreamEdges = downstreamEdges;
 
         this.globalRemainingTasks = totalDependentTasks;
         this.errorChannel = null;
         this.mainThread = Thread.currentThread();
 
-        int[] finalDownstreamHead = downstreamHead;
-        int[] finalDownstreamEdges = downstreamEdges;
-
         for (int i = startFrom; i < size; i++) {
             if (dependentNodes.get(i) && temporaryDepCounts[i] == 0) {
                 final int rootIdx = i;
+                System.out.println("[KORA-LOG] Spawning starter Thread for Node " + rootIdx);
                 Thread.ofVirtual().start(() -> executeNodeTask(rootIdx, startFrom, isDebug, isTrace, tmpGraph, temporaryDepCounts, finalDownstreamHead, finalDownstreamEdges));
             }
         }
 
+        System.out.println("[KORA-LOG] Main thread entering wait loop. globalRemainingTasks=" + globalRemainingTasks);
         while (globalRemainingTasks > 0 && errorChannel == null) {
             Thread.onSpinWait();
             if (globalRemainingTasks > 0 && errorChannel == null) {
                 LockSupport.park();
             }
         }
+        System.out.println("[KORA-LOG] Main thread broke wait loop. globalRemainingTasks=" + globalRemainingTasks + ", error=" + errorChannel);
 
         Throwable error = this.errorChannel;
         if (error != null) {
@@ -328,7 +361,10 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
     @SuppressWarnings("unchecked")
     private void executeNodeTask(int targetIndex, int startFrom, boolean isDebug, boolean isTrace, OptimizedTmpGraph tmpGraph, int[] remainingDepsArray, int[] downstreamHead, int[] downstreamEdges) {
+        String threadName = Thread.currentThread().toString();
+        System.out.println("[KORA-LOG][" + threadName + "] Entering executeNodeTask for Node " + targetIndex);
         if (errorChannel != null) {
+            System.out.println("[KORA-LOG][" + threadName + "] Aborting Node " + targetIndex + " due to errorChannel non-null");
             return;
         }
 
@@ -336,19 +372,45 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         long start = isDebug ? System.nanoTime() : 0L;
         boolean taskCounted = false;
         try {
+            System.out.println("[KORA-LOG][" + threadName + "] Executing tmpGraph.createNode for Node " + targetIndex);
             tmpGraph.createNode(currentNode, startFrom, isTrace);
 
             Object currentVal = tmpGraph.getRawTmpArray()[targetIndex];
             if (currentVal instanceof ConditionFailedValue) {
+                System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " detected ConditionFailedValue inside executeNodeTask");
                 REMAINING_DEPS_VH.setRelease(remainingDepsArray, targetIndex, -1);
                 taskCounted = true;
                 int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+                System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " (failed condition) decremented globalRemainingTasks -> " + globalLeft);
                 if (globalLeft == 0) {
+                    System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " (failed condition) unparking mainThread");
                     LockSupport.unpark(mainThread);
                 }
+                System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " (failed condition) launching cascadeCancel");
                 cascadeCancel(targetIndex, remainingDepsArray, downstreamHead, downstreamEdges, tmpGraph);
                 return;
             }
+
+            System.out.println("[KORA-LOG][" + threadName + "] Evaluating original factory for Node " + targetIndex);
+            Object instance = currentNode.factory.get(this);
+
+            int[] interOffsets = draw.getInterceptorOffsets();
+            int[] interEdges = draw.getInterceptorEdges();
+            int startInt = interOffsets[targetIndex];
+            int endInt = interOffsets[targetIndex + 1];
+            for (int i = startInt; i < endInt; i++) {
+                int interceptorIndex = interEdges[i];
+                var interceptor = (GraphInterceptor<Object>) OBJECTS_VH.getVolatile(graphObjects, interceptorIndex);
+                if (interceptor != null) {
+                    instance = interceptor.afterInit(instance);
+                }
+            }
+
+            if (instance instanceof Lifecycle lifecycle) {
+                lifecycle.init();
+            }
+
+            OBJECTS_VH.setRelease(graphObjects, targetIndex, instance);
 
             if (isDebug) {
                 long tookNanos = System.nanoTime() - start;
@@ -359,26 +421,34 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             taskCounted = true;
             int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+            System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " successfully finished. globalRemainingTasks -> " + globalLeft);
             if (globalLeft == 0) {
+                System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " unparking mainThread (last node finished)");
                 LockSupport.unpark(mainThread);
                 return;
             }
 
             int dsStart = downstreamHead[targetIndex];
             int dsEnd = downstreamHead[targetIndex + 1];
+            System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " notifying " + (dsEnd - dsStart) + " downstream consumers");
             for (int k = dsStart; k < dsEnd; k++) {
                 int nextIdx = downstreamEdges[k];
                 int depsLeft = (int) REMAINING_DEPS_VH.getAndAdd(remainingDepsArray, nextIdx, -1) - 1;
+                System.out.println("[KORA-LOG][" + threadName + "] Consumer Node " + nextIdx + " remaining deps now: " + depsLeft);
                 if (depsLeft == 0) {
+                    System.out.println("[KORA-LOG][" + threadName + "] Spawning virtual thread for consumer Node " + nextIdx);
                     Thread.ofVirtual().start(() -> executeNodeTask(nextIdx, startFrom, isDebug, isTrace, tmpGraph, remainingDepsArray, downstreamHead, downstreamEdges));
                 }
             }
         } catch (Throwable throwable) {
+            System.out.println("[KORA-LOG][" + threadName + "] ERROR inside Node " + targetIndex + ": " + throwable);
+            throwable.printStackTrace();
             if (ERROR_CHANNEL_VH.compareAndSet(this, null, throwable)) {
                 LockSupport.unpark(mainThread);
             }
             if (!taskCounted) {
                 int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+                System.out.println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " (exception path) decremented globalRemainingTasks -> " + globalLeft);
                 if (globalLeft == 0) {
                     LockSupport.unpark(mainThread);
                 }
@@ -405,24 +475,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
                 cascadeCancel(nextIdx, remainingDepsArray, downstreamHead, downstreamEdges, tmpGraph);
             }
-        }
-    }
-
-    @Override
-    public void release() {
-        this.mutationLock.lock();
-        logger.debug("Dependency container releasing...");
-        final long started = System.nanoTime();
-        try {
-            this.releaseAllInternal();
-            if (logger.isDebugEnabled()) {
-                logger.debug("Dependency container released in {}ms", tookForLogging(started));
-            }
-        } catch (Exception e) {
-            logger.debug("Dependency container releasing failed", e);
-            throw e;
-        } finally {
-            this.mutationLock.unlock();
         }
     }
 
@@ -486,10 +538,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     private static long tookForLogging(long started) {
         long tookNanos = System.nanoTime() - started;
         return tookNanos / 1_000_000;
-    }
-
-    AtomicReferenceArray<@Nullable Object> getRawObjects() {
-        return new AtomicReferenceArray<>(graphObjects);
     }
 
     BitSet getRefreshListenerIndices() {

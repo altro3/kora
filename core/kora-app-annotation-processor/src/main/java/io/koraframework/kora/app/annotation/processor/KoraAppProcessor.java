@@ -204,6 +204,7 @@ public class KoraAppProcessor extends AbstractKoraProcessor {
     private void write(TypeElement type, ProcessingContext ctx, ResolvedGraph ok) throws IOException {
         var interceptors = ComponentInterceptors.parseInterceptors(ctx, ok.components());
 
+        System.out.println("[KORA-PROCESSOR-START] Перед вызовом конструктора генератора графа");
         var applicationImplFile = this.generateImpl(type, ok.allModules());
         var applicationGraphFile = new GraphFileGenerator(ctx, type, ok.allModules(), interceptors, ok.components(), ok.conditionByTag())
             .generate();

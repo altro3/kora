@@ -132,7 +132,6 @@ public class GraphFileGenerator {
                 CommonClassNames.applicationGraphDraw, classElement,
                 expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
 
-        // Железный триггер инициализации статических вложенных классов через вызов статического метода
         for (int p = 0; p < totalPartitions; p++) {
             baseStaticBlock.addStatement("$T.trigger()", ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "NodeHolder" + p));
         }
@@ -309,9 +308,10 @@ public class GraphFileGenerator {
                     }
                     case ComponentDeclaration.FromModuleComponent moduleComponent -> {
                         if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
-                            var customDepsCode = this.generateDependenciesCode(ctx, component, graphTypeName, 1);
+                            var customDepsCode = generateDependenciesCode(ctx, component, graphTypeName, 1);
                             var moduleInstDep = component.dependencies().getFirst();
-                            code.add("$L.", resolveDependencyPath(moduleInstDep, graphTypeName));
+                            var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep, graphTypeName);
+                            code.add("$L.", moduleInstCode);
                             if (!moduleComponent.typeVariables().isEmpty()) {
                                 code.add("<");
                                 for (int j = 0; j < moduleComponent.typeVariables().size(); j++) {
@@ -373,13 +373,20 @@ public class GraphFileGenerator {
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
             if (i > startFrom) b.add(", ");
             var resolvedDependency = resolvedDependencies.get(i);
-            var depStr = resolveDependencyPath(resolvedDependency, localGraphTypeName);
-            b.add("g.get($L)", depStr);
+
+            boolean isSingle = resolvedDependency instanceof ComponentDependency.SingleDependency;
+            CodeBlock depCode = resolveDependencyPath(ctx, resolvedDependency, localGraphTypeName);
+
+            if (isSingle) {
+                b.add("g.get($L)", depCode);
+            } else {
+                b.add("$L", depCode);
+            }
         }
         return b.build();
     }
 
-    private String resolveDependencyPath(ComponentDependency dependency, ClassName localGraphTypeName) {
+    private CodeBlock resolveDependencyPath(ProcessingContext ctx, ComponentDependency dependency, ClassName localGraphTypeName) {
         ResolvedComponent targetComponent = switch (dependency) {
             case ComponentDependency.SingleDependency single -> switch (single) {
                 case ComponentDependency.TargetDependency target -> target.component();
@@ -391,15 +398,12 @@ public class GraphFileGenerator {
         };
 
         if (targetComponent != null) {
-            return resolveNodePath(targetComponent);
+            int globalIndex = components.indexOf(targetComponent);
+            int partition = globalIndex / COMPONENTS_PER_PARTITION;
+            return CodeBlock.of("NodeHolder$L.$L", partition, targetComponent.fieldName());
         }
 
-        var depCode = dependency.write(ctx, localGraphTypeName);
-        String depStr = depCode.toString();
-        if (depStr.contains("holder")) {
-            depStr = depStr.replaceAll("holder\\d+\\.", "");
-        }
-        return depStr;
+        return dependency.write(ctx, localGraphTypeName, components, COMPONENTS_PER_PARTITION);
     }
 
     private int countDependencies(CodeBlock codeBlock) {
@@ -472,14 +476,49 @@ public class GraphFileGenerator {
     private List<Integer> collectUpstreamIndices(ResolvedComponent component) {
         var indices = new ArrayList<Integer>();
         if (component.declaration().condition() != null) {
-            indices.add(components.indexOf(conditions.get(component.declaration().condition())));
+            var condComponent = conditions.get(component.declaration().condition());
+            int idx = components.indexOf(condComponent);
+            if (idx != -1) indices.add(idx);
         }
         for (var parentConditionTag : component.parentConditions()) {
-            indices.add(components.indexOf(conditions.get(parentConditionTag)));
+            var condComponent = conditions.get(parentConditionTag);
+            int idx = components.indexOf(condComponent);
+            if (idx != -1) indices.add(idx);
         }
         for (var dependency : component.dependencies()) {
-            // Матчим зависимости аналогично вашей логике в getCreateDependencies
-            // и добавляем их индексы: indices.add(components.indexOf(targetComponent));
+            switch (dependency) {
+                case ComponentDependency.SingleDependency single -> {
+                    var target = switch (single) {
+                        case ComponentDependency.TargetDependency t -> t.component();
+                        case ComponentDependency.ValueOfDependency v -> v.component();
+                        case ComponentDependency.WrappedTargetDependency w -> w.component();
+                        default -> null;
+                    };
+                    if (target != null) {
+                        int idx = components.indexOf(target);
+                        if (idx != -1) indices.add(idx);
+                    }
+                }
+                case ComponentDependency.AllOfDependency allOf -> {
+                    for (var subDep : allOf.getResolvedDependencies()) {
+                        int idx = components.indexOf(subDep.component());
+                        if (idx != -1) indices.add(idx);
+                    }
+                }
+                case ComponentDependency.OneOfDependency oneOf -> {
+                    for (var subDep : oneOf.dependencies()) {
+                        int idx = components.indexOf(subDep.component());
+                        if (idx != -1) indices.add(idx);
+                    }
+                }
+                case ComponentDependency.PromisedProxyParameterDependency promised -> {
+                    if (promised.realDependency != null) {
+                        int idx = components.indexOf(promised.realDependency);
+                        if (idx != -1) indices.add(idx);
+                    }
+                }
+                default -> {}
+            }
         }
         return indices;
     }
