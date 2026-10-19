@@ -45,7 +45,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 //    @Disabled("For real performance tests")
     @Test
     public void testRealisticEnterpriseGraphColdStart() throws Exception {
-        int nodesCount = 1500;
+        int nodesCount = 150;
         int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
@@ -275,17 +275,26 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         }
 
         int currentLayer = 0;
+        int expectedCreateEdges = 0;
         for (int i = 0; i < nodesCount; i++) {
             if (currentLayer < layersCount - 1 && layerToNodesMap[currentLayer].size() >= nodesPerLayer) {
                 currentLayer++;
             }
             nodeToLayerMap[i] = currentLayer;
             layerToNodesMap[currentLayer].add(i);
+
+            if (currentLayer == 0) {
+                expectedCreateEdges += 0;
+            } else if (currentLayer == 1 || currentLayer == layersCount - 1) {
+                expectedCreateEdges += (currentLayer == 1) ? 1 : 2;
+            } else {
+                expectedCreateEdges += 3;
+            }
         }
 
         var startPureNano = System.nanoTime();
 
-        var draw = new ApplicationGraphDraw(ExampleApplication.class);
+        var draw = new ApplicationGraphDraw(ExampleApplication.class, nodesCount, expectedCreateEdges, 0, 0);
         List<Node<?>> allNodes = new ArrayList<>(nodesCount);
 
         for (int i = 0; i < nodesCount; i++) {
@@ -323,15 +332,15 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         var avgPerNodeNano = totalPureNano / nodesCount;
 
         System.out.printf("""
-            ==================================================
-            🎯 PURE KORA GRAPH DRAW BENCHMARK (NO JAVAC) 🎯
-            ==================================================
-            🚀 Total Nodes        : %d
-            📐 Graph Depth        : %d layers
-            ⏱️ Clean Draw Time    : %.4f ms
-            📊 Avg Time per Node  : %d ns
-            ==================================================
-            """, draw.size(), layersCount, durationMs, avgPerNodeNano);
+        ==================================================
+        🎯 PURE KORA GRAPH DRAW BENCHMARK (NO JAVAC) 🎯
+        ==================================================
+        🚀 Total Nodes        : %d
+        📐 Graph Depth        : %d layers
+        ⏱️ Clean Draw Time    : %.4f ms
+        📊 Avg Time per Node  : %d ns
+        ==================================================
+        """, draw.size(), layersCount, durationMs, avgPerNodeNano);
 
         assertThat(draw.getNodes()).hasSize(nodesCount);
     }

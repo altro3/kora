@@ -95,8 +95,8 @@ class KoraAppProcessorTest {
         var graphDraw = testClass(AppWithAllOfValueOf.class);
         var node1 = graphDraw.getNodes().get(0);
         var node2 = graphDraw.getNodes().get(1);
-        assertThat(((NodeImpl<?>) node2).createDependencies).hasSize(1);
-        assertThat(((NodeImpl<?>) node2).refreshDependencies).hasSize(0);
+        assertThat(((NodeImpl<?>) node2).createDependencies()).hasSize(1);
+        assertThat(((NodeImpl<?>) node2).refreshDependencies()).hasSize(0);
 
         var graph = graphDraw.init();
 
