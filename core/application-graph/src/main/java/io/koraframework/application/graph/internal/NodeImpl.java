@@ -4,7 +4,6 @@ import io.koraframework.application.graph.*;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.reflect.Type;
-import java.util.List;
 import java.util.function.Function;
 
 public final class NodeImpl<T> implements Node<T> {
@@ -18,27 +17,17 @@ public final class NodeImpl<T> implements Node<T> {
     @Nullable
     public final Function<Graph, GraphCondition.ConditionResult> condition;
 
-    public final List<Node<?>> createDependencies;
-    public final List<Node<?>> refreshDependencies;
-    public final List<Node<? extends GraphInterceptor<T>>> interceptors;
-
     public NodeImpl(
         ApplicationGraphDraw graphDraw,
         Type type,
         @Nullable Class<?> tag,
         @Nullable Function<Graph, GraphCondition.ConditionResult> condition,
         int index,
-        List<Node<?>> createDependencies,
-        List<Node<?>> refreshDependencies,
-        List<Node<? extends GraphInterceptor<T>>> interceptors,
         Graph.Factory<? extends T> factory) {
         this.graphDraw = graphDraw;
         this.index = index;
-        this.createDependencies = createDependencies;
-        this.refreshDependencies = refreshDependencies;
         this.factory = factory;
         this.type = type;
-        this.interceptors = List.copyOf(interceptors);
         this.tag = tag;
         this.condition = condition;
     }
@@ -62,10 +51,11 @@ public final class NodeImpl<T> implements Node<T> {
 
     @Override
     public String toString() {
-        if(tag == null) {
-            return "[#%s] %s (%s dependencies)".formatted(index, type, createDependencies.size());
+        int depSize = graphDraw.getCreateDependenciesCount(this.index);
+        if (tag == null) {
+            return "[#%s] %s (%s dependencies)".formatted(index, type, depSize);
         } else {
-            return "[#%s] %s (@Tag(%s)) (%s dependencies)".formatted(index, type, tag, createDependencies.size());
+            return "[#%s] %s (@Tag(%s)) (%s dependencies)".formatted(index, type, tag, depSize);
         }
     }
 }
