@@ -36,21 +36,26 @@ public class ApplicationGraphDraw {
     private final int[] interceptorEdges;
     private int interceptorEdgesSize = 0;
     private final int[] interceptorOffsets;
+    private final Type[] nodeTypes;
+    private final @Nullable Class<?>[] nodeTags;
+    private final @Nullable Function<Graph, GraphCondition.ConditionResult>[] nodeConditions;
 
     private final Map<Type, int[]> typeIndex;
 
     public ApplicationGraphDraw(Class<?> root, int expectedNodes, int expectedCreateEdges, int expectedRefreshEdges, int expectedInterceptorEdges) {
         this.root = root;
-        graphNodes = new NodeImpl<?>[expectedNodes];
-        createOffsets = new int[expectedNodes + 1];
-        refreshOffsets = new int[expectedNodes + 1];
-        interceptorOffsets = new int[expectedNodes + 1];
+        this.graphNodes = new NodeImpl<?>[expectedNodes];
+        this.createOffsets = new int[expectedNodes + 1];
+        this.refreshOffsets = new int[expectedNodes + 1];
+        this.interceptorOffsets = new int[expectedNodes + 1];
+        this.createEdges = new int[expectedCreateEdges];
+        this.refreshEdges = new int[expectedRefreshEdges];
+        this.interceptorEdges = new int[expectedInterceptorEdges];
+        this.typeIndex = new HashMap<>(expectedNodes);
 
-        createEdges = new int[expectedCreateEdges];
-        refreshEdges = new int[expectedRefreshEdges];
-        interceptorEdges = new int[expectedInterceptorEdges];
-
-        typeIndex = new HashMap<>(expectedNodes);
+        this.nodeTypes = new Type[expectedNodes];
+        this.nodeTags = new Class<?>[expectedNodes];
+        this.nodeConditions = new Function[expectedNodes];
     }
 
     public Class<?> getRoot() {
@@ -83,7 +88,7 @@ public class ApplicationGraphDraw {
         for (int i = 0; i < createDependencies.size(); i++) {
             if (createDependencies.get(i) instanceof NodeImpl<?> node) {
                 if (node.index >= 0 && node.graphDraw != this) {
-                    throw new IllegalArgumentException("Graph dependency belongs to another application graph: node index %s, type %s".formatted(node.index, node.type));
+                    throw new IllegalArgumentException("Graph dependency belongs to another application graph: node index %s, type %s".formatted(node.index, node.type()));
                 }
             }
         }
@@ -106,7 +111,11 @@ public class ApplicationGraphDraw {
         }
         interceptorOffsets[currentIndex + 1] = interceptorEdgesSize;
 
-        NodeImpl<T> node = new NodeImpl<>(this, type, tag, condition, currentIndex, factory);
+        nodeTypes[currentIndex] = type;
+        nodeTags[currentIndex] = tag;
+        nodeConditions[currentIndex] = condition;
+
+        var node = new NodeImpl<T>(this, currentIndex, factory);
         graphNodes[currentIndex] = node;
         size++;
 
@@ -172,7 +181,7 @@ public class ApplicationGraphDraw {
         refreshOffsets[idx + 1] = refreshOffsets[idx];
         interceptorOffsets[idx + 1] = interceptorOffsets[idx];
 
-        NodeImpl<T> newNode = new NodeImpl<>(this, casted.type, casted.tag, casted.condition, idx, factory);
+        var newNode = new NodeImpl<T>(this, idx, factory);
         graphNodes[idx] = newNode;
     }
 
@@ -180,7 +189,7 @@ public class ApplicationGraphDraw {
         var casted = (NodeImpl<T>) node;
         int idx = casted.index;
 
-        NodeImpl<T> newNode = new NodeImpl<>(this, casted.type, casted.tag, casted.condition, idx, factory);
+        var newNode = new NodeImpl<T>(this, idx, factory);
         graphNodes[idx] = newNode;
     }
 
@@ -196,6 +205,10 @@ public class ApplicationGraphDraw {
         System.arraycopy(refreshEdges, 0, draw.refreshEdges, 0, refreshEdgesSize);
         System.arraycopy(interceptorEdges, 0, draw.interceptorEdges, 0, interceptorEdgesSize);
 
+        System.arraycopy(nodeTypes, 0, draw.nodeTypes, 0, size);
+        System.arraycopy(nodeTags, 0, draw.nodeTags, 0, size);
+        System.arraycopy(nodeConditions, 0, draw.nodeConditions, 0, size);
+
         draw.size = size;
         draw.createEdgesSize = createEdgesSize;
         draw.refreshEdgesSize = refreshEdgesSize;
@@ -203,32 +216,28 @@ public class ApplicationGraphDraw {
 
         for (int i = 0; i < size; i++) {
             var node = graphNodes[i];
-            var condition = node.condition();
+            var condition = nodeConditions[i];
             var replacedFactory = new ReplacedGraphFactory<>(draw.graphNodes, (NodeImpl<Object>) node);
 
-            NodeImpl<?> replacedNode = new NodeImpl<>(
-                draw,
-                node.type(),
-                node.tag(),
-                condition == null ? null : graph -> condition.apply(ReplacedGraphFactory.replaced(draw.graphNodes, graph)),
-                i,
-                replacedFactory
-            );
+            if (condition != null) {
+                draw.nodeConditions[i] = graph -> condition.apply(ReplacedGraphFactory.replaced(draw.graphNodes, graph));
+            }
+
+            var replacedNode = new NodeImpl<>(draw, i, replacedFactory);
             draw.graphNodes[i] = replacedNode;
 
-            int[] existing = draw.typeIndex.get(node.type());
+            int[] existing = draw.typeIndex.get(nodeTypes[i]);
             if (existing == null) {
-                draw.typeIndex.put(node.type(), new int[] {i});
+                draw.typeIndex.put(nodeTypes[i], new int[] {i});
             } else {
                 int[] updated = Arrays.copyOf(existing, existing.length + 1);
                 updated[existing.length] = i;
-                draw.typeIndex.put(node.type(), updated);
+                draw.typeIndex.put(nodeTypes[i], updated);
             }
         }
         return draw;
     }
 
-    @SuppressWarnings("unchecked")
     public ApplicationGraphDraw subgraph(List<Node<?>> excludeTransitive, Iterable<Node<?>> rootNodes) {
         int maxNodes = size;
 
@@ -291,10 +300,9 @@ public class ApplicationGraphDraw {
                     seen[currentIdx] = subNodesCount;
                     targetNodes[subNodesCount++] = currentIdx;
 
-                    int createLen = createOffsets[currentIdx + 1] - createOffsets[currentIdx];
-                    if (createLen > 0 && !excludeTransitiveBits.get(currentIdx)) {
-                        subCreateEdgesCount += createLen;
-                        subRefreshEdgesCount += createLen;
+                    if (!excludeTransitiveBits.get(currentIdx)) {
+                        subCreateEdgesCount += (createOffsets[currentIdx + 1] - createOffsets[currentIdx]);
+                        subRefreshEdgesCount += (refreshOffsets[currentIdx + 1] - refreshOffsets[currentIdx]);
                     }
                     subInterceptorEdgesCount += (interceptorOffsets[currentIdx + 1] - interceptorOffsets[currentIdx]);
                 }
@@ -304,46 +312,57 @@ public class ApplicationGraphDraw {
         }
 
         var subgraph = new ApplicationGraphDraw(root, subNodesCount, subCreateEdgesCount, subRefreshEdgesCount, subInterceptorEdgesCount);
+        subgraph.size = subNodesCount;
 
         for (int i = 0; i < subNodesCount; i++) {
-            int currentIdx = targetNodes[i];
+            int oldIdx = targetNodes[i];
 
-            int createStart = createOffsets[currentIdx];
-            int createEnd = createOffsets[currentIdx + 1];
-            int createLen = createEnd - createStart;
-
-            List<Node<?>> dependencyNodes;
-            if (createLen == 0 || excludeTransitiveBits.get(currentIdx)) {
-                dependencyNodes = List.of();
-            } else {
-                dependencyNodes = new ArrayList<>(createLen);
-                for (int j = createStart; j < createEnd; j++) {
-                    dependencyNodes.add(subgraph.graphNodes[seen[createEdges[j]]]);
+            subgraph.createOffsets[i] = subgraph.createEdgesSize;
+            if (!excludeTransitiveBits.get(oldIdx)) {
+                int start = createOffsets[oldIdx];
+                int end = createOffsets[oldIdx + 1];
+                for (int j = start; j < end; j++) {
+                    subgraph.createEdges[subgraph.createEdgesSize++] = seen[createEdges[j]];
                 }
             }
+            subgraph.createOffsets[i + 1] = subgraph.createEdgesSize;
 
-            int interStart = interceptorOffsets[currentIdx];
-            int interEnd = interceptorOffsets[currentIdx + 1];
-            int interLen = interEnd - interStart;
-
-            List<Node<? extends GraphInterceptor<Object>>> interceptors;
-            if (interLen == 0) {
-                interceptors = List.of();
-            } else {
-                interceptors = new ArrayList<>(interLen);
-                for (int j = interStart; j < interEnd; j++) {
-                    interceptors.add((Node<? extends GraphInterceptor<Object>>) subgraph.graphNodes[seen[interceptorEdges[j]]]);
+            subgraph.refreshOffsets[i] = subgraph.refreshEdgesSize;
+            if (!excludeTransitiveBits.get(oldIdx)) {
+                int start = refreshOffsets[oldIdx];
+                int end = refreshOffsets[oldIdx + 1];
+                for (int j = start; j < end; j++) {
+                    subgraph.refreshEdges[subgraph.refreshEdgesSize++] = seen[refreshEdges[j]];
                 }
             }
+            subgraph.refreshOffsets[i + 1] = subgraph.refreshEdgesSize;
 
-            Graph.Factory<Object> factory = graph -> ((NodeImpl<Object>) graphNodes[currentIdx]).factory.get(new RemappedGraphProxy(graph, subgraph, seen));
-            var condition = graphNodes[currentIdx].condition();
+            subgraph.interceptorOffsets[i] = subgraph.interceptorEdgesSize;
+            int instart = interceptorOffsets[oldIdx];
+            int inend = interceptorOffsets[oldIdx + 1];
+            for (int j = instart; j < inend; j++) {
+                subgraph.interceptorEdges[subgraph.interceptorEdgesSize++] = seen[interceptorEdges[j]];
+            }
+            subgraph.interceptorOffsets[i + 1] = subgraph.interceptorEdgesSize;
 
-            subgraph.addNode(
-                graphNodes[currentIdx].type(), graphNodes[currentIdx].tag(),
-                condition == null ? null : graph -> condition.apply(new RemappedGraphProxy(graph, subgraph, seen)),
-                dependencyNodes, dependencyNodes, interceptors, factory
-            );
+            subgraph.nodeTypes[i] = nodeTypes[oldIdx];
+            subgraph.nodeTags[i] = nodeTags[oldIdx];
+
+            var condition = nodeConditions[oldIdx];
+            subgraph.nodeConditions[i] = condition == null ? null : new SubgraphIndexedCondition(condition, seen);
+
+            var subFactory = new SubgraphIndexFactory<>(graphNodes[oldIdx].factory, seen);
+            var subNode = new NodeImpl<>(subgraph, i, subFactory);
+            subgraph.graphNodes[i] = subNode;
+
+            int[] existing = subgraph.typeIndex.get(subgraph.nodeTypes[i]);
+            if (existing == null) {
+                subgraph.typeIndex.put(subgraph.nodeTypes[i], new int[] {i});
+            } else {
+                int[] updated = Arrays.copyOf(existing, existing.length + 1);
+                updated[existing.length] = i;
+                subgraph.typeIndex.put(subgraph.nodeTypes[i], updated);
+            }
         }
 
         return subgraph;
@@ -371,6 +390,20 @@ public class ApplicationGraphDraw {
 
     public int[] getInterceptorOffsets() {
         return interceptorOffsets;
+    }
+
+    public Type getNodeType(int index) {
+        return nodeTypes[index];
+    }
+
+    @Nullable
+    public Class<?> getNodeTag(int index) {
+        return nodeTags[index];
+    }
+
+    @Nullable
+    public Function<Graph, GraphCondition.ConditionResult> getNodeCondition(int index) {
+        return nodeConditions[index];
     }
 
     static class ReplacedGraphFactory<T> implements Graph.Factory<T> {

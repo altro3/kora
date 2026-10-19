@@ -62,7 +62,7 @@ public final class GraphImpl implements InitializedGraph {
     private static <T> NodeImpl<T> toImpl(ApplicationGraphDraw draw, Node<T> node) {
         if (node instanceof NodeImpl<T> impl) {
             if (impl.graphDraw != draw) {
-                throw new IllegalArgumentException("Graph node belongs to another application graph: node index %s, type %s".formatted(impl.index, impl.type));
+                throw new IllegalArgumentException("Graph dependency belongs to another application graph: node index %s, type %s".formatted(impl.index, impl.type()));
             }
             return impl;
         } else {
@@ -579,7 +579,7 @@ public final class GraphImpl implements InitializedGraph {
                     throw e;
                 } catch (Throwable e) {
                     rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} error", node.index, newObject.getClass(), interIdx, interceptorObject.getClass(), e);
-                    throw new IllegalStateException("Graph interceptor failed with checked exception for node %s".formatted(node.type), e);
+                    throw new IllegalStateException("Graph interceptor failed with checked exception for node %s".formatted(node.type()), e);
                 }
             }
             tmpArray.set(node.index, newObject);
@@ -627,7 +627,7 @@ public final class GraphImpl implements InitializedGraph {
                 throw e;
             } catch (Throwable e) {
                 this.rootGraph.logger.trace("Initializing node {} of class {} error", index, lifecycle.getClass(), e);
-                throw new IllegalStateException("Lifecycle init failed with checked exception for node %s at index %s".formatted(node.type, index), e);
+                throw new IllegalStateException("Lifecycle init failed with checked exception for node %s at index %s".formatted(node.type(), index), e);
             }
         }
 

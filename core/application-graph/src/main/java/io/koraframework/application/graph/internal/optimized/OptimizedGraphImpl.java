@@ -441,13 +441,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         return conditionResultsCache;
     }
 
-//    private static class DependencyInitializationFailedException extends RuntimeException {
-//        @Override
-//        public Throwable fillInStackTrace() {
-//            return this;
-//        }
-//    }
-
     static final class ConditionFailedValue {
         final String reason;
 
