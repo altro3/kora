@@ -3,6 +3,7 @@ package io.koraframework.application.graph.internal;
 import io.koraframework.application.graph.*;
 import org.jspecify.annotations.Nullable;
 import java.lang.reflect.Type;
+import java.util.*;
 import java.util.function.Function;
 
 public final class NodeImpl<T> implements Node<T> {
@@ -31,6 +32,18 @@ public final class NodeImpl<T> implements Node<T> {
     @Override
     public Function<Graph, GraphCondition.ConditionResult> condition() {
         return graphDraw.getNodeCondition(index);
+    }
+
+    public List<Node<?>> interceptors() {
+        return graphDraw.getNodeInterceptors(this.index);
+    }
+
+    public List<Node<?>> createDependencies() {
+        return graphDraw.getNodeCreateDependencies(this.index);
+    }
+
+    public List<Node<?>> refreshDependencies() {
+        return graphDraw.getNodeRefreshDependencies(this.index);
     }
 
     @Override

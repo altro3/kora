@@ -406,6 +406,45 @@ public class ApplicationGraphDraw {
         return nodeConditions[index];
     }
 
+    public List<Node<?>> getNodeInterceptors(int nodeIndex) {
+        int start = interceptorOffsets[nodeIndex];
+        int end = interceptorOffsets[nodeIndex + 1];
+        if (start == end) {
+            return List.of();
+        }
+        var result = new ArrayList<Node<?>>(end - start);
+        for (int i = start; i < end; i++) {
+            result.add(graphNodes[interceptorEdges[i]]);
+        }
+        return result;
+    }
+
+    public List<Node<?>> getNodeCreateDependencies(int nodeIndex) {
+        int start = createOffsets[nodeIndex];
+        int end = createOffsets[nodeIndex + 1];
+        if (start == end) {
+            return List.of();
+        }
+        var result = new ArrayList<Node<?>>(end - start);
+        for (int i = start; i < end; i++) {
+            result.add(graphNodes[createEdges[i]]);
+        }
+        return result;
+    }
+
+    public List<Node<?>> getNodeRefreshDependencies(int nodeIndex) {
+        int start = refreshOffsets[nodeIndex];
+        int end = refreshOffsets[nodeIndex + 1];
+        if (start == end) {
+            return List.of();
+        }
+        var result = new ArrayList<Node<?>>(end - start);
+        for (int i = start; i < end; i++) {
+            result.add(graphNodes[refreshEdges[i]]);
+        }
+        return result;
+    }
+
     static class ReplacedGraphFactory<T> implements Graph.Factory<T> {
         final NodeImpl<?>[] nodes;
         final NodeImpl<T> node;
@@ -474,66 +513,6 @@ public class ApplicationGraphDraw {
             for (var i = 0; i < oneOfNodes.length; i++) {
                 var n = (NodeImpl<?>) oneOfNodes[i].node();
                 fixed[i] = new NodeWithMapper<>((Node<N>) nodes[n.index], oneOfNodes[i].mapper());
-            }
-            return graph.getOnePromiseOf(fixed);
-        }
-    }
-
-    private static final class RemappedGraphProxy implements RefreshableGraph {
-        private final Graph graph;
-        private final ApplicationGraphDraw subgraph;
-        private final int[] seen;
-
-        RemappedGraphProxy(Graph graph, ApplicationGraphDraw subgraph, int[] seen) {
-            this.graph = graph;
-            this.subgraph = subgraph;
-            this.seen = seen;
-        }
-
-        @Override
-        public void refresh(Node<?> fromNode) {
-            var casted = (NodeImpl<?>) fromNode;
-            var realNode = subgraph.getNodeByIndex(seen[casted.index]);
-            ((RefreshableGraph) graph).refresh(realNode);
-        }
-
-        @Override
-        public ApplicationGraphDraw draw() {
-            return subgraph;
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public <Q> Q get(Node<? extends Q> node1) {
-            var casted = (NodeImpl<?>) node1;
-            var realNode = (Node<Q>) subgraph.getNodeByIndex(seen[casted.index]);
-            return graph.get(realNode);
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public <Q> ValueOf<Q> valueOf(Node<? extends Q> node1) {
-            var casted = (NodeImpl<?>) node1;
-            var realNode = (Node<Q>) subgraph.getNodeByIndex(seen[casted.index]);
-            return graph.valueOf(realNode);
-        }
-
-        @Override
-        @SuppressWarnings("unchecked")
-        public <Q> PromiseOf<Q> promiseOf(Node<? extends Q> node1) {
-            var casted = (NodeImpl<?>) node1;
-            var realNode = (Node<? extends Q>) subgraph.getNodeByIndex(seen[casted.index]);
-            return graph.promiseOf(realNode);
-        }
-
-        @Override
-        @SafeVarargs
-        @SuppressWarnings("unchecked")
-        public final <N, V> PromiseOf<V> getOnePromiseOf(NodeWithMapper<N, V>... oneOfNodes) {
-            var fixed = new NodeWithMapper[oneOfNodes.length];
-            for (var i = 0; i < oneOfNodes.length; i++) {
-                var n = (NodeImpl<?>) oneOfNodes[i].node();
-                fixed[i] = new NodeWithMapper<>((Node<N>) subgraph.getNodeByIndex(seen[n.index]), oneOfNodes[i].mapper());
             }
             return graph.getOnePromiseOf(fixed);
         }

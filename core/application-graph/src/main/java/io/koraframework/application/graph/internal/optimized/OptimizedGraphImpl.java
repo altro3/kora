@@ -411,7 +411,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
         if (!errors.isEmpty()) {
             tmpGraph.rollback();
-            var rootCause = errors.get(0);
+            var rootCause = errors.getFirst();
             if (rootCause instanceof CompletionException ce) {
                 rootCause = ce.getCause();
             }
