@@ -334,40 +334,21 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
         var currentNode = (NodeImpl<?>) draw.getNodeByIndex(targetIndex);
         long start = isDebug ? System.nanoTime() : 0L;
+        boolean taskCounted = false;
         try {
-            var condition = draw.getNodeCondition(targetIndex);
-            if (condition != null) {
-                var condResult = condition.apply(this);
-                conditionResultsCache.set(targetIndex, condResult);
-                if (condResult instanceof ConditionResult.Failed) {
-                    OBJECTS_VH.setRelease(graphObjects, targetIndex, new ConditionFailedValue("Condition failed"));
-                    int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
-                    if (globalLeft == 0) LockSupport.unpark(mainThread);
-                    return;
-                }
-            }
-
             tmpGraph.createNode(currentNode, startFrom, isTrace);
 
-            Object instance = currentNode.factory.get(this);
-
-            int[] interOffsets = draw.getInterceptorOffsets();
-            int[] interEdges = draw.getInterceptorEdges();
-            int startInt = interOffsets[targetIndex];
-            int endInt = interOffsets[targetIndex + 1];
-            for (int i = startInt; i < endInt; i++) {
-                int interceptorIndex = interEdges[i];
-                var interceptor = (GraphInterceptor<Object>) OBJECTS_VH.getVolatile(graphObjects, interceptorIndex);
-                if (interceptor != null) {
-                    instance = interceptor.afterInit(instance);
+            Object currentVal = tmpGraph.getRawTmpArray()[targetIndex];
+            if (currentVal instanceof ConditionFailedValue) {
+                REMAINING_DEPS_VH.setRelease(remainingDepsArray, targetIndex, -1);
+                taskCounted = true;
+                int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+                if (globalLeft == 0) {
+                    LockSupport.unpark(mainThread);
                 }
+                cascadeCancel(targetIndex, remainingDepsArray, downstreamHead, downstreamEdges, tmpGraph);
+                return;
             }
-
-            if (instance instanceof Lifecycle lifecycle) {
-                lifecycle.init();
-            }
-
-            OBJECTS_VH.setRelease(graphObjects, targetIndex, instance);
 
             if (isDebug) {
                 long tookNanos = System.nanoTime() - start;
@@ -376,6 +357,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 }
             }
 
+            taskCounted = true;
             int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
             if (globalLeft == 0) {
                 LockSupport.unpark(mainThread);
@@ -395,19 +377,34 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             if (ERROR_CHANNEL_VH.compareAndSet(this, null, throwable)) {
                 LockSupport.unpark(mainThread);
             }
-            cascadeCancel(targetIndex, downstreamHead, downstreamEdges);
+            if (!taskCounted) {
+                int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+                if (globalLeft == 0) {
+                    LockSupport.unpark(mainThread);
+                }
+            }
+            cascadeCancel(targetIndex, remainingDepsArray, downstreamHead, downstreamEdges, tmpGraph);
         }
     }
 
-    private void cascadeCancel(int index, int[] downstreamHead, int[] downstreamEdges) {
-        int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
-        if (globalLeft == 0) {
-            LockSupport.unpark(mainThread);
-        }
+    private void cascadeCancel(int index, int[] remainingDepsArray, int[] downstreamHead, int[] downstreamEdges, OptimizedTmpGraph tmpGraph) {
         int dsStart = downstreamHead[index];
         int dsEnd = downstreamHead[index + 1];
         for (int k = dsStart; k < dsEnd; k++) {
-            cascadeCancel(downstreamEdges[k], downstreamHead, downstreamEdges);
+            int nextIdx = downstreamEdges[k];
+
+            int prevDeps = (int) REMAINING_DEPS_VH.getAndSet(remainingDepsArray, nextIdx, -1);
+            if (prevDeps >= 0) {
+                tmpGraph.getRawTmpArray()[nextIdx] = new ConditionFailedValue("test");
+                tmpGraph.getRawChangedNodes()[nextIdx] = 1;
+
+                int globalLeft = (int) GLOBAL_REMAINING_VH.getAndAdd(this, -1) - 1;
+                if (globalLeft == 0) {
+                    LockSupport.unpark(mainThread);
+                }
+
+                cascadeCancel(nextIdx, remainingDepsArray, downstreamHead, downstreamEdges, tmpGraph);
+            }
         }
     }
 

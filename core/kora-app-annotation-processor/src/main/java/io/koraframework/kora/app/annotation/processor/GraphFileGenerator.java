@@ -130,13 +130,11 @@ public class GraphFileGenerator {
         var baseStaticBlock = CodeBlock.builder()
             .addStatement("graphDraw = new $T($T.class, $L, $L, $L, $L, $L)",
                 CommonClassNames.applicationGraphDraw, classElement,
-                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges)
-            .addStatement("var impl = new $T()", implClass);
+                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
 
+        // Железный триггер инициализации статических вложенных классов через вызов статического метода
         for (int p = 0; p < totalPartitions; p++) {
-            var holderClassName = ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "NodeHolder" + p);
-            classBuilder.addField(holderClassName, "holder" + p, Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
-            baseStaticBlock.addStatement("holder$L = new NodeHolder$L(impl)", p, p);
+            baseStaticBlock.addStatement("$T.trigger()", ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "NodeHolder" + p));
         }
 
         classBuilder.addStaticBlock(baseStaticBlock.build());
@@ -150,19 +148,18 @@ public class GraphFileGenerator {
             var holderClassBuilder = TypeSpec.classBuilder("NodeHolder" + p)
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
 
-            var holderConstructor = MethodSpec.constructorBuilder()
-                .addModifiers(Modifier.PUBLIC)
-                .addParameter(implClass, "impl");
+            var holderStaticBlock = CodeBlock.builder();
+            holderStaticBlock.addStatement("var impl = new $T()", implClass);
 
             var partitionCache = buildPartitionCache(typeRefClassName, startIdx, endIdx);
             for (var entry : partitionCache.types.values()) {
                 if (entry.assignedIndex != null) {
-                    holderConstructor.addStatement("var type_$L = $L", entry.assignedIndex, entry.value);
+                    holderStaticBlock.addStatement("var type_$L = $L", entry.assignedIndex, entry.value);
                 }
             }
             for (var entry : partitionCache.tags.values()) {
                 if (entry.assignedIndex != null) {
-                    holderConstructor.addStatement("var tag_$L = $T.class", entry.assignedIndex, ClassName.bestGuess(entry.value));
+                    holderStaticBlock.addStatement("var tag_$L = $T.class", entry.assignedIndex, ClassName.bestGuess(entry.value));
                 }
             }
 
@@ -172,7 +169,7 @@ public class GraphFileGenerator {
 
                 holderClassBuilder.addField(FieldSpec.builder(
                     ParameterizedTypeName.get(CommonClassNames.node, componentTypeName),
-                    component.fieldName(), Modifier.PUBLIC, Modifier.FINAL).build());
+                    component.fieldName(), Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL).build());
 
                 CodeBlock typeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
                 var typeEntry = partitionCache.types.get(typeCode.toString());
@@ -222,11 +219,18 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                holderConstructor.addStatement("$L = graphDraw.addNode($L,\n$L,\n$L,\n$L,\n$L,\n$L,\n$L,\n$L)",
+                holderStaticBlock.addStatement("$L = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, \n$L)",
                     component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, factoryLambdaCode);
             }
 
-            holderClassBuilder.addMethod(holderConstructor.build());
+            holderClassBuilder.addStaticBlock(holderStaticBlock.build());
+
+            var triggerMethod = MethodSpec.methodBuilder("trigger")
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                .returns(void.class)
+                .build();
+            holderClassBuilder.addMethod(triggerMethod);
+
             classBuilder.addType(holderClassBuilder.build());
         }
 
@@ -287,12 +291,6 @@ public class GraphFileGenerator {
                 var declaration = component.declaration();
                 var dependenciesCode = generateDependenciesCode(ctx, component, graphTypeName, 0);
 
-                String rawDepsString = dependenciesCode.toString();
-                for (int h = 0; h < totalPartitions; h++) {
-                    rawDepsString = rawDepsString.replace("NodeHolder" + h + ".", "holder" + h + ".");
-                }
-                CodeBlock finalDependenciesCode = CodeBlock.of("$L", rawDepsString);
-
                 var code = CodeBlock.builder().add("case $L -> {\n", i).indent();
                 code.add("return ");
 
@@ -307,24 +305,13 @@ public class GraphFileGenerator {
                             }
                             code.add(">");
                         }
-                        code.add("($L)", finalDependenciesCode);
+                        code.add("($L)", dependenciesCode);
                     }
                     case ComponentDeclaration.FromModuleComponent moduleComponent -> {
                         if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
                             var customDepsCode = this.generateDependenciesCode(ctx, component, graphTypeName, 1);
-                            String rawCustomDeps = customDepsCode.toString();
-                            for (int h = 0; h < totalPartitions; h++) {
-                                rawCustomDeps = rawCustomDeps.replace("NodeHolder" + h + ".", "holder" + h + ".");
-                            }
-                            CodeBlock finalCustomDepsCode = CodeBlock.of("$L", rawCustomDeps);
-
                             var moduleInstDep = component.dependencies().getFirst();
-                            String rawModulePath = resolveDependencyPath(moduleInstDep, graphTypeName).toString();
-                            for (int h = 0; h < totalPartitions; h++) {
-                                rawModulePath = rawModulePath.replace("NodeHolder" + h + ".", "holder" + h + ".");
-                            }
-
-                            code.add("$L.", rawModulePath);
+                            code.add("$L.", resolveDependencyPath(moduleInstDep, graphTypeName));
                             if (!moduleComponent.typeVariables().isEmpty()) {
                                 code.add("<");
                                 for (int j = 0; j < moduleComponent.typeVariables().size(); j++) {
@@ -333,7 +320,7 @@ public class GraphFileGenerator {
                                 }
                                 code.add(">");
                             }
-                            code.add("$L($L)", moduleComponent.method().getSimpleName(), finalCustomDepsCode);
+                            code.add("$L($L)", moduleComponent.method().getSimpleName(), customDepsCode);
                         } else {
                             if (moduleComponent.module() instanceof ModuleDeclaration.AnnotatedModule(var element)) {
                                 code.add("impl.module$L.", allModules.indexOf(element));
@@ -348,22 +335,20 @@ public class GraphFileGenerator {
                                 }
                                 code.add(">");
                             }
-                            code.add("$L($L)", moduleComponent.method().getSimpleName(), finalDependenciesCode);
+                            code.add("$L($L)", moduleComponent.method().getSimpleName(), dependenciesCode);
                         }
                     }
-                    case ComponentDeclaration.FromExtensionComponent extension -> {
-                        code.add(extension.generator().apply(finalDependenciesCode));
-                    }
+                    case ComponentDeclaration.FromExtensionComponent extension -> code.add(extension.generator().apply(dependenciesCode));
                     case ComponentDeclaration.PromisedProxyComponent promisedProxyComponent -> {
                         if (promisedProxyComponent.typeElement().getTypeParameters().isEmpty()) {
-                            code.add("new $T($L)", promisedProxyComponent.className(), finalDependenciesCode);
+                            code.add("new $T($L)", promisedProxyComponent.className(), dependenciesCode);
                         } else {
-                            code.add("new $T<>($L)", promisedProxyComponent.className(), finalDependenciesCode);
+                            code.add("new $T<>($L)", promisedProxyComponent.className(), dependenciesCode);
                         }
                     }
                     case ComponentDeclaration.OptionalComponent optional -> {
                         var optionalOf = ((DeclaredType) optional.type()).getTypeArguments().getFirst();
-                        code.add("$T.<$T>ofNullable($L)", Optional.class, optionalOf, finalDependenciesCode);
+                        code.add("$T.<$T>ofNullable($L)", Optional.class, optionalOf, dependenciesCode);
                     }
                     default -> throw new IllegalStateException("Unsupported component declaration context");
                 }
@@ -429,7 +414,7 @@ public class GraphFileGenerator {
             return comp.fieldName();
         }
         int p = idx / COMPONENTS_PER_PARTITION;
-        return "holder" + p + "." + comp.fieldName();
+        return "NodeHolder" + p + "." + comp.fieldName();
     }
 
     private CodeBlock buildConditionLambda(ResolvedComponent component) {

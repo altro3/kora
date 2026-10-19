@@ -383,6 +383,14 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         rootGraph.refresh(fromNode);
     }
 
+    Object[] getRawTmpArray() {
+        return tmpArray;
+    }
+
+    byte[] getRawChangedNodes() {
+        return changedNodes;
+    }
+
     private static class TmpValueOf<T> implements ValueOf<T> {
         public volatile Graph tmpGraph;
         private final NodeImpl<? extends T> node;
