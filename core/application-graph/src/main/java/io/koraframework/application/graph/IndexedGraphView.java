@@ -4,9 +4,9 @@ import io.koraframework.application.graph.internal.NodeImpl;
 
 public final class IndexedGraphView implements RefreshableGraph {
     private final RefreshableGraph delegate;
-    private final int[] seenMap;
+    private final short[] seenMap;
 
-    public IndexedGraphView(RefreshableGraph delegate, int[] seenMap) {
+    public IndexedGraphView(RefreshableGraph delegate, short[] seenMap) {
         this.delegate = delegate;
         this.seenMap = seenMap;
     }
@@ -20,8 +20,8 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> T get(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        int oldIdx = nodeImpl.index;
-        int subIdx = seenMap[oldIdx];
+        var oldIdx = nodeImpl.index;
+        var subIdx = seenMap[oldIdx];
         return (T) delegate.get(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 
@@ -29,8 +29,8 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> ValueOf<T> valueOf(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        int oldIdx = nodeImpl.index;
-        int subIdx = seenMap[oldIdx];
+        var oldIdx = nodeImpl.index;
+        var subIdx = seenMap[oldIdx];
         return (ValueOf<T>) delegate.valueOf(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 
@@ -38,8 +38,8 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> PromiseOf<T> promiseOf(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        int oldIdx = nodeImpl.index;
-        int subIdx = seenMap[oldIdx];
+        var oldIdx = nodeImpl.index;
+        var subIdx = seenMap[oldIdx];
         return (PromiseOf<T>) delegate.promiseOf(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 
@@ -52,8 +52,8 @@ public final class IndexedGraphView implements RefreshableGraph {
     @Override
     public void refresh(Node<?> fromNode) {
         var nodeImpl = (NodeImpl<?>) fromNode;
-        int oldIdx = nodeImpl.index;
-        int subIdx = seenMap[oldIdx];
+        var oldIdx = nodeImpl.index;
+        var subIdx = seenMap[oldIdx];
         delegate.refresh(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 }

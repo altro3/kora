@@ -272,7 +272,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
         if (interStart != interEnd) {
             for (var i = interStart; i < interEnd; i++) {
-                int interceptorIndex = iEdges[i];
+                var interceptorIndex = iEdges[i];
                 var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
 
                 if (isTrace) {

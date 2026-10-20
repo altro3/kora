@@ -4,9 +4,9 @@ import java.util.function.*;
 
 public final class SubgraphIndexedCondition implements Function<Graph, GraphCondition.ConditionResult> {
     private final Function<Graph, GraphCondition.ConditionResult> delegate;
-    private final int[] seenMap;
+    private final short[] seenMap;
 
-    public SubgraphIndexedCondition(Function<Graph, GraphCondition.ConditionResult> delegate, int[] seenMap) {
+    public SubgraphIndexedCondition(Function<Graph, GraphCondition.ConditionResult> delegate, short[] seenMap) {
         this.delegate = delegate;
         this.seenMap = seenMap;
     }

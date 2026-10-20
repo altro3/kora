@@ -2,9 +2,9 @@ package io.koraframework.application.graph;
 
 public final class SubgraphIndexFactory<T> implements Graph.Factory<T> {
     private final Graph.Factory<? extends T> delegate;
-    private final int[] seenMap;
+    private final short[] seenMap;
 
-    public SubgraphIndexFactory(Graph.Factory<? extends T> delegate, int[] seenMap) {
+    public SubgraphIndexFactory(Graph.Factory<? extends T> delegate, short[] seenMap) {
         this.delegate = delegate;
         this.seenMap = seenMap;
     }

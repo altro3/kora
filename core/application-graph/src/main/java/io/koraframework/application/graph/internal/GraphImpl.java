@@ -231,7 +231,7 @@ public final class GraphImpl implements InitializedGraph {
                 release[i] = EMPTY_FUTURE;
                 continue;
             }
-            var node = toImpl(draw, draw.getNodeByIndex(i));
+            var node = toImpl(draw, draw.getNodeByIndex((short) i));
             var future = new CompletableFuture<@Nullable Void>();
             var lock = locks.get(i);
             Thread.ofVirtual().name("release-" + i).start(() -> {
@@ -543,7 +543,9 @@ public final class GraphImpl implements InitializedGraph {
                 rootGraph.logger.trace("Creating node {}, dependencies {}", node.index, sj.toString());
             }
 
-            var newObject = Objects.requireNonNull(node.factory.get(this));
+            var factory = (Graph.Factory<T>) rootGraph.draw.getNodeFactory(node.index);
+            var newObject = Objects.requireNonNull(factory.get(this));
+
             if (isUnchanged(newObject, oldObject)) {
                 if (newObject instanceof Lifecycle lifecycle) {
                     lifecycle.release();
@@ -558,7 +560,7 @@ public final class GraphImpl implements InitializedGraph {
             tmpArray.set(node.index, newObject);
             if (newObject instanceof RefreshListener) {
                 synchronized (rootGraph.refreshListenerNodes) {
-                    rootGraph.refreshListenerNodes.add(node.index);
+                    rootGraph.refreshListenerNodes.add((int) node.index);
                 }
             }
             rootGraph.logger.trace("Created node {} {}", node.index, newObject.getClass());
@@ -568,10 +570,10 @@ public final class GraphImpl implements InitializedGraph {
             for (int i = interStart; i < interEnd; i++) {
                 int interIdx = rootGraph.draw.getInterceptorEdges()[i];
                 @SuppressWarnings("unchecked")
-                var interceptorObject = (GraphInterceptor<T>) get(rootGraph.draw.getNodeByIndex(interIdx));
+                var interceptorObject = (GraphInterceptor<Object>) get(rootGraph.draw.getNodeByIndex((short) interIdx));
                 rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {}", node.index, newObject.getClass(), interIdx, interceptorObject.getClass());
                 try {
-                    var intercepted = interceptorObject.afterInit(newObject);
+                    var intercepted = (T) interceptorObject.afterInit(newObject);
                     rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} complete", node.index, newObject.getClass(), interIdx, interceptorObject.getClass());
                     newObject = intercepted;
                 } catch (RuntimeException | Error e) {

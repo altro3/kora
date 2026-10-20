@@ -264,7 +264,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
     @Test
     public void testPureRealisticGraphDrawBuildTime() {
-        int nodesCount = 150;
+        short nodesCount = 150;
         int layersCount = 5;
 
         int nodesPerLayer = nodesCount / layersCount;
@@ -275,7 +275,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
         }
 
         int currentLayer = 0;
-        int expectedCreateEdges = 0;
+        short expectedCreateEdges = 0;
         for (int i = 0; i < nodesCount; i++) {
             if (currentLayer < layersCount - 1 && layerToNodesMap[currentLayer].size() >= nodesPerLayer) {
                 currentLayer++;
@@ -284,9 +284,8 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             layerToNodesMap[currentLayer].add(i);
 
             if (currentLayer == 0) {
-                expectedCreateEdges += 0;
             } else if (currentLayer == 1 || currentLayer == layersCount - 1) {
-                expectedCreateEdges += (currentLayer == 1) ? 1 : 2;
+                expectedCreateEdges += (short) ((currentLayer == 1) ? 1 : 2);
             } else {
                 expectedCreateEdges += 3;
             }
@@ -294,7 +293,7 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
 
         var startPureNano = System.nanoTime();
 
-        var draw = new ApplicationGraphDraw(ExampleApplication.class, nodesCount, expectedCreateEdges, 0, 0, expectedCreateEdges);
+        var draw = new ApplicationGraphDraw(ExampleApplication.class, nodesCount, expectedCreateEdges, (short) 0, (short) 0, expectedCreateEdges);
         List<Node<?>> allNodes = new ArrayList<>(nodesCount);
 
         for (int i = 0; i < nodesCount; i++) {
@@ -320,9 +319,9 @@ public class KoraBigGraphTest extends AbstractKoraAppTest {
             Type fakeType = new FakeType(i);
             Class<?> fakeTag = FakeTag.class;
 
-            int[] createDeps = null;
+            short[] createDeps = null;
             if (!deps.isEmpty()) {
-                createDeps = new int[deps.size()];
+                createDeps = new short[deps.size()];
                 for (int d = 0; d < deps.size(); d++) {
                     createDeps[d] = ((NodeImpl<?>) deps.get(d)).index;
                 }
