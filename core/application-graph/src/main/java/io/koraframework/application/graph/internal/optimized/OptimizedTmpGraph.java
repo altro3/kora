@@ -7,6 +7,7 @@ import io.koraframework.application.graph.internal.optimized.OptimizedGraphImpl.
 import org.jspecify.annotations.*;
 
 import java.io.*;
+import java.lang.invoke.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -25,15 +26,15 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     public OptimizedTmpGraph(OptimizedGraphImpl rootGraph) {
         this.rootGraph = rootGraph;
-        this.rootRawObjects = rootGraph.graphObjects;
-        var length = this.rootRawObjects.length;
-        this.tmpArray = new Object[length];
-        System.arraycopy(this.rootRawObjects, 0, this.tmpArray, 0, length);
-        this.valueOfs = new AtomicReferenceArray<>(length);
-        this.promises = new AtomicReferenceArray<>(length);
-        this.conditionCache = new AtomicReferenceArray<>(length);
-        this.changedNodes = new byte[length];
-        this.localRefreshListeners = new byte[length];
+        rootRawObjects = rootGraph.graphObjects;
+        var length = rootRawObjects.length;
+        tmpArray = new Object[length];
+        System.arraycopy(rootRawObjects, 0, tmpArray, 0, length);
+        valueOfs = new AtomicReferenceArray<>(length);
+        promises = new AtomicReferenceArray<>(length);
+        conditionCache = new AtomicReferenceArray<>(length);
+        changedNodes = new byte[length];
+        localRefreshListeners = new byte[length];
     }
 
     @Override
@@ -44,10 +45,11 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     @Override
     @SuppressWarnings("unchecked")
     public <T> T get(Node<? extends T> node) {
-        var del = this.delegate;
+        var del = delegate;
         if (del != null) {
             return del.get(node);
         }
+        VarHandle.fullFence();
         var index = ((NodeImpl<?>) node).index;
         var val = tmpArray[index];
         if (val == null) {
@@ -61,7 +63,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     @Override
     public GraphCondition condition(Node<? extends GraphCondition> node) {
-        var del = this.delegate;
+        var del = delegate;
         if (del != null) {
             return del.condition(node);
         }
@@ -71,9 +73,10 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             if (cached != null) {
                 return cached;
             }
-            var rootCache = rootGraph.getConditionResultsCache().get(index);
-            if (rootCache != null && changedNodes[index] == 0) {
-                return rootCache;
+            VarHandle.fullFence();
+            var rootCache = rootGraph.getConditionResultsCache()[index];
+            if (rootCache != 0 && changedNodes[index] == 0) {
+                return rootCache == 1 ? new ConditionResult.Matched("Cached matched") : new ConditionResult.Failed("Cached failed");
             }
             var computed = get(node).eval();
             if (conditionCache.compareAndSet(index, null, computed)) {
@@ -87,43 +90,59 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> ValueOf<T> valueOf(Node<? extends T> node) {
         var casted = (NodeImpl<T>) node;
+        var cached = valueOfs.get(casted.index);
+        if (cached != null) {
+            return (ValueOf<T>) cached;
+        }
         var fixed = (NodeImpl<T>) rootGraph.draw().getNodeByIndex(casted.index);
         var value = new TmpValueOf<>(fixed, this);
-        valueOfs.set(casted.index, value);
-        return value;
+        if (valueOfs.compareAndSet(casted.index, null, value)) {
+            return value;
+        }
+        return (ValueOf<T>) Objects.requireNonNull(valueOfs.get(casted.index));
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public <T> PromiseOf<T> promiseOf(Node<? extends T> node) {
         var casted = (NodeImpl<T>) node;
+        var cached = promises.get(casted.index);
+        if (cached instanceof PromiseOfImpl<?> p) {
+            return (PromiseOf<T>) p;
+        }
         var fixed = (NodeImpl<T>) rootGraph.draw().getNodeByIndex(casted.index);
         var promise = new PromiseOfImpl<>(fixed);
-        promises.set(casted.index, promise);
-        return promise;
+        if (promises.compareAndSet(casted.index, null, promise)) {
+            return promise;
+        }
+        return (PromiseOf<T>) Objects.requireNonNull(promises.get(casted.index));
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public <N, V> PromiseOf<V> getOnePromiseOf(NodeWithMapper<N, V>... oneOfNodes) {
-        var fixedNodes = new NodeWithMapper[oneOfNodes.length];
-        var primaryIndex = -1;
+        if (oneOfNodes.length == 0) {
+            throw new IllegalArgumentException("Nodes array cannot be empty");
+        }
+        var primaryIndex = ((NodeImpl<N>) oneOfNodes[0].node()).index;
+        var cached = promises.get(primaryIndex);
+        if (cached instanceof PromiseOfOneConditionalImpl<?, ?> p) {
+            return (PromiseOf<V>) p;
+        }
 
+        var fixedNodes = new NodeWithMapper[oneOfNodes.length];
         for (var i = 0; i < oneOfNodes.length; i++) {
             var node = oneOfNodes[i];
             var casted = (NodeImpl<N>) node.node();
-            if (i == 0) {
-                primaryIndex = casted.index;
-            }
             var fixed = (NodeImpl<N>) rootGraph.draw().getNodeByIndex(casted.index);
             fixedNodes[i] = new NodeWithMapper<>(fixed, node.mapper());
         }
 
         var promise = new PromiseOfOneConditionalImpl<N, V>(fixedNodes);
-        if (primaryIndex >= 0) {
-            promises.set(primaryIndex, promise);
+        if (promises.compareAndSet(primaryIndex, null, promise)) {
+            return promise;
         }
-        return promise;
+        return (PromiseOf<V>) Objects.requireNonNull(promises.get(primaryIndex));
     }
 
     @SuppressWarnings("unchecked")
@@ -133,21 +152,22 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
         if (oldObject != null && node.index != startFrom) {
             var dependencyChanged = false;
-            int[] rEdges = draw.getRefreshEdges();
-            int[] rOffsets = draw.getRefreshOffsets();
+            var rEdges = draw.getRefreshEdges();
+            var rOffsets = draw.getRefreshOffsets();
             int start = rOffsets[node.index], end = rOffsets[node.index + 1];
-            for (int i = start; i < end; i++) {
+            VarHandle.fullFence();
+            for (var i = start; i < end; i++) {
                 if (changedNodes[rEdges[i]] == 1) {
                     dependencyChanged = true;
                     break;
                 }
             }
             if (!dependencyChanged) {
-                int[] iEdges = draw.getInterceptorEdges();
-                int[] iOffsets = draw.getInterceptorOffsets();
+                var iEdges = draw.getInterceptorEdges();
+                var iOffsets = draw.getInterceptorOffsets();
                 start = iOffsets[node.index];
                 end = iOffsets[node.index + 1];
-                for (int i = start; i < end; i++) {
+                for (var i = start; i < end; i++) {
                     if (changedNodes[iEdges[i]] == 1) {
                         dependencyChanged = true;
                         break;
@@ -165,16 +185,17 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 }
                 tmpArray[node.index] = new ConditionFailedValue(failed.reason());
                 changedNodes[node.index] = 1;
+                VarHandle.fullFence();
                 return;
             }
         }
 
         if (isTrace) {
-            int[] cEdges = draw.getCreateEdges();
-            int[] cOffsets = draw.getCreateOffsets();
+            var cEdges = draw.getCreateEdges();
+            var cOffsets = draw.getCreateOffsets();
             int start = cOffsets[node.index], end = cOffsets[node.index + 1];
             var sb = new StringBuilder("[");
-            for (int i = start; i < end; i++) {
+            for (var i = start; i < end; i++) {
                 if (i > start) sb.append(",");
                 sb.append(cEdges[i]);
             }
@@ -182,7 +203,8 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             rootGraph.logger.trace("Creating node {}, dependencies {}", node.index, sb);
         }
 
-        var newObject = Objects.requireNonNull(node.factory.get(this));
+        var factory = (Graph.Factory<Object>) rootGraph.draw().getNodeFactory(node.index);
+        var newObject = Objects.requireNonNull(factory.get(this));
 
         var isUnchanged = false;
         if (oldObject != null) {
@@ -201,6 +223,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         }
         tmpArray[node.index] = newObject;
         changedNodes[node.index] = 1;
+        VarHandle.fullFence();
 
         if (newObject instanceof RefreshListener) {
             localRefreshListeners[node.index] = 1;
@@ -242,20 +265,21 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             }
         }
 
-        int[] iEdges = draw.getInterceptorEdges();
-        int[] iOffsets = draw.getInterceptorOffsets();
-        int interStart = iOffsets[node.index], interEnd = iOffsets[node.index + 1];
+        var iEdges = draw.getInterceptorEdges();
+        var iOffsets = draw.getInterceptorOffsets();
+        var interStart = iOffsets[node.index];
+        var interEnd = iOffsets[node.index + 1];
 
         if (interStart != interEnd) {
-            for (int i = interStart; i < interEnd; i++) {
+            for (var i = interStart; i < interEnd; i++) {
                 int interceptorIndex = iEdges[i];
-                var interceptorObject = (GraphInterceptor<T>) tmpArray[interceptorIndex];
+                var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
 
                 if (isTrace) {
                     rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {}", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass());
                 }
                 try {
-                    var intercepted = interceptorObject.afterInit(newObject);
+                    var intercepted = (T) interceptorObject.afterInit(newObject);
                     if (isTrace) {
                         rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} complete", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass());
                     }
@@ -274,60 +298,52 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             }
         }
         tmpArray[node.index] = newObject;
+        VarHandle.fullFence();
     }
 
     public void commit(int startFrom) {
         var length = changedNodes.length;
-        var oldValuesToRelease = new Object[length];
-
+        var oldValuesToRelease = startFrom > 0 ? new Object[length] : null;
+        var rootListeners = rootGraph.getRefreshListenerIndices();
+        var cache = rootGraph.getConditionResultsCache();
         for (var i = 0; i < length; i++) {
             if (changedNodes[i] == 1) {
                 var newVal = tmpArray[i];
                 if (newVal != null) {
-                    oldValuesToRelease[i] = rootRawObjects[i];
+                    if (oldValuesToRelease != null) {
+                        oldValuesToRelease[i] = rootRawObjects[i];
+                    }
                     rootRawObjects[i] = newVal;
                 }
-            }
-        }
 
-        var rootListeners = rootGraph.getRefreshListenerIndices();
-        for (var i = 0; i < length; i++) {
-            if (changedNodes[i] == 1) {
                 if (localRefreshListeners[i] == 1) {
                     rootListeners.set(i);
                 } else {
                     rootListeners.clear(i);
                 }
             }
-        }
 
-        for (var i = 0; i < length; i++) {
             var v = valueOfs.get(i);
             if (v != null) {
                 v.tmpGraph = rootGraph;
             }
-        }
 
-        for (var i = 0; i < length; i++) {
             var p = promises.get(i);
             if (p != null) {
                 p.graph = rootGraph;
             }
-        }
 
-        var cache = rootGraph.getConditionResultsCache();
-        var condCacheLength = conditionCache.length();
-        for (var i = 0; i < condCacheLength; i++) {
             var cond = conditionCache.get(i);
             if (cond != null) {
-                cache.set(i, cond);
+                var targetVal = cond instanceof ConditionResult.Matched ? 1 : 2;
+                cache[i] = targetVal;
             }
         }
 
-        if (startFrom > 0) {
+        if (startFrom > 0 && oldValuesToRelease != null) {
             var draw = rootGraph.draw();
-            int[] iEdges = draw.getInterceptorEdges();
-            int[] iOffsets = draw.getInterceptorOffsets();
+            var iEdges = draw.getInterceptorEdges();
+            var iOffsets = draw.getInterceptorOffsets();
 
             for (var i = length - 1; i >= 0; i--) {
                 var oldVal = oldValuesToRelease[i];
@@ -353,14 +369,15 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     } else if (oldVal instanceof AutoCloseable closeable) {
                         closeable.close();
                     }
-                } catch (Exception _) {
-                }
+                } catch (Exception _) {}
             }
         }
-        this.delegate = rootGraph;
+        delegate = rootGraph;
+        VarHandle.fullFence();
     }
 
     public void rollback() {
+        VarHandle.fullFence();
         var length = tmpArray.length;
         for (var i = length - 1; i >= 0; i--) {
             var currentTmp = tmpArray[i];
@@ -372,8 +389,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     } else if (currentTmp instanceof Closeable closeable) {
                         closeable.close();
                     }
-                } catch (Exception _) {
-                }
+                } catch (Exception _) {}
             }
         }
     }
@@ -402,7 +418,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
         @Override
         public T get() {
-            return this.tmpGraph.get(this.node);
+            return tmpGraph.get(node);
         }
     }
 }
