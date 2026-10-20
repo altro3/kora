@@ -73,6 +73,17 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     }
 
     @Override
+    @SuppressWarnings("unchecked")
+    public <T> @Nullable T getNullable(Node<? extends T> node) {
+        var index = ((NodeImpl<?>) node).index;
+        var val = OBJECTS_VH.getVolatile(graphObjects, index);
+        if (val == null || val instanceof ConditionFailedValue) {
+            return null;
+        }
+        return (T) val;
+    }
+
+    @Override
     public GraphCondition condition(Node<? extends GraphCondition> node) {
         var index = ((NodeImpl<?>) node).index;
         var cached = (int) CONDITION_VH.getVolatile(conditionResultsCache, index);
@@ -110,7 +121,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         logger.debug("Dependency container initializing...");
         var started = System.nanoTime();
         try {
-            initializeSubgraph((short) 0);
+            initializeSubgraph((short) 0, true);
             if (logger.isDebugEnabled()) {
                 logger.debug("Dependency container initialized in {}ms", tookForLogging(started));
             }
@@ -132,7 +143,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
         var started = System.nanoTime();
         try {
-            initializeSubgraph(fromNode.index);
+            initializeSubgraph(fromNode.index, false);
             if (logger.isDebugEnabled()) {
                 logger.debug("Dependency container refreshed in {}ms", tookForLogging(started));
             }
@@ -162,18 +173,16 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
     }
 
-    private void initializeSubgraph(short startFrom) {
+    private void initializeSubgraph(short startFrom, boolean isFullInit) {
         logger.trace("Materializing graph objects {}", startFrom);
 
         var size = draw.size();
         var dependentNodes = new BitSet(size);
 
-        if (startFrom == 0) {
+        if (isFullInit) {
             dependentNodes.set(0, size);
         } else {
             dependentNodes.set(startFrom);
-            var cEdges = draw.getCreateEdges();
-            var cOffsets = draw.getCreateOffsets();
             var rEdges = draw.getRefreshEdges();
             var rOffsets = draw.getRefreshOffsets();
             var iEdges = draw.getInterceptorEdges();
@@ -181,23 +190,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             for (var i = startFrom; i < size; i++) {
                 var dependsOnChanged = false;
-
-                var start = cOffsets[i];
-                var end = cOffsets[i + 1];
+                var start = rOffsets[i];
+                var end = rOffsets[i + 1];
                 for (var j = start; j < end; j++) {
-                    if (dependentNodes.get(cEdges[j])) {
+                    if (dependentNodes.get(rEdges[j])) {
                         dependsOnChanged = true;
                         break;
-                    }
-                }
-                if (!dependsOnChanged) {
-                    start = rOffsets[i];
-                    end = rOffsets[i + 1];
-                    for (var j = start; j < end; j++) {
-                        if (dependentNodes.get(rEdges[j])) {
-                            dependsOnChanged = true;
-                            break;
-                        }
                     }
                 }
                 if (!dependsOnChanged) {
@@ -237,8 +235,9 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
             totalDependentTasks++;
             var depCount = 0;
-
             var iterId = ++currentIterationId;
+
+            println("[KORA-DEBUG] Counting deps for Node " + i);
 
             var start = cOffsets[i];
             var end = cOffsets[i + 1];
@@ -247,6 +246,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
                     depCount++;
+                    println("[KORA-DEBUG]   Node " + i + " +1 dep (CREATE) -> Node " + depIdx);
                 }
             }
             start = rOffsets[i];
@@ -256,6 +256,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
                     depCount++;
+                    println("[KORA-DEBUG]   Node " + i + " +1 dep (REFRESH) -> Node " + depIdx);
                 }
             }
             start = iOffsets[i];
@@ -265,19 +266,22 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
                     depCount++;
+                    println("[KORA-DEBUG]   Node " + i + " +1 dep (INTERCEPTOR) -> Node " + depIdx);
                 }
             }
             tasks[i] = new NodeTask(i, depCount);
+            println("[KORA-DEBUG] Node " + i + " total calculated remainingDeps: " + depCount);
         }
 
         println("[KORA-LOG] --- START --- totalDependentTasks=" + totalDependentTasks);
         for (short i = 0; i < size; i++) {
-            if (dependentNodes.get(i)) {
+            if (dependentNodes.get(i) && tasks[i] != null) {
                 println("[KORA-LOG] Node " + i + " initial deps count: " + tasks[i].remainingDeps);
             }
         }
 
         if (totalDependentTasks == 0) {
+            println("[KORA-DEBUG] totalDependentTasks == 0. Fast-committing.");
             tmpGraph.commit(startFrom);
             fireRefreshListeners();
             return;
@@ -337,11 +341,23 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             var currentVal = tmpGraph.getRawTmpArray()[targetIndex];
             if (currentVal instanceof ConditionFailedValue) {
-                println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " detected ConditionFailedValue inside executeNodeTask");
-                task.isCancelled = true;
+                println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " detected ConditionFailedValue inside executeNodeTask. Skipping factory, keeping downstream.");
+                OBJECTS_VH.setRelease(graphObjects, targetIndex, currentVal);
                 decrementGlobalTasks(1, threadName, targetIndex, " (failed condition)");
-                println("[KORA-LOG][" + threadName + "] Node " + targetIndex + " (failed condition) launching cascadeCancel");
-                cascadeCancel(targetIndex, tasks, tmpGraph, threadName);
+                var dsOffsets = draw.getDownstreamOffsets();
+                var dsEdges = draw.getDownstreamEdges();
+                int dsStart = dsOffsets[targetIndex];
+                int dsEnd = dsOffsets[targetIndex + 1];
+                for (var k = dsStart; k < dsEnd; k++) {
+                    var nextIdx = dsEdges[k];
+                    var nextTask = tasks[nextIdx];
+                    if (nextTask != null) {
+                        var remaining = nextTask.remainingDeps.decrementAndGet();
+                        if (remaining == 0 && !nextTask.isCancelled) {
+                            Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
+                        }
+                    }
+                }
                 return;
             }
 
@@ -395,34 +411,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             if (ERROR_CHANNEL_VH.compareAndSet(this, null, t)) {
                 LockSupport.unpark(mainThread);
             }
-        }
-    }
-
-    private void cascadeCancel(short index, NodeTask[] tasks, OptimizedTmpGraph tmpGraph, String threadName) {
-        var dsOffsets = draw.getDownstreamOffsets();
-        var dsEdges = draw.getDownstreamEdges();
-        var dsStart = dsOffsets[index];
-        var dsEnd = dsOffsets[index + 1];
-        var localCancelCount = 0;
-
-        for (var k = dsStart; k < dsEnd; k++) {
-            var nextIdx = dsEdges[k];
-            var nextTask = tasks[nextIdx];
-            if (nextTask != null && !nextTask.isCancelled) {
-                var prevDeps = nextTask.remainingDeps.getAndSet(-1);
-                if (prevDeps >= 0) {
-                    nextTask.isCancelled = true;
-                    tmpGraph.getRawTmpArray()[nextIdx] = new ConditionFailedValue("test");
-                    tmpGraph.getRawChangedNodes()[nextIdx] = 1;
-                    localCancelCount++;
-
-                    cascadeCancel(nextIdx, tasks, tmpGraph, threadName);
-                }
-            }
-        }
-
-        if (localCancelCount > 0) {
-            decrementGlobalTasks(localCancelCount, threadName, index, " (cascade cancel)");
         }
     }
 
