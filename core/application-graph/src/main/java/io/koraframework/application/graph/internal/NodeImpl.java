@@ -1,20 +1,19 @@
 package io.koraframework.application.graph.internal;
 
 import io.koraframework.application.graph.*;
-import org.jspecify.annotations.Nullable;
-import java.lang.reflect.Type;
+import org.jspecify.annotations.*;
+
+import java.lang.reflect.*;
 import java.util.*;
-import java.util.function.Function;
+import java.util.function.*;
 
 public final class NodeImpl<T> implements Node<T> {
     public final ApplicationGraphDraw graphDraw;
-    public final int index;
-    public final Graph.Factory<? extends T> factory;
+    public final short index;
 
-    public NodeImpl(ApplicationGraphDraw graphDraw, int index, Graph.Factory<? extends T> factory) {
+    public NodeImpl(ApplicationGraphDraw graphDraw, short index) {
         this.graphDraw = graphDraw;
         this.index = index;
-        this.factory = factory;
     }
 
     @Override
@@ -35,15 +34,15 @@ public final class NodeImpl<T> implements Node<T> {
     }
 
     public List<Node<?>> interceptors() {
-        return graphDraw.getNodeInterceptors(this.index);
+        return graphDraw.getNodeInterceptors(index);
     }
 
     public List<Node<?>> createDependencies() {
-        return graphDraw.getNodeCreateDependencies(this.index);
+        return graphDraw.getNodeCreateDependencies(index);
     }
 
     public List<Node<?>> refreshDependencies() {
-        return graphDraw.getNodeRefreshDependencies(this.index);
+        return graphDraw.getNodeRefreshDependencies(index);
     }
 
     @Override
@@ -52,9 +51,9 @@ public final class NodeImpl<T> implements Node<T> {
         Type type = type();
         Class<?> tag = tag();
         if (tag == null) {
-            return "[#%s] %s (%s dependencies)".formatted(index, type, depSize);
+            return "[#" + index + "] " + type + " (" + depSize + " dependencies)";
         } else {
-            return "[#%s] %s (@Tag(%s)) (%s dependencies)".formatted(index, type, tag, depSize);
+            return "[#" + index + "] " + type + " (@Tag(" + tag + ")) (" + depSize + " dependencies)";
         }
     }
 }
