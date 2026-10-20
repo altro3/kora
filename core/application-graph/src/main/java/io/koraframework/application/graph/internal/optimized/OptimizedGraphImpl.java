@@ -213,6 +213,35 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                     dependentNodes.set(i);
                 }
             }
+
+            for (int i = size - 1; i >= startFrom; i--) {
+                if (dependentNodes.get(i)) {
+                    var oldInstance = OBJECTS_VH.getVolatile(graphObjects, i);
+                    if (oldInstance != null && !(oldInstance instanceof ConditionFailedValue)) {
+                        try {
+                            var interOffsets = draw.getInterceptorOffsets();
+                            var interEdges = draw.getInterceptorEdges();
+                            var startInt = interOffsets[i];
+                            var endInt = interOffsets[i + 1];
+                            for (var j = (short) (endInt - 1); j >= startInt; j--) {
+                                var interceptorIndex = interEdges[j];
+                                var interceptor = (GraphInterceptor<Object>) OBJECTS_VH.getVolatile(graphObjects, interceptorIndex);
+                                if (interceptor != null) {
+                                    oldInstance = interceptor.beforeRelease(oldInstance);
+                                }
+                            }
+
+                            if (oldInstance instanceof Lifecycle lifecycleOld) {
+                                lifecycleOld.release();
+                            } else if (oldInstance instanceof AutoCloseable closeableOld) {
+                                closeableOld.close();
+                            }
+                        } catch (Throwable t) {
+                            logger.warn("Error releasing old instance during refresh at index {}", i, t);
+                        }
+                    }
+                }
+            }
         }
 
         var isDebug = logger.isDebugEnabled();
@@ -344,27 +373,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 println("[" + threadName + "] Node " + targetIndex + " detected ConditionFailedValue inside executeNodeTask. Skipping factory, keeping downstream.");
                 OBJECTS_VH.setRelease(graphObjects, targetIndex, currentVal);
                 decrementGlobalTasks(1, threadName, targetIndex, " (failed condition)");
-                var dsOffsets = draw.getDownstreamOffsets();
-                var dsEdges = draw.getDownstreamEdges();
-                int dsStart = dsOffsets[targetIndex];
-                int dsEnd = dsOffsets[targetIndex + 1];
-                for (var k = dsStart; k < dsEnd; k++) {
-                    var nextIdx = dsEdges[k];
-                    var nextTask = tasks[nextIdx];
-                    if (nextTask != null) {
-                        var remaining = nextTask.remainingDeps.decrementAndGet();
-                        if (remaining == 0 && !nextTask.isCancelled) {
-                            Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
-                        }
-                    }
-                }
+                notifyDownstreamConsumers(targetIndex, startFrom, isDebug, isTrace, tmpGraph, tasks, threadName, " (failed condition)");
                 return;
             }
 
-            println("[" + threadName + "] Evaluating original factory for Node " + targetIndex);
-            var factory = (Graph.Factory<Object>) draw.getNodeFactory(targetIndex);
-            var instance = factory.get(this);
-
+            println("[" + threadName + "] Getting already created instance from tmpGraph for Node " + targetIndex);
+            var instance = tmpGraph.getRawTmpArray()[targetIndex];
             var interOffsets = draw.getInterceptorOffsets();
             var interEdges = draw.getInterceptorEdges();
             var startInt = interOffsets[targetIndex];
@@ -391,25 +405,69 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
 
             decrementGlobalTasks(1, threadName, targetIndex, " successfully finished");
-
-            var dsOffsets = draw.getDownstreamOffsets();
-            var dsEdges = draw.getDownstreamEdges();
-            int dsStart = dsOffsets[targetIndex];
-            int dsEnd = dsOffsets[targetIndex + 1];
-            for (var k = dsStart; k < dsEnd; k++) {
-                var nextIdx = dsEdges[k];
-                var nextTask = tasks[nextIdx];
-                if (nextTask != null) {
-                    var remaining = nextTask.remainingDeps.decrementAndGet();
-                    if (remaining == 0 && !nextTask.isCancelled) {
-                        Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
-                    }
-                }
-            }
-
+            notifyDownstreamConsumers(targetIndex, startFrom, isDebug, isTrace, tmpGraph, tasks, threadName, "");
         } catch (Throwable t) {
             if (ERROR_CHANNEL_VH.compareAndSet(this, null, t)) {
                 LockSupport.unpark(mainThread);
+            }
+        }
+    }
+
+    private void notifyDownstreamConsumers(
+        short targetIndex,
+        short startFrom,
+        boolean isDebug,
+        boolean isTrace,
+        OptimizedTmpGraph tmpGraph,
+        NodeTask[] tasks,
+        String threadName,
+        String logSuffix
+    ) {
+        var dsOffsets = draw.getDownstreamOffsets();
+        var dsEdges = draw.getDownstreamEdges();
+        int dsStart = dsOffsets[targetIndex];
+        int dsEnd = dsOffsets[targetIndex + 1];
+
+        var cOffsets = draw.getCreateOffsets();
+        var cEdges = draw.getCreateEdges();
+        var rOffsets = draw.getRefreshOffsets();
+        var rEdges = draw.getRefreshEdges();
+        var iOffsets = draw.getInterceptorOffsets();
+        var iEdges = draw.getInterceptorEdges();
+
+        for (var k = dsStart; k < dsEnd; k++) {
+            var nextIdx = dsEdges[k];
+            var nextTask = tasks[nextIdx];
+            if (nextTask == null) continue;
+
+            boolean isRealDependency = false;
+
+            int startDeps = cOffsets[nextIdx];
+            int endDeps = cOffsets[nextIdx + 1];
+            for (int j = startDeps; j < endDeps; j++) {
+                if (cEdges[j] == targetIndex) { isRealDependency = true; break; }
+            }
+            if (!isRealDependency) {
+                startDeps = rOffsets[nextIdx];
+                endDeps = rOffsets[nextIdx + 1];
+                for (int j = startDeps; j < endDeps; j++) {
+                    if (rEdges[j] == targetIndex) { isRealDependency = true; break; }
+                }
+            }
+            if (!isRealDependency) {
+                startDeps = iOffsets[nextIdx];
+                endDeps = iOffsets[nextIdx + 1];
+                for (int j = startDeps; j < endDeps; j++) {
+                    if (iEdges[j] == targetIndex) { isRealDependency = true; break; }
+                }
+            }
+
+            if (isRealDependency) {
+                var remaining = nextTask.remainingDeps.decrementAndGet();
+                println("[" + threadName + "] Node " + targetIndex + logSuffix + " decremented Node " + nextIdx + " remainingDeps -> " + remaining);
+                if (remaining == 0 && !nextTask.isCancelled) {
+                    Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
+                }
             }
         }
     }
