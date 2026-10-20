@@ -206,7 +206,8 @@ public class GraphFileGenerator {
                 var bridgeMethodBuilder = MethodSpec.methodBuilder(factoryMethodName)
                     .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                     .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g");
+                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                    .addException(ClassName.get(Exception.class));
 
                 if (isObject) {
                     bridgeMethodBuilder.addStatement("return dispatchCreate((short) $L, g)", i);
@@ -263,7 +264,8 @@ public class GraphFileGenerator {
             .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
             .returns(ClassName.get(Object.class))
             .addParameter(short.class, "index")
-            .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g");
+            .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+            .addException(ClassName.get(Exception.class));
 
         routerMethod.addStatement("int partition = index / $L", COMPONENTS_PER_PARTITION);
         routerMethod.beginControlFlow("return switch (partition)");
@@ -304,7 +306,8 @@ public class GraphFileGenerator {
                 .returns(ClassName.get(Object.class))
                 .addParameter(short.class, "index")
                 .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                .addParameter(implClass, "impl");
+                .addParameter(implClass, "impl")
+                .addException(ClassName.get(Exception.class));
 
             getMethod.beginControlFlow("return switch (index)");
 
