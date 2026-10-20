@@ -1,20 +1,18 @@
 package io.koraframework.application.graph.internal.optimized;
 
 import io.koraframework.application.graph.*;
-import io.koraframework.application.graph.GraphCondition.*;
 import io.koraframework.application.graph.internal.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.VarHandle;
+import java.lang.invoke.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 
 import static io.koraframework.application.graph.GraphCondition.*;
-import static java.lang.IO.println;
+import static java.lang.IO.*;
 
 public final class OptimizedGraphImpl implements InitializedGraph {
 
@@ -163,6 +161,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             mutationLock.unlock();
         }
     }
+
     private void initializeSubgraph(short startFrom) {
         logger.trace("Materializing graph objects {}", startFrom);
 
@@ -231,14 +230,16 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         var iEdges = draw.getInterceptorEdges();
         var iOffsets = draw.getInterceptorOffsets();
 
-        var iterId = ++currentIterationId;
-
         for (short i = 0; i < size; i++) {
             if (i < startFrom || !dependentNodes.get(i)) {
                 continue;
             }
             totalDependentTasks++;
             var depCount = 0;
+
+            // ИСПРАВЛЕНИЕ: инкрементируем префикс итерации для КАЖДОЙ ноды индивидуально,
+            // чтобы visitedCache корректно отслеживал дубликаты только в рамках текущего компонента!
+            var iterId = ++currentIterationId;
 
             short start = cOffsets[i], end = cOffsets[i + 1];
             for (short j = start; j < end; j++) {
@@ -269,10 +270,10 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             tasks[i] = new NodeTask(i, depCount);
         }
 
-        System.out.println("[KORA-LOG] --- START --- totalDependentTasks=" + totalDependentTasks);
+        println("[KORA-LOG] --- START --- totalDependentTasks=" + totalDependentTasks);
         for (short i = 0; i < size; i++) {
             if (dependentNodes.get(i)) {
-                System.out.println("[KORA-LOG] Node " + i + " initial deps count: " + tasks[i].remainingDeps);
+                println("[KORA-LOG] Node " + i + " initial deps count: " + tasks[i].remainingDeps);
             }
         }
 
@@ -289,16 +290,16 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         for (var i = startFrom; i < size; i++) {
             if (dependentNodes.get(i) && tasks[i] != null && tasks[i].remainingDeps.get() == 0) {
                 final var task = tasks[i];
-                System.out.println("[KORA-LOG] Spawning starter Thread for Node " + task.index);
+                println("[KORA-LOG] Spawning starter Thread for Node " + task.index);
                 Thread.ofVirtual().start(() -> executeNodeTask(task, startFrom, isDebug, isTrace, tmpGraph, tasks));
             }
         }
 
-        System.out.println("[KORA-LOG] Main thread entering wait loop. globalRemainingTasks=" + globalRemainingTasks);
+        println("[KORA-LOG] Main thread entering wait loop. globalRemainingTasks=" + globalRemainingTasks);
         while (globalRemainingTasks > 0 && errorChannel == null) {
             LockSupport.park();
         }
-        System.out.println("[KORA-LOG] Main thread broke wait loop. globalRemainingTasks=" + globalRemainingTasks + ", error=" + errorChannel);
+        println("[KORA-LOG] Main thread broke wait loop. globalRemainingTasks=" + globalRemainingTasks + ", error=" + errorChannel);
 
         var error = errorChannel;
         if (error != null) {
