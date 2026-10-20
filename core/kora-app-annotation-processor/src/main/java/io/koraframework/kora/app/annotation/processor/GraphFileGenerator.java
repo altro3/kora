@@ -135,7 +135,7 @@ public class GraphFileGenerator {
                 expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
 
         for (int p = 0; p < totalPartitions; p++) {
-            baseStaticBlock.addStatement("$T.trigger()", ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "NodeHolder" + p));
+            baseStaticBlock.addStatement("$T.trigger()", ClassName.get(packageElement.getQualifiedName() + "." + graphName, "NodeHolder" + p));
         }
 
         classBuilder.addStaticBlock(baseStaticBlock.build());
@@ -212,7 +212,7 @@ public class GraphFileGenerator {
                 holderClassBuilder.addMethod(bridgeMethod);
 
                 CodeBlock factoryLambdaCode = CodeBlock.of("$T::$L",
-                    ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "NodeHolder" + p),
+                    ClassName.get(packageElement.getQualifiedName() + "." + graphName, "NodeHolder" + p),
                     factoryMethodName);
 
                 var consumers = downstreamMap.get(i);
@@ -245,7 +245,7 @@ public class GraphFileGenerator {
             holderClassBuilder.addStaticBlock(holderStaticBlock.build());
 
             var triggerMethod = MethodSpec.methodBuilder("trigger")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                 .returns(void.class)
                 .build();
             holderClassBuilder.addMethod(triggerMethod);
@@ -305,14 +305,14 @@ public class GraphFileGenerator {
                 .addParameter(implClass, "impl")
                 .addException(ClassName.get(Exception.class));
 
-            getMethod.beginControlFlow("switch (index)");
+            getMethod.beginControlFlow("return switch (index)");
+
             for (int i = startIdx; i < endIdx; i++) {
                 var component = components.get(i);
                 var declaration = component.declaration();
                 var dependenciesCode = generateDependenciesCode(ctx, component, graphTypeName, 0);
 
-                var code = CodeBlock.builder().add("case $L -> {\n", i).indent();
-                code.add("return ");
+                var code = CodeBlock.builder().add("case $L -> ", i);
 
                 switch (declaration) {
                     case ComponentDeclaration.AnnotatedComponent annotatedComponent -> {
@@ -331,6 +331,7 @@ public class GraphFileGenerator {
                         if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
                             var customDepsCode = generateDependenciesCode(ctx, component, graphTypeName, 1);
                             var moduleInstDep = component.dependencies().getFirst();
+
                             CodeBlock moduleInstCode = resolveDependencyPath(ctx, moduleInstDep, graphTypeName);
                             if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
                                 code.add("g.get($L).", moduleInstCode);
@@ -373,16 +374,17 @@ public class GraphFileGenerator {
                         }
                     }
                     case ComponentDeclaration.OptionalComponent optional -> {
-                        var optionalOf = ((DeclaredType) optional.type()).getTypeArguments().getFirst();
-                        code.add("$T.<$T>ofNullable($L)", Optional.class, optionalOf, dependenciesCode);
+                        code.add("$T.ofNullable($L)", Optional.class, dependenciesCode);
                     }
                     default -> throw new IllegalStateException("Unsupported component declaration context");
                 }
-                code.add(";\n").unindent().add("}\n");
-                getMethod.addCode(code.build());
+
+                getMethod.addStatement(code.build());
             }
+
             getMethod.addStatement("default -> throw new $T()", IllegalArgumentException.class);
-            getMethod.endControlFlow();
+            getMethod.endControlFlow("");
+
             partitionBuilder.addMethod(getMethod.build());
             classBuilder.addType(partitionBuilder.build());
         }
@@ -399,15 +401,8 @@ public class GraphFileGenerator {
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
             if (i > startFrom) b.add(", ");
             var resolvedDependency = resolvedDependencies.get(i);
-
-            boolean isSingle = resolvedDependency instanceof ComponentDependency.SingleDependency;
-            CodeBlock depCode = resolveDependencyPath(ctx, resolvedDependency, localGraphTypeName);
-
-            if (isSingle) {
-                b.add("g.get($L)", depCode);
-            } else {
-                b.add("$L", depCode);
-            }
+            CodeBlock depCode = resolvedDependency.write(ctx, localGraphTypeName, components, COMPONENTS_PER_PARTITION);
+            b.add("$L", depCode);
         }
         return b.build();
     }
