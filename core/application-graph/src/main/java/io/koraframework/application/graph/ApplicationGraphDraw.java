@@ -196,7 +196,6 @@ public class ApplicationGraphDraw {
         createOffsets[idx + 1] = createOffsets[idx];
         refreshOffsets[idx + 1] = refreshOffsets[idx];
         interceptorOffsets[idx + 1] = interceptorOffsets[idx];
-
         nodeFactories[idx] = factory;
     }
 
