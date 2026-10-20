@@ -179,11 +179,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             var iEdges = draw.getInterceptorEdges();
             var iOffsets = draw.getInterceptorOffsets();
 
-            for (short i = startFrom; i < size; i++) {
+            for (var i = startFrom; i < size; i++) {
                 var dependsOnChanged = false;
 
-                short start = cOffsets[i], end = cOffsets[i + 1];
-                for (short j = start; j < end; j++) {
+                var start = cOffsets[i];
+                var end = cOffsets[i + 1];
+                for (var j = start; j < end; j++) {
                     if (dependentNodes.get(cEdges[j])) {
                         dependsOnChanged = true;
                         break;
@@ -192,7 +193,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 if (!dependsOnChanged) {
                     start = rOffsets[i];
                     end = rOffsets[i + 1];
-                    for (short j = start; j < end; j++) {
+                    for (var j = start; j < end; j++) {
                         if (dependentNodes.get(rEdges[j])) {
                             dependsOnChanged = true;
                             break;
@@ -202,7 +203,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 if (!dependsOnChanged) {
                     start = iOffsets[i];
                     end = iOffsets[i + 1];
-                    for (short j = start; j < end; j++) {
+                    for (var j = start; j < end; j++) {
                         if (dependentNodes.get(iEdges[j])) {
                             dependsOnChanged = true;
                             break;
@@ -237,12 +238,11 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             totalDependentTasks++;
             var depCount = 0;
 
-            // ИСПРАВЛЕНИЕ: инкрементируем префикс итерации для КАЖДОЙ ноды индивидуально,
-            // чтобы visitedCache корректно отслеживал дубликаты только в рамках текущего компонента!
             var iterId = ++currentIterationId;
 
-            short start = cOffsets[i], end = cOffsets[i + 1];
-            for (short j = start; j < end; j++) {
+            var start = cOffsets[i];
+            var end = cOffsets[i + 1];
+            for (var j = start; j < end; j++) {
                 var depIdx = cEdges[j];
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
@@ -251,7 +251,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
             start = rOffsets[i];
             end = rOffsets[i + 1];
-            for (short j = start; j < end; j++) {
+            for (var j = start; j < end; j++) {
                 var depIdx = rEdges[j];
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
@@ -260,7 +260,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
             start = iOffsets[i];
             end = iOffsets[i + 1];
-            for (short j = start; j < end; j++) {
+            for (var j = start; j < end; j++) {
                 var depIdx = iEdges[j];
                 if (depIdx >= startFrom && dependentNodes.get(depIdx) && visitedCache[depIdx] != iterId) {
                     visitedCache[depIdx] = iterId;
@@ -351,8 +351,9 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             var interOffsets = draw.getInterceptorOffsets();
             var interEdges = draw.getInterceptorEdges();
-            short startInt = interOffsets[targetIndex], endInt = interOffsets[targetIndex + 1];
-            for (short i = startInt; i < endInt; i++) {
+            var startInt = interOffsets[targetIndex];
+            var endInt = interOffsets[targetIndex + 1];
+            for (var i = startInt; i < endInt; i++) {
                 var interceptorIndex = interEdges[i];
                 var interceptor = (GraphInterceptor<Object>) OBJECTS_VH.getVolatile(graphObjects, interceptorIndex);
                 if (interceptor != null) {
@@ -400,8 +401,8 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     private void cascadeCancel(short index, NodeTask[] tasks, OptimizedTmpGraph tmpGraph, String threadName) {
         var dsOffsets = draw.getDownstreamOffsets();
         var dsEdges = draw.getDownstreamEdges();
-        int dsStart = dsOffsets[index];
-        int dsEnd = dsOffsets[index + 1];
+        var dsStart = dsOffsets[index];
+        var dsEnd = dsOffsets[index + 1];
         var localCancelCount = 0;
 
         for (var k = dsStart; k < dsEnd; k++) {
@@ -439,16 +440,17 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         var size = draw.size();
         Throwable error = null;
 
-        for (short i = (short) (size - 1); i >= 0; i--) {
+        for (var i = (short) (size - 1); i >= 0; i--) {
             try {
                 var object = OBJECTS_VH.getVolatile(graphObjects, i);
                 if (object == null || object instanceof ConditionFailedValue) continue;
 
                 var interOffsets = draw.getInterceptorOffsets();
                 var interEdges = draw.getInterceptorEdges();
-                short start = interOffsets[i], end = interOffsets[i + 1];
+                var start = interOffsets[i];
+                var end = interOffsets[i + 1];
 
-                for (short j = (short) (end - 1); j >= start; j--) {
+                for (var j = (short) (end - 1); j >= start; j--) {
                     var interceptorIndex = interEdges[j];
                     var interceptor = (GraphInterceptor<Object>) OBJECTS_VH.getVolatile(graphObjects, interceptorIndex);
                     if (interceptor != null) {

@@ -202,13 +202,18 @@ public class GraphFileGenerator {
                 CodeBlock conditionCode = buildConditionLambda(component);
 
                 String factoryMethodName = "createNode" + i;
-                var bridgeMethod = MethodSpec.methodBuilder(factoryMethodName)
+                boolean isObject = componentTypeName.equals(ClassName.get(Object.class));
+                var bridgeMethodBuilder = MethodSpec.methodBuilder(factoryMethodName)
                     .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                     .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                    .addStatement("return ($T) dispatchCreate((short) $L, g)", componentTypeName, i)
-                    .build();
-                holderClassBuilder.addMethod(bridgeMethod);
+                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g");
+
+                if (isObject) {
+                    bridgeMethodBuilder.addStatement("return dispatchCreate((short) $L, g)", i);
+                } else {
+                    bridgeMethodBuilder.addStatement("return ($T) dispatchCreate((short) $L, g)", componentTypeName, i);
+                }
+                holderClassBuilder.addMethod(bridgeMethodBuilder.build());
 
                 CodeBlock factoryLambdaCode = CodeBlock.of("$T::$L",
                     ClassName.get(packageElement.getQualifiedName() + "." + graphName, "NodeHolder" + p),
@@ -254,12 +259,11 @@ public class GraphFileGenerator {
 
         buildFactoryPartitions(classBuilder, graphTypeName, implClass, COMPONENTS_PER_PARTITION, totalPartitions, expectedNodes);
 
-        // Роутер dispatchCreate теперь не принимает impl, а читает его из статического поля
         var routerMethod = MethodSpec.methodBuilder("dispatchCreate")
             .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
             .returns(ClassName.get(Object.class))
             .addParameter(short.class, "index")
-            .addParameter(ClassName.get("io.koraframework.application.graph", "Graph"), "g");
+            .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g");
 
         routerMethod.addStatement("int partition = index / $L", COMPONENTS_PER_PARTITION);
         routerMethod.beginControlFlow("return switch (partition)");
@@ -299,7 +303,7 @@ public class GraphFileGenerator {
                 .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                 .returns(ClassName.get(Object.class))
                 .addParameter(short.class, "index")
-                .addParameter(ClassName.get("io.koraframework.application.graph", "Graph"), "g")
+                .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
                 .addParameter(implClass, "impl");
 
             getMethod.beginControlFlow("return switch (index)");
@@ -663,7 +667,9 @@ public class GraphFileGenerator {
                     }
                 }
                 case ComponentDependency.AllOfDependency allOfDependency -> {
-                    if (allOfDependency.claim().claimType() != DependencyClaim.DependencyClaimType.ALL_OF_PROMISE) {
+                    var claimType = allOfDependency.claim().claimType();
+                    // Исключаем как ALL_OF_PROMISE, так и ALL_OF_VALUE (коллекции ValueOf) из refresh-зависимостей
+                    if (claimType != DependencyClaim.DependencyClaimType.ALL_OF_PROMISE && claimType != DependencyClaim.DependencyClaimType.ALL_OF_VALUE) {
                         for (var d : allOfDependency.getResolvedDependencies()) {
                             int idx = components.indexOf(d.component());
                             indexList.add(String.valueOf(idx));
