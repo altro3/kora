@@ -320,7 +320,7 @@ public class ApplicationGraphDraw {
             }
         }
 
-        short subDownstreamEdgesCount = subCreateEdgesCount;
+        short subDownstreamEdgesCount = (short) (subCreateEdgesCount + subInterceptorEdgesCount);
 
         var subgraph = new ApplicationGraphDraw(root, subNodesCount, subCreateEdgesCount, subRefreshEdgesCount, subInterceptorEdgesCount, subDownstreamEdgesCount);
         subgraph.size = subNodesCount;
@@ -356,7 +356,9 @@ public class ApplicationGraphDraw {
             short instart = interceptorOffsets[oldIdx];
             short inend = interceptorOffsets[oldIdx + 1];
             for (short j = instart; j < inend; j++) {
-                subgraph.interceptorEdges[subgraph.interceptorEdgesSize++] = seen[interceptorEdges[j]];
+                short interIdx = seen[interceptorEdges[j]];
+                subgraph.interceptorEdges[subgraph.interceptorEdgesSize++] = interIdx;
+                subDownstreamCounts[interIdx]++;
             }
             subgraph.interceptorOffsets[i + 1] = subgraph.interceptorEdgesSize;
 
@@ -393,6 +395,17 @@ public class ApplicationGraphDraw {
                 subgraph.downstreamEdges[writePos] = consumerSubIdx;
             }
         }
+
+        for (short consumerSubIdx = 0; consumerSubIdx < subNodesCount; consumerSubIdx++) {
+            short start = subgraph.interceptorOffsets[consumerSubIdx];
+            short end = subgraph.interceptorOffsets[consumerSubIdx + 1];
+            for (short j = start; j < end; j++) {
+                short providerSubIdx = subgraph.interceptorEdges[j];
+                short writePos = subDownstreamCounts[providerSubIdx]++;
+                subgraph.downstreamEdges[writePos] = consumerSubIdx;
+            }
+        }
+
         subgraph.downstreamEdgesSize = subDownstreamEdgesCount;
 
         return subgraph;

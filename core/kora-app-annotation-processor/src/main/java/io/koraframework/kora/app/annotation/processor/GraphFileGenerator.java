@@ -503,6 +503,15 @@ public class GraphFileGenerator {
             int idx = components.indexOf(condComponent);
             if (idx != -1) indices.add(idx);
         }
+
+        var interceptorsFor = interceptors.interceptorsFor(component);
+        for (var interceptor : interceptorsFor) {
+            int idx = components.indexOf(interceptor.component());
+            if (idx != -1) {
+                indices.add(idx);
+            }
+        }
+
         for (var dependency : component.dependencies()) {
             switch (dependency) {
                 case ComponentDependency.SingleDependency single -> {
