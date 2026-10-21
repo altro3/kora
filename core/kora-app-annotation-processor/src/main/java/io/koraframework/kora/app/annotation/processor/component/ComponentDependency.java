@@ -1,24 +1,19 @@
 package io.koraframework.kora.app.annotation.processor.component;
 
-import com.palantir.javapoet.ClassName;
-import com.palantir.javapoet.CodeBlock;
-import io.koraframework.annotation.processor.common.CommonClassNames;
-import io.koraframework.kora.app.annotation.processor.ProcessingContext;
-import io.koraframework.kora.app.annotation.processor.declaration.ComponentDeclaration;
+import com.palantir.javapoet.*;
+import io.koraframework.annotation.processor.common.*;
+import io.koraframework.kora.app.annotation.processor.*;
+import io.koraframework.kora.app.annotation.processor.declaration.*;
 
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.Types;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
+import javax.lang.model.type.*;
+import javax.lang.model.util.*;
+import java.util.*;
 
 public sealed interface ComponentDependency {
 
     DependencyClaim claim();
 
-    default CodeBlock write(ProcessingContext ctx, ClassName graphTypeName, List<ResolvedComponent> allComponents, int partitionSize) {
+    default CodeBlock write(ProcessingContext ctx, List<ResolvedComponent> allComponents) {
         return switch (this) {
             case AllOfDependency allOf -> {
                 var codeBlock = CodeBlock.builder();
@@ -30,15 +25,13 @@ public sealed interface ComponentDependency {
                 }
                 for (var dependency : allOf.resolvedDependencies) {
                     var comp = dependency.component();
-                    int globalIndex = allComponents.indexOf(comp);
-                    int partition = globalIndex / partitionSize;
-                    var dependencyNode = CodeBlock.of("NodeHolder$L.$L", partition, comp.fieldName());
+                    var globalIndex = allComponents.indexOf(comp);
+                    var dependencyNode = CodeBlock.of("nodes[$L]", globalIndex);
 
                     switch (dependency) {
                         case WrappedTargetDependency _ -> codeBlock.add(", $T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);
                         case ValueOfDependency valueOf when valueOf.delegate instanceof WrappedTargetDependency -> codeBlock.add(", $T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);
-                        case PromiseOfDependency promiseOf when promiseOf.delegate instanceof WrappedTargetDependency ->
-                            codeBlock.add(", $T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);
+                        case PromiseOfDependency promiseOf when promiseOf.delegate instanceof WrappedTargetDependency -> codeBlock.add(", $T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);
                         default -> codeBlock.add(", $T.node($L)", CommonClassNames.nodeWithMapper, dependencyNode);
                     }
                 }
@@ -52,49 +45,42 @@ public sealed interface ComponentDependency {
             };
             case PromisedProxyParameterDependency promised -> {
                 var dependency = Objects.requireNonNull(promised.realDependency);
-                int globalIndex = allComponents.indexOf(dependency);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.promiseOf(NodeHolder$L.$L)", partition, dependency.fieldName());
+                var globalIndex = allComponents.indexOf(dependency);
+                yield CodeBlock.of("g.promiseOf(nodes[$L])", globalIndex);
             }
-            case PromiseOfDependency(_, var delegate) when delegate instanceof WrappedTargetDependency -> {
+            case PromiseOfDependency(var claim, var delegate) when delegate instanceof WrappedTargetDependency -> {
                 var comp = delegate.component();
-                int globalIndex = allComponents.indexOf(comp);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.promiseOf(NodeHolder$L.$L).map($T::value)", partition, comp.fieldName(), CommonClassNames.wrapped);
+                var globalIndex = allComponents.indexOf(comp);
+                yield CodeBlock.of("g.promiseOf(nodes[$L]).map($T::value)", globalIndex, CommonClassNames.wrapped);
             }
-            case PromiseOfDependency(_, var delegate) -> {
+            case PromiseOfDependency(var claim, var delegate) -> {
                 var comp = delegate.component();
-                int globalIndex = allComponents.indexOf(comp);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.promiseOf(NodeHolder$L.$L)", partition, comp.fieldName());
+                var globalIndex = allComponents.indexOf(comp);
+                yield CodeBlock.of("g.promiseOf(nodes[$L])", globalIndex);
             }
             case TargetDependency(var claim, var component) -> {
-                int globalIndex = allComponents.indexOf(component);
-                int partition = globalIndex / partitionSize;
+                var globalIndex = allComponents.indexOf(component);
                 yield switch (claim.claimType()) {
-                    case ONE_REQUIRED -> CodeBlock.of("g.get(NodeHolder$L.$L)", partition, component.fieldName());
-                    case ONE_NULLABLE -> CodeBlock.of("g.getNullable(NodeHolder$L.$L)", partition, component.fieldName());
-                    case NODE_OF -> CodeBlock.of("NodeHolder$L.$L", partition, component.fieldName());
+                    case ONE_REQUIRED -> CodeBlock.of("component$L(g)", globalIndex);
+                    case ONE_NULLABLE -> CodeBlock.of("componentNullable$L(g)", globalIndex);
+                    case NODE_OF -> CodeBlock.of("nodes[$L]", globalIndex);
                     default -> throw new IllegalStateException("Kora internal error: unsupported target dependency claim type for code generation: " + claim);
                 };
             }
             case TypeOfDependency(var claim) -> TypeOfDependency.buildTypeRef(ctx.types, claim.type());
-            case ValueOfDependency(_, var delegate) when delegate instanceof WrappedTargetDependency -> {
+            case ValueOfDependency(var claim, var delegate) when delegate instanceof WrappedTargetDependency -> {
                 var comp = delegate.component();
-                int globalIndex = allComponents.indexOf(comp);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.valueOf(NodeHolder$L.$L).map($T::value)", partition, comp.fieldName(), CommonClassNames.wrapped);
+                var globalIndex = allComponents.indexOf(comp);
+                yield CodeBlock.of("g.valueOf(nodes[$L]).map($T::value)", globalIndex, CommonClassNames.wrapped);
             }
-            case ValueOfDependency(_, var delegate) -> {
+            case ValueOfDependency(var claim, var delegate) -> {
                 var comp = delegate.component();
-                int globalIndex = allComponents.indexOf(comp);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.valueOf(NodeHolder$L.$L)", partition, comp.fieldName());
+                var globalIndex = allComponents.indexOf(comp);
+                yield CodeBlock.of("g.valueOf(nodes[$L])", globalIndex);
             }
-            case WrappedTargetDependency(var _, var component) -> {
-                int globalIndex = allComponents.indexOf(component);
-                int partition = globalIndex / partitionSize;
-                yield CodeBlock.of("g.get(NodeHolder$L.$L).value()", partition, component.fieldName());
+            case WrappedTargetDependency(var claim, var component) -> {
+                var globalIndex = allComponents.indexOf(component);
+                yield CodeBlock.of("componentWrapped$L(g)", globalIndex);
             }
             case OneOfDependency oneOfDependency -> {
                 var b = CodeBlock.builder();
@@ -104,13 +90,12 @@ public sealed interface ComponentDependency {
                     case PROMISE_OF -> b.add("g.getOnePromiseOf(");
                     default -> throw new IllegalStateException("Kora internal error: unsupported one-of dependency claim type for code generation: " + oneOfDependency.claim());
                 }
-                for (int i = 0; i < oneOfDependency.dependencies().size(); i++) {
+                for (var i = 0; i < oneOfDependency.dependencies().size(); i++) {
                     if (i > 0) b.add(", ");
                     var dependencies = oneOfDependency.dependencies().get(i);
                     var comp = dependencies.component();
-                    int globalIndex = allComponents.indexOf(comp);
-                    int partition = globalIndex / partitionSize;
-                    var dependencyNode = CodeBlock.of("NodeHolder$L.$L", partition, comp.fieldName());
+                    var globalIndex = allComponents.indexOf(comp);
+                    var dependencyNode = CodeBlock.of("nodes[$L]", globalIndex);
 
                     switch (dependencies) {
                         case WrappedTargetDependency _ -> b.add("$T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);

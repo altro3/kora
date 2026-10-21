@@ -7,7 +7,6 @@ import io.koraframework.kora.app.annotation.processor.declaration.*;
 import io.koraframework.kora.app.annotation.processor.interceptor.*;
 
 import javax.lang.model.element.*;
-import javax.lang.model.type.*;
 import java.util.*;
 import java.util.function.*;
 
@@ -107,12 +106,13 @@ public class GraphFileGenerator {
             .addModifiers(Modifier.PUBLIC)
             .addSuperinterface(ParameterizedTypeName.get(ClassName.get(Supplier.class), CommonClassNames.applicationGraphDraw))
             .addField(CommonClassNames.applicationGraphDraw, "graphDraw", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+            .addField(ArrayTypeName.of(ParameterizedTypeName.get(CommonClassNames.node, WildcardTypeName.subtypeOf(Object.class))), "nodes", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
             .addField(implClass, "impl", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
 
-        int expectedNodes = components.size();
-        int expectedCreateEdges = 0;
-        int expectedRefreshEdges = 0;
-        int expectedInterceptorEdges = 0;
+        var expectedNodes = components.size();
+        var expectedCreateEdges = 0;
+        var expectedRefreshEdges = 0;
+        var expectedInterceptorEdges = 0;
 
         for (var component : components) {
             expectedCreateEdges += countDependencies(getCreateDependencies(component));
@@ -121,62 +121,64 @@ public class GraphFileGenerator {
         }
 
         var downstreamMap = invertGraphToDownstream();
-        int expectedDownstreamEdges = 0;
+        var expectedDownstreamEdges = 0;
         for (var consumers : downstreamMap) {
             expectedDownstreamEdges += consumers.size();
         }
 
-        int totalPartitions = (expectedNodes + COMPONENTS_PER_PARTITION - 1) / COMPONENTS_PER_PARTITION;
+        var totalPartitions = (expectedNodes + COMPONENTS_PER_PARTITION - 1) / COMPONENTS_PER_PARTITION;
 
         var baseStaticBlock = CodeBlock.builder()
             .addStatement("impl = new $T()", implClass)
             .addStatement("graphDraw = new $T($T.class, (short) $L, (short) $L, (short) $L, (short) $L, (short) $L)",
                 CommonClassNames.applicationGraphDraw, classElement,
-                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
+                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges)
+            .addStatement("nodes = new $T[$L]", CommonClassNames.node, expectedNodes);
 
-        for (int p = 0; p < totalPartitions; p++) {
-            baseStaticBlock.addStatement("$T.trigger()", ClassName.get(packageElement.getQualifiedName() + "." + graphName, "NodeHolder" + p));
+        for (var p = 0; p < totalPartitions; p++) {
+            var partitionClassName = ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "Partition" + p);
+            baseStaticBlock.addStatement("new $T().init(graphDraw, nodes, impl)", partitionClassName);
         }
-
         classBuilder.addStaticBlock(baseStaticBlock.build());
 
         var typeRefClassName = ClassName.get("io.koraframework.application.graph", "TypeRef");
+        for (var p = 0; p < totalPartitions; p++) {
+            var startIdx = p * COMPONENTS_PER_PARTITION;
+            var endIdx = Math.min(expectedNodes, startIdx + COMPONENTS_PER_PARTITION);
 
-        for (int p = 0; p < totalPartitions; p++) {
-            int startIdx = p * COMPONENTS_PER_PARTITION;
-            int endIdx = Math.min(expectedNodes, startIdx + COMPONENTS_PER_PARTITION);
-
-            var holderClassBuilder = TypeSpec.classBuilder("NodeHolder" + p)
+            var partitionClassBuilder = TypeSpec.classBuilder("Partition" + p)
                 .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
+                .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL);
 
-            var holderStaticBlock = CodeBlock.builder();
+            var initMethodBuilder = MethodSpec.methodBuilder("init")
+                .addModifiers(Modifier.PUBLIC)
+                .addParameter(CommonClassNames.applicationGraphDraw, "graphDraw")
+                .addParameter(ArrayTypeName.of(ParameterizedTypeName.get(CommonClassNames.node, WildcardTypeName.subtypeOf(Object.class))), "nodes")
+                .addParameter(implClass, "impl");
 
             var partitionCache = buildPartitionCache(typeRefClassName, startIdx, endIdx);
             for (var entry : partitionCache.types.values()) {
                 if (entry.assignedIndex != null) {
-                    holderStaticBlock.addStatement("var type_$L = $L", entry.assignedIndex, entry.value);
+                    initMethodBuilder.addStatement("var type_$L = $L", entry.assignedIndex, entry.value);
                 }
             }
             for (var entry : partitionCache.tags.values()) {
                 if (entry.assignedIndex != null) {
-                    holderStaticBlock.addStatement("var tag_$L = $T.class", entry.assignedIndex, ClassName.bestGuess(entry.value));
+                    initMethodBuilder.addStatement("var tag_$L = $T.class", entry.assignedIndex, ClassName.bestGuess(entry.value));
                 }
             }
 
-            for (int i = startIdx; i < endIdx; i++) {
+            var createMethodSwitch = CodeBlock.builder().beginControlFlow("switch (index)");
+
+            for (var i = startIdx; i < endIdx; i++) {
                 var component = components.get(i);
-                TypeName componentTypeName = TypeName.get(component.type()).box();
+                var componentTypeName = TypeName.get(component.type()).box();
 
-                holderClassBuilder.addField(FieldSpec.builder(
-                    ParameterizedTypeName.get(CommonClassNames.node, componentTypeName),
-                    component.fieldName(), Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL).build());
-
-                CodeBlock typeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
+                var typeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
                 var typeEntry = partitionCache.types.get(typeCode.toString());
-                String typeExpression = (typeEntry != null && typeEntry.assignedIndex != null) ? "type_" + typeEntry.assignedIndex : typeCode.toString();
+                var typeExpression = (typeEntry != null && typeEntry.assignedIndex != null) ? "type_" + typeEntry.assignedIndex : typeCode.toString();
 
-                CodeBlock tagCode = CodeBlock.of("null");
+                var tagCode = CodeBlock.of("null");
                 if (component.tag() != null) {
                     var tagEntry = partitionCache.tags.get(component.tag());
                     tagCode = (tagEntry != null && tagEntry.assignedIndex != null) ? CodeBlock.of("tag_$L", tagEntry.assignedIndex) : CodeBlock.of("$L.class", component.tag());
@@ -191,7 +193,7 @@ public class GraphFileGenerator {
                     interceptorBuilder = CodeBlock.of("null");
                 } else {
                     var ib = CodeBlock.builder().add("new io.koraframework.application.graph.internal.NodeImpl<?>[]{");
-                    for (int j = 0; j < interceptorsFor.size(); j++) {
+                    for (var j = 0; j < interceptorsFor.size(); j++) {
                         if (j > 0) ib.add(", ");
                         ib.add("($T<?>) $L", ClassName.get("io.koraframework.application.graph.internal", "NodeImpl"), resolveNodePath(interceptorsFor.get(j).component()));
                     }
@@ -199,26 +201,7 @@ public class GraphFileGenerator {
                     interceptorBuilder = ib.build();
                 }
 
-                CodeBlock conditionCode = buildConditionLambda(component);
-
-                String factoryMethodName = "createNode" + i;
-                boolean isObject = componentTypeName.equals(ClassName.get(Object.class));
-                var bridgeMethodBuilder = MethodSpec.methodBuilder(factoryMethodName)
-                    .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                    .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                    .addException(ClassName.get(Exception.class));
-
-                if (isObject) {
-                    bridgeMethodBuilder.addStatement("return dispatchCreate((short) $L, g)", i);
-                } else {
-                    bridgeMethodBuilder.addStatement("return ($T) dispatchCreate((short) $L, g)", componentTypeName, i);
-                }
-                holderClassBuilder.addMethod(bridgeMethodBuilder.build());
-
-                CodeBlock factoryLambdaCode = CodeBlock.of("$T::$L",
-                    ClassName.get(packageElement.getQualifiedName() + "." + graphName, "NodeHolder" + p),
-                    factoryMethodName);
+                var conditionCode = buildConditionLambda(component);
 
                 var consumers = downstreamMap.get(i);
                 CodeBlock downstreamCode;
@@ -226,7 +209,7 @@ public class GraphFileGenerator {
                     downstreamCode = CodeBlock.of("null");
                 } else {
                     var cb = CodeBlock.builder().add("new short[]{");
-                    for (int c = 0; c < consumers.size(); c++) {
+                    for (var c = 0; c < consumers.size(); c++) {
                         if (c > 0) cb.add(", ");
                         cb.add("$L", consumers.get(c));
                     }
@@ -234,184 +217,145 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                holderStaticBlock.addStatement("$L = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, $L)",
-                    component.fieldName(),
-                    typeExpression,
-                    tagCode,
-                    conditionCode,
-                    createDeps,
-                    refreshDeps,
-                    downstreamCode,
-                    interceptorBuilder,
-                    factoryLambdaCode
+                initMethodBuilder.addStatement("nodes[$L] = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, g -> create($L, g))",
+                    i, typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, i
                 );
+
+                var declaration = component.declaration();
+                var dependenciesCode = generateDependenciesCode(ctx, component, 0);
+                var innerCodeBlock = CodeBlock.builder();
+
+                switch (declaration) {
+                    case ComponentDeclaration.AnnotatedComponent annotatedComponent -> {
+                        innerCodeBlock.add("new $T", ClassName.get(annotatedComponent.typeElement()));
+                        if (!annotatedComponent.typeVariables().isEmpty()) {
+                            innerCodeBlock.add("<");
+                            for (var j = 0; j < annotatedComponent.typeVariables().size(); j++) {
+                                if (j > 0) innerCodeBlock.add(", ");
+                                innerCodeBlock.add("$T", annotatedComponent.typeVariables().get(j));
+                            }
+                            innerCodeBlock.add(">");
+                        }
+                        innerCodeBlock.add("($L)", dependenciesCode);
+                    }
+                    case ComponentDeclaration.FromModuleComponent moduleComponent -> {
+                        if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
+                            var customDepsCode = generateDependenciesCode(ctx, component, 1);
+                            var moduleInstDep = component.dependencies().getFirst();
+                            var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep);
+                            if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
+                                innerCodeBlock.add("g.get($L).", moduleInstCode);
+                            } else {
+                                innerCodeBlock.add("$L.", moduleInstCode);
+                            }
+                            if (!moduleComponent.typeVariables().isEmpty()) {
+                                innerCodeBlock.add("<");
+                                for (var j = 0; j < moduleComponent.typeVariables().size(); j++) {
+                                    if (j > 0) innerCodeBlock.add(", ");
+                                    innerCodeBlock.add("$T", moduleComponent.typeVariables().get(j));
+                                }
+                                innerCodeBlock.add(">");
+                            }
+                            innerCodeBlock.add("$L($L)", moduleComponent.method().getSimpleName(), customDepsCode);
+                        } else {
+                            if (moduleComponent.module() instanceof ModuleDeclaration.AnnotatedModule(var element)) {
+                                innerCodeBlock.add("impl.module$L.", allModules.indexOf(element));
+                            } else {
+                                innerCodeBlock.add("impl.");
+                            }
+                            if (!moduleComponent.typeVariables().isEmpty()) {
+                                innerCodeBlock.add("<");
+                                for (var j = 0; j < moduleComponent.typeVariables().size(); j++) {
+                                    if (j > 0) innerCodeBlock.add(", ");
+                                    innerCodeBlock.add("$T", moduleComponent.typeVariables().get(j));
+                                }
+                                innerCodeBlock.add(">");
+                            }
+                            innerCodeBlock.add("$L($L)", moduleComponent.method().getSimpleName(), dependenciesCode);
+                        }
+                    }
+                    case ComponentDeclaration.FromExtensionComponent extension -> innerCodeBlock.add(extension.generator().apply(dependenciesCode));
+                    case ComponentDeclaration.PromisedProxyComponent promisedProxyComponent -> {
+                        if (promisedProxyComponent.typeElement().getTypeParameters().isEmpty()) {
+                            innerCodeBlock.add("new $T($L)", promisedProxyComponent.className(), dependenciesCode);
+                        } else {
+                            innerCodeBlock.add("new $T<>($L)", promisedProxyComponent.className(), dependenciesCode);
+                        }
+                    }
+                    case ComponentDeclaration.OptionalComponent optional -> innerCodeBlock.add("$T.ofNullable($L)", Optional.class, dependenciesCode);
+                    default -> throw new IllegalStateException("Unsupported component declaration context");
+                }
+
+                createMethodSwitch.addStatement("case $L -> $L", i, innerCodeBlock.build());
+
+                var bridgeMethodBuilder = MethodSpec.methodBuilder("component" + i)
+                    .addModifiers(Modifier.STATIC)
+                    .returns(componentTypeName)
+                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                    .addException(ClassName.get(Exception.class))
+                    .addStatement("return ($T) g.get(nodes[$L])", componentTypeName, i);
+                partitionClassBuilder.addMethod(bridgeMethodBuilder.build());
+
+                var bridgeNullableMethodBuilder = MethodSpec.methodBuilder("componentNullable" + i)
+                    .addModifiers(Modifier.STATIC)
+                    .returns(componentTypeName)
+                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                    .addException(ClassName.get(Exception.class))
+                    .addStatement("return ($T) g.getNullable(nodes[$L])", componentTypeName, i);
+                partitionClassBuilder.addMethod(bridgeNullableMethodBuilder.build());
+
+                var bridgeWrappedMethodBuilder = MethodSpec.methodBuilder("componentWrapped" + i)
+                    .addModifiers(Modifier.STATIC)
+                    .returns(componentTypeName)
+                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                    .addException(ClassName.get(Exception.class))
+                    .addStatement("return (($T) g.get(nodes[$L])).value()", componentTypeName, i);
+                partitionClassBuilder.addMethod(bridgeWrappedMethodBuilder.build());
             }
-
-            holderClassBuilder.addStaticBlock(holderStaticBlock.build());
-
-            var triggerMethod = MethodSpec.methodBuilder("trigger")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                .returns(void.class)
-                .build();
-            holderClassBuilder.addMethod(triggerMethod);
-
-            classBuilder.addType(holderClassBuilder.build());
+            createMethodSwitch.addStatement("default -> throw new $T()", IllegalArgumentException.class);
+            createMethodSwitch.endControlFlow();
+            var createMethodBuilder = MethodSpec.methodBuilder("create")
+                .addModifiers(Modifier.PRIVATE)
+                .returns(Object.class)
+                .addParameter(int.class, "index")
+                .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                .addException(ClassName.get(Exception.class))
+                .addCode(createMethodSwitch.build());
+            partitionClassBuilder.addMethod(initMethodBuilder.build());
+            partitionClassBuilder.addMethod(createMethodBuilder.build());
+            classBuilder.addType(partitionClassBuilder.build());
         }
-
-        buildFactoryPartitions(classBuilder, graphTypeName, implClass, COMPONENTS_PER_PARTITION, totalPartitions, expectedNodes);
-
-        var routerMethod = MethodSpec.methodBuilder("dispatchCreate")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(ClassName.get(Object.class))
-            .addParameter(short.class, "index")
-            .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-            .addException(ClassName.get(Exception.class));
-
-        routerMethod.addStatement("int partition = index / $L", COMPONENTS_PER_PARTITION);
-        routerMethod.beginControlFlow("return switch (partition)");
-        for (int p = 0; p < totalPartitions; p++) {
-            routerMethod.addStatement("case $L -> FactoryPartition$L.get(index, g, impl)", p, p);
-        }
-        routerMethod.addStatement("default -> throw new $T()", IllegalArgumentException.class);
-        routerMethod.endControlFlow("");
-        classBuilder.addMethod(routerMethod.build());
-
         var supplierMethodBuilder = MethodSpec.methodBuilder("get")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC)
             .returns(CommonClassNames.applicationGraphDraw)
             .addStatement("return graphDraw");
         classBuilder.addMethod(supplierMethodBuilder.build());
-
         var supplierStaticMethodBuilder = MethodSpec.methodBuilder("graph")
             .returns(CommonClassNames.applicationGraphDraw)
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
             .addStatement("return graphDraw");
         classBuilder.addMethod(supplierStaticMethodBuilder.build());
-
         return JavaFile.builder(packageElement.getQualifiedName().toString(), classBuilder.build()).build();
     }
 
-    private void buildFactoryPartitions(TypeSpec.Builder classBuilder, ClassName graphTypeName, ClassName implClass, int partitionSize, int totalPartitions, int expectedNodes) {
-        for (int p = 0; p < totalPartitions; p++) {
-            int startIdx = p * partitionSize;
-            int endIdx = Math.min(expectedNodes, startIdx + partitionSize);
-
-            var partitionBuilder = TypeSpec.classBuilder("FactoryPartition" + p)
-                .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
-                .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL);
-
-            var getMethod = MethodSpec.methodBuilder("get")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
-                .returns(ClassName.get(Object.class))
-                .addParameter(short.class, "index")
-                .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                .addParameter(implClass, "impl")
-                .addException(ClassName.get(Exception.class));
-
-            getMethod.beginControlFlow("return switch (index)");
-
-            for (int i = startIdx; i < endIdx; i++) {
-                var component = components.get(i);
-                var declaration = component.declaration();
-                var dependenciesCode = generateDependenciesCode(ctx, component, graphTypeName, 0);
-
-                var code = CodeBlock.builder().add("case $L -> ", i);
-
-                switch (declaration) {
-                    case ComponentDeclaration.AnnotatedComponent annotatedComponent -> {
-                        code.add("new $T", ClassName.get(annotatedComponent.typeElement()));
-                        if (!annotatedComponent.typeVariables().isEmpty()) {
-                            code.add("<");
-                            for (int j = 0; j < annotatedComponent.typeVariables().size(); j++) {
-                                if (j > 0) code.add(", ");
-                                code.add("$T", annotatedComponent.typeVariables().get(j));
-                            }
-                            code.add(">");
-                        }
-                        code.add("($L)", dependenciesCode);
-                    }
-                    case ComponentDeclaration.FromModuleComponent moduleComponent -> {
-                        if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
-                            var customDepsCode = generateDependenciesCode(ctx, component, graphTypeName, 1);
-                            var moduleInstDep = component.dependencies().getFirst();
-
-                            CodeBlock moduleInstCode = resolveDependencyPath(ctx, moduleInstDep, graphTypeName);
-                            if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
-                                code.add("g.get($L).", moduleInstCode);
-                            } else {
-                                code.add("$L.", moduleInstCode);
-                            }
-
-                            if (!moduleComponent.typeVariables().isEmpty()) {
-                                code.add("<");
-                                for (int j = 0; j < moduleComponent.typeVariables().size(); j++) {
-                                    if (j > 0) code.add(", ");
-                                    code.add("$T", moduleComponent.typeVariables().get(j));
-                                }
-                                code.add(">");
-                            }
-                            code.add("$L($L)", moduleComponent.method().getSimpleName(), customDepsCode);
-                        } else {
-                            if (moduleComponent.module() instanceof ModuleDeclaration.AnnotatedModule(var element)) {
-                                code.add("impl.module$L.", allModules.indexOf(element));
-                            } else {
-                                code.add("impl.");
-                            }
-                            if (!moduleComponent.typeVariables().isEmpty()) {
-                                code.add("<");
-                                for (int j = 0; j < moduleComponent.typeVariables().size(); j++) {
-                                    if (j > 0) code.add(", ");
-                                    code.add("$T", moduleComponent.typeVariables().get(j));
-                                }
-                                code.add(">");
-                            }
-                            code.add("$L($L)", moduleComponent.method().getSimpleName(), dependenciesCode);
-                        }
-                    }
-                    case ComponentDeclaration.FromExtensionComponent extension -> code.add(extension.generator().apply(dependenciesCode));
-                    case ComponentDeclaration.PromisedProxyComponent promisedProxyComponent -> {
-                        if (promisedProxyComponent.typeElement().getTypeParameters().isEmpty()) {
-                            code.add("new $T($L)", promisedProxyComponent.className(), dependenciesCode);
-                        } else {
-                            code.add("new $T<>($L)", promisedProxyComponent.className(), dependenciesCode);
-                        }
-                    }
-                    case ComponentDeclaration.OptionalComponent optional -> {
-                        code.add("$T.ofNullable($L)", Optional.class, dependenciesCode);
-                    }
-                    default -> throw new IllegalStateException("Unsupported component declaration context");
-                }
-
-                getMethod.addStatement(code.build());
-            }
-
-            getMethod.addStatement("default -> throw new $T()", IllegalArgumentException.class);
-            getMethod.endControlFlow("");
-
-            partitionBuilder.addMethod(getMethod.build());
-            classBuilder.addType(partitionBuilder.build());
-        }
-    }
-
-    private CodeBlock generateDependenciesCode(ProcessingContext ctx, ResolvedComponent component, ClassName graphTypeName, int startFrom) {
+    private CodeBlock generateDependenciesCode(ProcessingContext ctx, ResolvedComponent component, int startFrom) {
         var resolvedDependencies = component.dependencies();
         if (resolvedDependencies.isEmpty()) {
             return CodeBlock.of("");
         }
         var b = CodeBlock.builder();
-        var localGraphTypeName = ClassName.get("", graphTypeName.simpleName());
 
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
             if (i > startFrom) b.add(", ");
             var resolvedDependency = resolvedDependencies.get(i);
-            CodeBlock depCode = resolvedDependency.write(ctx, localGraphTypeName, components, COMPONENTS_PER_PARTITION);
+            var depCode = resolvedDependency.write(ctx, components);
             b.add("$L", depCode);
         }
         return b.build();
     }
 
-    private CodeBlock resolveDependencyPath(ProcessingContext ctx, ComponentDependency dependency, ClassName localGraphTypeName) {
+    private CodeBlock resolveDependencyPath(ProcessingContext ctx, ComponentDependency dependency) {
         ResolvedComponent targetComponent = switch (dependency) {
             case ComponentDependency.SingleDependency single -> switch (single) {
                 case ComponentDependency.TargetDependency target -> target.component();
@@ -423,27 +367,25 @@ public class GraphFileGenerator {
         };
 
         if (targetComponent != null) {
-            int globalIndex = components.indexOf(targetComponent);
-            int partition = globalIndex / COMPONENTS_PER_PARTITION;
-            return CodeBlock.of("NodeHolder$L.$L", partition, targetComponent.fieldName());
+            var globalIndex = components.indexOf(targetComponent);
+            return CodeBlock.of("nodes[$L]", globalIndex);
         }
 
-        return dependency.write(ctx, localGraphTypeName, components, COMPONENTS_PER_PARTITION);
+        return dependency.write(ctx, components);
     }
 
     private int countDependencies(CodeBlock codeBlock) {
-        String str = codeBlock.toString();
-        if (str.equals("null")) return 0;
+        var str = codeBlock.toString();
+        if (str.equals("null") || str.isEmpty()) return 0;
         return str.split(",").length;
     }
 
     private String resolveNodePath(ResolvedComponent comp) {
-        int idx = components.indexOf(comp);
+        var idx = components.indexOf(comp);
         if (idx == -1) {
             return comp.fieldName();
         }
-        int p = idx / COMPONENTS_PER_PARTITION;
-        return "NodeHolder" + p + "." + comp.fieldName();
+        return "nodes[" + idx + "]";
     }
 
     private CodeBlock buildConditionLambda(ResolvedComponent component) {
