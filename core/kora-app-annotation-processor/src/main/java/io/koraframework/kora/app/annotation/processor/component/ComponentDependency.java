@@ -61,8 +61,8 @@ public sealed interface ComponentDependency {
             case TargetDependency(var claim, var component) -> {
                 var globalIndex = allComponents.indexOf(component);
                 yield switch (claim.claimType()) {
-                    case ONE_REQUIRED -> CodeBlock.of("component$L(g)", globalIndex);
-                    case ONE_NULLABLE -> CodeBlock.of("componentNullable$L(g)", globalIndex);
+                    case ONE_REQUIRED -> CodeBlock.of("($T) g.get(nodes[$L])", claim.type(), globalIndex);
+                    case ONE_NULLABLE -> CodeBlock.of("($T) g.getNullable(nodes[$L])", claim.type(), globalIndex);
                     case NODE_OF -> CodeBlock.of("nodes[$L]", globalIndex);
                     default -> throw new IllegalStateException("Kora internal error: unsupported target dependency claim type for code generation: " + claim);
                 };
@@ -80,12 +80,12 @@ public sealed interface ComponentDependency {
             }
             case WrappedTargetDependency(var claim, var component) -> {
                 var globalIndex = allComponents.indexOf(component);
-                yield CodeBlock.of("componentWrapped$L(g)", globalIndex);
+                yield CodeBlock.of("(($T) g.get(nodes[$L])).value()", claim.type(), globalIndex);
             }
             case OneOfDependency oneOfDependency -> {
                 var b = CodeBlock.builder();
                 switch (oneOfDependency.claim().claimType()) {
-                    case ONE_REQUIRED -> b.add("g.getOneOf(");
+                    case ONE_REQUIRED -> b.add("($T) g.getOneOf(", oneOfDependency.claim().type());
                     case VALUE_OF -> b.add("g.getOneValueOf(");
                     case PROMISE_OF -> b.add("g.getOnePromiseOf(");
                     default -> throw new IllegalStateException("Kora internal error: unsupported one-of dependency claim type for code generation: " + oneOfDependency.claim());

@@ -99,7 +99,6 @@ public class GraphFileGenerator {
         var packageElement = (PackageElement) classElement.getEnclosingElement();
         var implClass = ClassName.get(packageElement.getQualifiedName().toString(), "$" + classElement.getSimpleName() + "Impl");
         var graphName = classElement.getSimpleName() + "Graph";
-        var graphTypeName = ClassName.get(packageElement.getQualifiedName().toString(), graphName);
 
         var classBuilder = TypeSpec.classBuilder(graphName)
             .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
@@ -168,7 +167,7 @@ public class GraphFileGenerator {
                 }
             }
 
-            var createMethodSwitch = CodeBlock.builder().beginControlFlow("switch (index)");
+            var createMethodSwitch = CodeBlock.builder().beginControlFlow("return switch (index)");
 
             for (var i = startIdx; i < endIdx; i++) {
                 var component = components.get(i);
@@ -217,14 +216,13 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                initMethodBuilder.addStatement("nodes[$L] = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, g -> create($L, g))",
+                initMethodBuilder.addStatement("nodes[$L] = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, new ComponentFactory($L))",
                     i, typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, i
                 );
 
                 var declaration = component.declaration();
                 var dependenciesCode = generateDependenciesCode(ctx, component, 0);
                 var innerCodeBlock = CodeBlock.builder();
-
                 switch (declaration) {
                     case ComponentDeclaration.AnnotatedComponent annotatedComponent -> {
                         innerCodeBlock.add("new $T", ClassName.get(annotatedComponent.typeElement()));
@@ -244,7 +242,7 @@ public class GraphFileGenerator {
                             var moduleInstDep = component.dependencies().getFirst();
                             var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep);
                             if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
-                                innerCodeBlock.add("g.get($L).", moduleInstCode);
+                                innerCodeBlock.add("(($T) g.get($L)).", TypeName.get(moduleInstDep.claim().type()).box(), moduleInstCode);
                             } else {
                                 innerCodeBlock.add("$L.", moduleInstCode);
                             }
@@ -287,55 +285,58 @@ public class GraphFileGenerator {
                 }
 
                 createMethodSwitch.addStatement("case $L -> $L", i, innerCodeBlock.build());
-
-                var bridgeMethodBuilder = MethodSpec.methodBuilder("component" + i)
-                    .addModifiers(Modifier.STATIC)
-                    .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                    .addException(ClassName.get(Exception.class))
-                    .addStatement("return ($T) g.get(nodes[$L])", componentTypeName, i);
-                partitionClassBuilder.addMethod(bridgeMethodBuilder.build());
-
-                var bridgeNullableMethodBuilder = MethodSpec.methodBuilder("componentNullable" + i)
-                    .addModifiers(Modifier.STATIC)
-                    .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                    .addException(ClassName.get(Exception.class))
-                    .addStatement("return ($T) g.getNullable(nodes[$L])", componentTypeName, i);
-                partitionClassBuilder.addMethod(bridgeNullableMethodBuilder.build());
-
-                var bridgeWrappedMethodBuilder = MethodSpec.methodBuilder("componentWrapped" + i)
-                    .addModifiers(Modifier.STATIC)
-                    .returns(componentTypeName)
-                    .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
-                    .addException(ClassName.get(Exception.class))
-                    .addStatement("return (($T) g.get(nodes[$L])).value()", componentTypeName, i);
-                partitionClassBuilder.addMethod(bridgeWrappedMethodBuilder.build());
             }
+
             createMethodSwitch.addStatement("default -> throw new $T()", IllegalArgumentException.class);
-            createMethodSwitch.endControlFlow();
+            createMethodSwitch.endControlFlow("");
+
             var createMethodBuilder = MethodSpec.methodBuilder("create")
-                .addModifiers(Modifier.PRIVATE)
+                .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
                 .returns(Object.class)
                 .addParameter(int.class, "index")
                 .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
                 .addException(ClassName.get(Exception.class))
                 .addCode(createMethodSwitch.build());
+
+            var factoryClassBuilder = TypeSpec.classBuilder("ComponentFactory")
+                .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .addSuperinterface(ParameterizedTypeName.get(ClassName.get("io.koraframework.application.graph.Graph", "Factory"), ClassName.get(Object.class)))
+                .addField(int.class, "index", Modifier.PRIVATE, Modifier.FINAL);
+
+            var factoryConstructor = MethodSpec.constructorBuilder()
+                .addModifiers(Modifier.PUBLIC)
+                .addParameter(int.class, "index")
+                .addStatement("this.index = index");
+            factoryClassBuilder.addMethod(factoryConstructor.build());
+
+            var factoryGetMethod = MethodSpec.methodBuilder("get")
+                .addAnnotation(Override.class)
+                .addModifiers(Modifier.PUBLIC)
+                .returns(Object.class)
+                .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
+                .addException(ClassName.get(Exception.class))
+                .addStatement("return create(index, g)");
+            factoryClassBuilder.addMethod(factoryGetMethod.build());
+
             partitionClassBuilder.addMethod(initMethodBuilder.build());
             partitionClassBuilder.addMethod(createMethodBuilder.build());
+            partitionClassBuilder.addType(factoryClassBuilder.build());
             classBuilder.addType(partitionClassBuilder.build());
         }
+
         var supplierMethodBuilder = MethodSpec.methodBuilder("get")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC)
             .returns(CommonClassNames.applicationGraphDraw)
             .addStatement("return graphDraw");
         classBuilder.addMethod(supplierMethodBuilder.build());
+
         var supplierStaticMethodBuilder = MethodSpec.methodBuilder("graph")
             .returns(CommonClassNames.applicationGraphDraw)
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
             .addStatement("return graphDraw");
         classBuilder.addMethod(supplierStaticMethodBuilder.build());
+
         return JavaFile.builder(packageElement.getQualifiedName().toString(), classBuilder.build()).build();
     }
 
