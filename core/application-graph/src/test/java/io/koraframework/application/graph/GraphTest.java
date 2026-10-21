@@ -827,7 +827,7 @@ class GraphTest {
             g -> GraphCondition.and(g.condition(parentCondition), g.condition(ownCondition)).eval(),
             new short[] {ownIdx, parentIdx},
             new short[] {ownIdx, parentIdx},
-            new short[] {3}, // downstream: указывает на outer (индекс 3)
+            new short[] {3},
             null,
             g -> "inner"
         );

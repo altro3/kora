@@ -151,28 +151,17 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     }
 
     @SuppressWarnings("unchecked")
-    public <T> void createNode(NodeImpl<T> node, int startFrom, boolean isTrace) throws Exception {
+    public <T> void createNode(NodeImpl<T> node, int startFrom, boolean isFullInit, boolean isTrace) throws Exception {
         var idx = node.index;
-
-        while (true) {
-            var current = nodeCreationStates.get(idx);
-            if (current == 2) {
-                return;
-            }
-            if (current == 1) {
-                Thread.yield();
-                continue;
-            }
-            if (nodeCreationStates.compareAndSet(idx, 0, 1)) {
-                break;
-            }
-        }
+        var threadName = Thread.currentThread().toString();
+        var graphHash = Integer.toHexString(System.identityHashCode(rootGraph));
+        var tmpGraphHash = Integer.toHexString(System.identityHashCode(this));
 
         try {
             var oldObject = (T) rootRawObjects[idx];
             var draw = rootGraph.draw();
 
-            if (oldObject != null && idx != startFrom) {
+            if (!isFullInit && oldObject != null && idx != startFrom) {
                 var dependencyChanged = false;
                 var rEdges = draw.getRefreshEdges();
                 var rOffsets = draw.getRefreshOffsets();
@@ -198,6 +187,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     }
                 }
                 if (!dependencyChanged) {
+                    // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " unchanged during refresh, keeping old instance");
                     nodeCreationStates.set(idx, 2);
                     return;
                 }
@@ -206,9 +196,6 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             var conditionFunction = draw.getNodeCondition(idx);
             if (conditionFunction != null) {
                 if (conditionFunction.apply(this) instanceof ConditionResult.Failed failed) {
-                    if (isTrace) {
-                        rootGraph.logger.trace("Creating node {} canceled: {}", idx, failed.reason());
-                    }
                     tmpArray[idx] = new ConditionFailedValue(failed.reason());
                     changedNodes[idx] = 1;
                     VarHandle.fullFence();
@@ -218,6 +205,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
             }
 
             var factory = (Graph.Factory<Object>) rootGraph.draw().getNodeFactory(idx);
+            // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " calling factory.get()...");
             var newObject = Objects.requireNonNull(factory.get(this));
 
             var isUnchanged = false;
@@ -233,9 +221,11 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 } else if (newObject instanceof Closeable closeable) {
                     closeable.close();
                 }
+                // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " factory returned identical object, rolled back to old instance");
                 nodeCreationStates.set(idx, 2);
                 return;
             }
+
             tmpArray[idx] = newObject;
             changedNodes[idx] = 1;
 
@@ -253,14 +243,22 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     var interceptorIndex = iEdges[i];
                     var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
                     if (interceptorObject != null) {
-                        newObject = interceptorObject.afterInit(newObject);
+                        newObject = (T) interceptorObject.afterInit(newObject);
                     }
                 }
             }
             tmpArray[idx] = newObject;
+
+            if (newObject instanceof Lifecycle lifecycle) {
+                // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " calling lifecycle.init() for " + lifecycle.getClass().getName());
+                lifecycle.init();
+                // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " lifecycle.init() success");
+            }
+
             VarHandle.fullFence();
-            nodeCreationStates.set(idx, 2);
+            // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " fully complete inside tmpGraph");
         } catch (Throwable t) {
+            // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " failed with exception inside tmpGraph, resetting state to 0");
             nodeCreationStates.set(idx, 0);
             throw t;
         }
