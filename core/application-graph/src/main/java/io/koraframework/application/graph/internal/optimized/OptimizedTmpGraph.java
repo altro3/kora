@@ -12,6 +12,8 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
+import static java.lang.IO.println;
+
 public final class OptimizedTmpGraph implements RefreshableGraph {
 
     private final OptimizedGraphImpl rootGraph;
@@ -93,7 +95,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> ValueOf<T> valueOf(Node<? extends T> node) {
         var casted = (NodeImpl<T>) node;
-        var cached = valueOfs.get(casted.index);
+        var cached = (TmpValueOf<?>) valueOfs.get(casted.index);
         if (cached != null) {
             return (ValueOf<T>) cached;
         }
@@ -241,14 +243,6 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 localRefreshListeners[idx] = 1;
             }
 
-            if (newObject instanceof Lifecycle lifecycle) {
-                try {
-                    lifecycle.init();
-                } catch (Throwable e) {
-                    throw e;
-                }
-            }
-
             var iEdges = draw.getInterceptorEdges();
             var iOffsets = draw.getInterceptorOffsets();
             var interStart = iOffsets[idx];
@@ -258,8 +252,9 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 for (var i = interStart; i < interEnd; i++) {
                     var interceptorIndex = iEdges[i];
                     var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
-                    var intercepted = (T) interceptorObject.afterInit(newObject);
-                    newObject = intercepted;
+                    if (interceptorObject != null) {
+                        newObject = interceptorObject.afterInit(newObject);
+                    }
                 }
             }
             tmpArray[idx] = newObject;
@@ -298,16 +293,6 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                 if (nodeCreationStates.get(i) == 1) {
                     nodeCreationStates.set(i, 0);
                 }
-            }
-
-            var v = valueOfs.get(i);
-            if (v != null) {
-                v.tmpGraph = rootGraph;
-            }
-
-            var p = promises.get(i);
-            if (p != null) {
-                p.graph = rootGraph;
             }
 
             var cond = conditionCache.get(i);
@@ -388,17 +373,26 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     }
 
     private static class TmpValueOf<T> implements ValueOf<T> {
-        public volatile Graph tmpGraph;
+        private final OptimizedTmpGraph tmpGraph;
         private final NodeImpl<? extends T> node;
 
-        private TmpValueOf(NodeImpl<? extends T> node, Graph tmpGraph) {
+        private TmpValueOf(NodeImpl<? extends T> node, OptimizedTmpGraph tmpGraph) {
             this.node = node;
             this.tmpGraph = tmpGraph;
         }
 
         @Override
+        @SuppressWarnings("unchecked")
         public T get() {
-            return tmpGraph.get(node);
+            var del = tmpGraph.delegate;
+            if (del != null) {
+                return del.get(node);
+            }
+            var val = tmpGraph.getRawTmpArray()[node.index];
+            if (val == null || val instanceof OptimizedGraphImpl.ConditionFailedValue) {
+                return tmpGraph.rootGraph.get(node);
+            }
+            return (T) val;
         }
     }
 }

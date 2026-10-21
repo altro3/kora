@@ -426,10 +426,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 }
             }
 
-            if (instance instanceof Lifecycle lifecycle) {
-                lifecycle.init();
-            }
-
             OBJECTS_VH.setRelease(graphObjects, targetIndex, instance);
 
             if (isDebug) {
