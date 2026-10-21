@@ -13,7 +13,7 @@ public sealed interface ComponentDependency {
 
     DependencyClaim claim();
 
-    default CodeBlock write(ProcessingContext ctx, List<ResolvedComponent> allComponents) {
+    default CodeBlock write(ProcessingContext ctx) {
         return switch (this) {
             case AllOfDependency allOf -> {
                 var codeBlock = CodeBlock.builder();
@@ -25,8 +25,7 @@ public sealed interface ComponentDependency {
                 }
                 for (var dependency : allOf.resolvedDependencies) {
                     var comp = dependency.component();
-                    var globalIndex = allComponents.indexOf(comp);
-                    var dependencyNode = CodeBlock.of("nodes[$L]", globalIndex);
+                    var dependencyNode = CodeBlock.of("$L", comp.fieldName());
 
                     switch (dependency) {
                         case WrappedTargetDependency _ -> codeBlock.add(", $T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);
@@ -45,47 +44,40 @@ public sealed interface ComponentDependency {
             };
             case PromisedProxyParameterDependency promised -> {
                 var dependency = Objects.requireNonNull(promised.realDependency);
-                var globalIndex = allComponents.indexOf(dependency);
-                yield CodeBlock.of("g.promiseOf(nodes[$L])", globalIndex);
+                yield CodeBlock.of("g.promiseOf($L)", dependency.fieldName());
             }
             case PromiseOfDependency(var claim, var delegate) when delegate instanceof WrappedTargetDependency -> {
                 var comp = delegate.component();
-                var globalIndex = allComponents.indexOf(comp);
-                yield CodeBlock.of("g.promiseOf(nodes[$L]).map($T::value)", globalIndex, CommonClassNames.wrapped);
+                yield CodeBlock.of("g.promiseOf($L).map($T::value)", comp.fieldName(), CommonClassNames.wrapped);
             }
             case PromiseOfDependency(var claim, var delegate) -> {
                 var comp = delegate.component();
-                var globalIndex = allComponents.indexOf(comp);
-                yield CodeBlock.of("g.promiseOf(nodes[$L])", globalIndex);
+                yield CodeBlock.of("g.promiseOf($L)", comp.fieldName());
             }
             case TargetDependency(var claim, var component) -> {
-                var globalIndex = allComponents.indexOf(component);
                 yield switch (claim.claimType()) {
-                    case ONE_REQUIRED -> CodeBlock.of("($T) g.get(nodes[$L])", claim.type(), globalIndex);
-                    case ONE_NULLABLE -> CodeBlock.of("($T) g.getNullable(nodes[$L])", claim.type(), globalIndex);
-                    case NODE_OF -> CodeBlock.of("nodes[$L]", globalIndex);
+                    case ONE_REQUIRED -> CodeBlock.of("g.get($L)", component.fieldName());
+                    case ONE_NULLABLE -> CodeBlock.of("g.getNullable($L)", component.fieldName());
+                    case NODE_OF -> CodeBlock.of("$L", component.fieldName());
                     default -> throw new IllegalStateException("Kora internal error: unsupported target dependency claim type for code generation: " + claim);
                 };
             }
             case TypeOfDependency(var claim) -> TypeOfDependency.buildTypeRef(ctx.types, claim.type());
             case ValueOfDependency(var claim, var delegate) when delegate instanceof WrappedTargetDependency -> {
                 var comp = delegate.component();
-                var globalIndex = allComponents.indexOf(comp);
-                yield CodeBlock.of("g.valueOf(nodes[$L]).map($T::value)", globalIndex, CommonClassNames.wrapped);
+                yield CodeBlock.of("g.valueOf($L).map($T::value)", comp.fieldName(), CommonClassNames.wrapped);
             }
             case ValueOfDependency(var claim, var delegate) -> {
                 var comp = delegate.component();
-                var globalIndex = allComponents.indexOf(comp);
-                yield CodeBlock.of("g.valueOf(nodes[$L])", globalIndex);
+                yield CodeBlock.of("g.valueOf($L)", comp.fieldName());
             }
             case WrappedTargetDependency(var claim, var component) -> {
-                var globalIndex = allComponents.indexOf(component);
-                yield CodeBlock.of("(($T) g.get(nodes[$L])).value()", claim.type(), globalIndex);
+                yield CodeBlock.of("g.get($L).value()", component.fieldName());
             }
             case OneOfDependency oneOfDependency -> {
                 var b = CodeBlock.builder();
                 switch (oneOfDependency.claim().claimType()) {
-                    case ONE_REQUIRED -> b.add("($T) g.getOneOf(", oneOfDependency.claim().type());
+                    case ONE_REQUIRED -> b.add("g.getOneOf(");
                     case VALUE_OF -> b.add("g.getOneValueOf(");
                     case PROMISE_OF -> b.add("g.getOnePromiseOf(");
                     default -> throw new IllegalStateException("Kora internal error: unsupported one-of dependency claim type for code generation: " + oneOfDependency.claim());
@@ -94,8 +86,7 @@ public sealed interface ComponentDependency {
                     if (i > 0) b.add(", ");
                     var dependencies = oneOfDependency.dependencies().get(i);
                     var comp = dependencies.component();
-                    var globalIndex = allComponents.indexOf(comp);
-                    var dependencyNode = CodeBlock.of("nodes[$L]", globalIndex);
+                    var dependencyNode = CodeBlock.of("$L", comp.fieldName());
 
                     switch (dependencies) {
                         case WrappedTargetDependency _ -> b.add("$T.unwrap($L)", CommonClassNames.nodeWithMapper, dependencyNode);

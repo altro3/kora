@@ -99,13 +99,13 @@ public class GraphFileGenerator {
         var packageElement = (PackageElement) classElement.getEnclosingElement();
         var implClass = ClassName.get(packageElement.getQualifiedName().toString(), "$" + classElement.getSimpleName() + "Impl");
         var graphName = classElement.getSimpleName() + "Graph";
+        var graphTypeName = ClassName.get(packageElement.getQualifiedName().toString(), graphName);
 
         var classBuilder = TypeSpec.classBuilder(graphName)
             .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
             .addModifiers(Modifier.PUBLIC)
             .addSuperinterface(ParameterizedTypeName.get(ClassName.get(Supplier.class), CommonClassNames.applicationGraphDraw))
             .addField(CommonClassNames.applicationGraphDraw, "graphDraw", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-            .addField(ArrayTypeName.of(ParameterizedTypeName.get(CommonClassNames.node, WildcardTypeName.subtypeOf(Object.class))), "nodes", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
             .addField(implClass, "impl", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
 
         var expectedNodes = components.size();
@@ -131,12 +131,11 @@ public class GraphFileGenerator {
             .addStatement("impl = new $T()", implClass)
             .addStatement("graphDraw = new $T($T.class, (short) $L, (short) $L, (short) $L, (short) $L, (short) $L)",
                 CommonClassNames.applicationGraphDraw, classElement,
-                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges)
-            .addStatement("nodes = new $T[$L]", CommonClassNames.node, expectedNodes);
+                expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
 
         for (var p = 0; p < totalPartitions; p++) {
             var partitionClassName = ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "Partition" + p);
-            baseStaticBlock.addStatement("new $T().init(graphDraw, nodes, impl)", partitionClassName);
+            baseStaticBlock.addStatement("new $T().init(graphDraw, impl)", partitionClassName);
         }
         classBuilder.addStaticBlock(baseStaticBlock.build());
 
@@ -149,10 +148,17 @@ public class GraphFileGenerator {
                 .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
                 .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL);
 
+            for (var i = startIdx; i < endIdx; i++) {
+                var component = components.get(i);
+                var componentTypeName = TypeName.get(component.type()).box();
+                partitionClassBuilder.addField(FieldSpec.builder(
+                    ParameterizedTypeName.get(CommonClassNames.node, componentTypeName),
+                    component.fieldName(), Modifier.STATIC).build());
+            }
+
             var initMethodBuilder = MethodSpec.methodBuilder("init")
                 .addModifiers(Modifier.PUBLIC)
                 .addParameter(CommonClassNames.applicationGraphDraw, "graphDraw")
-                .addParameter(ArrayTypeName.of(ParameterizedTypeName.get(CommonClassNames.node, WildcardTypeName.subtypeOf(Object.class))), "nodes")
                 .addParameter(implClass, "impl");
 
             var partitionCache = buildPartitionCache(typeRefClassName, startIdx, endIdx);
@@ -216,8 +222,8 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                initMethodBuilder.addStatement("nodes[$L] = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, new ComponentFactory($L))",
-                    i, typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, i
+                initMethodBuilder.addStatement("$L = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, new ComponentFactory($L))",
+                    component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder, i
                 );
 
                 var declaration = component.declaration();
@@ -242,7 +248,7 @@ public class GraphFileGenerator {
                             var moduleInstDep = component.dependencies().getFirst();
                             var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep);
                             if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
-                                innerCodeBlock.add("(($T) g.get($L)).", TypeName.get(moduleInstDep.claim().type()).box(), moduleInstCode);
+                                innerCodeBlock.add("g.get($L).", moduleInstCode);
                             } else {
                                 innerCodeBlock.add("$L.", moduleInstCode);
                             }
@@ -298,9 +304,11 @@ public class GraphFileGenerator {
                 .addException(ClassName.get(Exception.class))
                 .addCode(createMethodSwitch.build());
 
+            var typeVariableT = TypeVariableName.get("T");
             var factoryClassBuilder = TypeSpec.classBuilder("ComponentFactory")
+                .addTypeVariable(typeVariableT)
                 .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
-                .addSuperinterface(ParameterizedTypeName.get(ClassName.get("io.koraframework.application.graph.Graph", "Factory"), ClassName.get(Object.class)))
+                .addSuperinterface(ParameterizedTypeName.get(ClassName.get("io.koraframework.application.graph.Graph", "Factory"), typeVariableT))
                 .addField(int.class, "index", Modifier.PRIVATE, Modifier.FINAL);
 
             var factoryConstructor = MethodSpec.constructorBuilder()
@@ -312,10 +320,10 @@ public class GraphFileGenerator {
             var factoryGetMethod = MethodSpec.methodBuilder("get")
                 .addAnnotation(Override.class)
                 .addModifiers(Modifier.PUBLIC)
-                .returns(Object.class)
+                .returns(typeVariableT)
                 .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
                 .addException(ClassName.get(Exception.class))
-                .addStatement("return create(index, g)");
+                .addStatement("return ($T) create(index, g)", typeVariableT);
             factoryClassBuilder.addMethod(factoryGetMethod.build());
 
             partitionClassBuilder.addMethod(initMethodBuilder.build());
@@ -350,7 +358,7 @@ public class GraphFileGenerator {
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
             if (i > startFrom) b.add(", ");
             var resolvedDependency = resolvedDependencies.get(i);
-            var depCode = resolvedDependency.write(ctx, components);
+            var depCode = resolvedDependency.write(ctx);
             b.add("$L", depCode);
         }
         return b.build();
@@ -372,7 +380,7 @@ public class GraphFileGenerator {
             return CodeBlock.of("nodes[$L]", globalIndex);
         }
 
-        return dependency.write(ctx, components);
+        return dependency.write(ctx);
     }
 
     private int countDependencies(CodeBlock codeBlock) {
