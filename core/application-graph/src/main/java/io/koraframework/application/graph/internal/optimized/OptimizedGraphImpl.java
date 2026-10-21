@@ -35,6 +35,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     final Logger logger;
     private final ApplicationGraphDraw draw;
     private final ReentrantLock mutationLock = new ReentrantLock();
+    private final AtomicIntegerArray nodeCreationStates; // 0 - не создано, 1 - создается, 2 - готово
     Object[] graphObjects;
     private final BitSet refreshListenerIndices = new BitSet();
     private final int[] conditionResultsCache;
@@ -51,11 +52,16 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         this.graphObjects = new Object[draw.size()];
         this.conditionResultsCache = new int[draw.size()];
         this.visitedCache = new int[draw.size()];
+        this.nodeCreationStates = new AtomicIntegerArray(draw.size());
     }
 
     @Override
     public ApplicationGraphDraw draw() {
         return draw;
+    }
+
+    public AtomicIntegerArray getNodeCreationStates() {
+        return nodeCreationStates;
     }
 
     @Override
@@ -170,6 +176,32 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             throw e;
         } finally {
             mutationLock.unlock();
+        }
+    }
+
+    private static long tookForLogging(long started) {
+        var tookNanos = System.nanoTime() - started;
+        return tookNanos / 1_000_000;
+    }
+
+    BitSet getRefreshListenerIndices() {
+        return refreshListenerIndices;
+    }
+
+    int[] getConditionResultsCache() {
+        return conditionResultsCache;
+    }
+
+    private void fireRefreshListeners() {
+        for (var i = refreshListenerIndices.nextSetBit(0); i >= 0; i = refreshListenerIndices.nextSetBit(i + 1)) {
+            var object = OBJECTS_VH.getVolatile(graphObjects, i);
+            if (object instanceof RefreshListener listener) {
+                try {
+                    listener.graphRefreshed();
+                } catch (Throwable t) {
+                    logger.warn("Error calling refresh listener for node at index {}", i, t);
+                }
+            }
         }
     }
 
@@ -354,6 +386,9 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
     @SuppressWarnings("unchecked")
     private void executeNodeTask(NodeTask task, short startFrom, boolean isDebug, boolean isTrace, OptimizedTmpGraph tmpGraph, NodeTask[] tasks) {
+        if (!task.started.compareAndSet(0, 1)) {
+            return;
+        }
         var threadName = Thread.currentThread().toString();
         var targetIndex = task.index;
         println("[" + threadName + "] Entering executeNodeTask for Node " + targetIndex);
@@ -425,49 +460,31 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     ) {
         var dsOffsets = draw.getDownstreamOffsets();
         var dsEdges = draw.getDownstreamEdges();
-        int dsStart = dsOffsets[targetIndex];
-        int dsEnd = dsOffsets[targetIndex + 1];
+        var dsStart = dsOffsets[targetIndex];
+        var dsEnd = dsOffsets[targetIndex + 1];
 
-        var cOffsets = draw.getCreateOffsets();
-        var cEdges = draw.getCreateEdges();
-        var rOffsets = draw.getRefreshOffsets();
-        var rEdges = draw.getRefreshEdges();
-        var iOffsets = draw.getInterceptorOffsets();
-        var iEdges = draw.getInterceptorEdges();
+        if (dsStart == dsEnd) {
+            return;
+        }
+
+        var notified = new BitSet(draw.size());
 
         for (var k = dsStart; k < dsEnd; k++) {
             var nextIdx = dsEdges[k];
             var nextTask = tasks[nextIdx];
-            if (nextTask == null) continue;
-
-            boolean isRealDependency = false;
-
-            int startDeps = cOffsets[nextIdx];
-            int endDeps = cOffsets[nextIdx + 1];
-            for (int j = startDeps; j < endDeps; j++) {
-                if (cEdges[j] == targetIndex) { isRealDependency = true; break; }
-            }
-            if (!isRealDependency) {
-                startDeps = rOffsets[nextIdx];
-                endDeps = rOffsets[nextIdx + 1];
-                for (int j = startDeps; j < endDeps; j++) {
-                    if (rEdges[j] == targetIndex) { isRealDependency = true; break; }
-                }
-            }
-            if (!isRealDependency) {
-                startDeps = iOffsets[nextIdx];
-                endDeps = iOffsets[nextIdx + 1];
-                for (int j = startDeps; j < endDeps; j++) {
-                    if (iEdges[j] == targetIndex) { isRealDependency = true; break; }
-                }
+            if (nextTask == null) {
+                continue;
             }
 
-            if (isRealDependency) {
-                var remaining = nextTask.remainingDeps.decrementAndGet();
-                println("[" + threadName + "] Node " + targetIndex + logSuffix + " decremented Node " + nextIdx + " remainingDeps -> " + remaining);
-                if (remaining == 0 && !nextTask.isCancelled) {
-                    Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
-                }
+            if (notified.get(nextIdx)) {
+                continue;
+            }
+            notified.set(nextIdx);
+
+            var remaining = nextTask.remainingDeps.decrementAndGet();
+            println("[" + threadName + "] Node " + targetIndex + logSuffix + " decremented Node " + nextIdx + " remainingDeps -> " + remaining);
+            if (remaining == 0 && !nextTask.isCancelled) {
+                Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isDebug, isTrace, tmpGraph, tasks));
             }
         }
     }
@@ -525,33 +542,9 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
     }
 
-    private void fireRefreshListeners() {
-        for (var i = refreshListenerIndices.nextSetBit(0); i >= 0; i = refreshListenerIndices.nextSetBit(i + 1)) {
-            var object = OBJECTS_VH.getVolatile(graphObjects, i);
-            if (object instanceof RefreshListener listener) {
-                try {
-                    listener.graphRefreshed();
-                } catch (Throwable t) {
-                    logger.warn("Error calling refresh listener for node at index {}", i, t);
-                }
-            }
-        }
-    }
-
-    private static long tookForLogging(long started) {
-        var tookNanos = System.nanoTime() - started;
-        return tookNanos / 1_000_000;
-    }
-
-    BitSet getRefreshListenerIndices() {
-        return refreshListenerIndices;
-    }
-
-    int[] getConditionResultsCache() {
-        return conditionResultsCache;
-    }
-
     private static final class NodeTask {
+
+        final AtomicInteger started = new AtomicInteger(0);
         final AtomicInteger remainingDeps;
         final short index;
         volatile boolean isCancelled = false;

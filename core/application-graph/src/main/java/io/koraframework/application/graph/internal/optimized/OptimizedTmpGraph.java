@@ -17,6 +17,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
     private final OptimizedGraphImpl rootGraph;
     private final Object[] tmpArray;
     private final Object[] rootRawObjects;
+    private final AtomicIntegerArray nodeCreationStates;
     private final AtomicReferenceArray<@Nullable ConditionResult> conditionCache;
     private final AtomicReferenceArray<@Nullable TmpValueOf<?>> valueOfs;
     private final AtomicReferenceArray<@Nullable BasePromiseOf<?>> promises;
@@ -30,6 +31,8 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         var length = rootRawObjects.length;
         tmpArray = new Object[length];
         System.arraycopy(rootRawObjects, 0, tmpArray, 0, length);
+
+        nodeCreationStates = rootGraph.getNodeCreationStates();
         valueOfs = new AtomicReferenceArray<>(length);
         promises = new AtomicReferenceArray<>(length);
         conditionCache = new AtomicReferenceArray<>(length);
@@ -147,158 +150,125 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     @SuppressWarnings("unchecked")
     public <T> void createNode(NodeImpl<T> node, int startFrom, boolean isTrace) throws Exception {
-        var oldObject = (T) rootRawObjects[node.index];
-        var draw = rootGraph.draw();
+        var idx = node.index;
 
-        if (oldObject != null && node.index != startFrom) {
-            var dependencyChanged = false;
-            var rEdges = draw.getRefreshEdges();
-            var rOffsets = draw.getRefreshOffsets();
-            int start = rOffsets[node.index], end = rOffsets[node.index + 1];
-            VarHandle.fullFence();
-            for (var i = start; i < end; i++) {
-                if (changedNodes[rEdges[i]] == 1) {
-                    dependencyChanged = true;
-                    break;
-                }
+        while (true) {
+            var current = nodeCreationStates.get(idx);
+            if (current == 2) {
+                return;
             }
-            if (!dependencyChanged) {
-                var iEdges = draw.getInterceptorEdges();
-                var iOffsets = draw.getInterceptorOffsets();
-                start = iOffsets[node.index];
-                end = iOffsets[node.index + 1];
+            if (current == 1) {
+                Thread.yield();
+                continue;
+            }
+            if (nodeCreationStates.compareAndSet(idx, 0, 1)) {
+                break;
+            }
+        }
+
+        try {
+            var oldObject = (T) rootRawObjects[idx];
+            var draw = rootGraph.draw();
+
+            if (oldObject != null && idx != startFrom) {
+                var dependencyChanged = false;
+                var rEdges = draw.getRefreshEdges();
+                var rOffsets = draw.getRefreshOffsets();
+                var start = rOffsets[idx];
+                var end = rOffsets[idx + 1];
+                VarHandle.fullFence();
                 for (var i = start; i < end; i++) {
-                    if (changedNodes[iEdges[i]] == 1) {
+                    if (changedNodes[rEdges[i]] == 1) {
                         dependencyChanged = true;
                         break;
                     }
                 }
-            }
-            if (!dependencyChanged) return;
-        }
-
-        var conditionFunction = draw.getNodeCondition(node.index);
-        if (conditionFunction != null) {
-            if (conditionFunction.apply(this) instanceof ConditionResult.Failed failed) {
-                if (isTrace) {
-                    rootGraph.logger.trace("Creating node {} canceled: {}", node.index, failed.reason());
+                if (!dependencyChanged) {
+                    var iEdges = draw.getInterceptorEdges();
+                    var iOffsets = draw.getInterceptorOffsets();
+                    start = iOffsets[idx];
+                    end = iOffsets[idx + 1];
+                    for (var i = start; i < end; i++) {
+                        if (changedNodes[iEdges[i]] == 1) {
+                            dependencyChanged = true;
+                            break;
+                        }
+                    }
                 }
-                tmpArray[node.index] = new ConditionFailedValue(failed.reason());
-                changedNodes[node.index] = 1;
-                VarHandle.fullFence();
+                if (!dependencyChanged) {
+                    nodeCreationStates.set(idx, 2);
+                    return;
+                }
+            }
+
+            var conditionFunction = draw.getNodeCondition(idx);
+            if (conditionFunction != null) {
+                if (conditionFunction.apply(this) instanceof ConditionResult.Failed failed) {
+                    if (isTrace) {
+                        rootGraph.logger.trace("Creating node {} canceled: {}", idx, failed.reason());
+                    }
+                    tmpArray[idx] = new ConditionFailedValue(failed.reason());
+                    changedNodes[idx] = 1;
+                    VarHandle.fullFence();
+                    nodeCreationStates.set(idx, 2);
+                    return;
+                }
+            }
+
+            var factory = (Graph.Factory<Object>) rootGraph.draw().getNodeFactory(idx);
+            var newObject = Objects.requireNonNull(factory.get(this));
+
+            var isUnchanged = false;
+            if (oldObject != null) {
+                try {
+                    isUnchanged = (newObject == oldObject || newObject.equals(oldObject));
+                } catch (Throwable _) {}
+            }
+
+            if (isUnchanged) {
+                if (newObject instanceof Lifecycle lifecycle) {
+                    lifecycle.release();
+                } else if (newObject instanceof Closeable closeable) {
+                    closeable.close();
+                }
+                nodeCreationStates.set(idx, 2);
                 return;
             }
-        }
+            tmpArray[idx] = newObject;
+            changedNodes[idx] = 1;
 
-        if (isTrace) {
-            var cEdges = draw.getCreateEdges();
-            var cOffsets = draw.getCreateOffsets();
-            int start = cOffsets[node.index], end = cOffsets[node.index + 1];
-            var sb = new StringBuilder("[");
-            for (var i = start; i < end; i++) {
-                if (i > start) sb.append(",");
-                sb.append(cEdges[i]);
+            if (newObject instanceof RefreshListener) {
+                localRefreshListeners[idx] = 1;
             }
-            sb.append("]");
-            rootGraph.logger.trace("Creating node {}, dependencies {}", node.index, sb);
-        }
 
-        var factory = (Graph.Factory<Object>) rootGraph.draw().getNodeFactory(node.index);
-        var newObject = Objects.requireNonNull(factory.get(this));
-
-        var isUnchanged = false;
-        if (oldObject != null) {
-            try {
-                isUnchanged = (newObject == oldObject || newObject.equals(oldObject));
-            } catch (Throwable _) {}
-        }
-
-        if (isUnchanged) {
             if (newObject instanceof Lifecycle lifecycle) {
-                lifecycle.release();
-            } else if (newObject instanceof Closeable closeable) {
-                closeable.close();
-            }
-            return;
-        }
-        tmpArray[node.index] = newObject;
-        changedNodes[node.index] = 1;
-        VarHandle.fullFence();
-
-        if (newObject instanceof RefreshListener) {
-            localRefreshListeners[node.index] = 1;
-        }
-
-        if (isTrace) {
-            rootGraph.logger.trace("Created node {} {}", node.index, newObject.getClass());
-        }
-
-        if (newObject instanceof Lifecycle lifecycle) {
-            if (isTrace) {
-                rootGraph.logger.trace("Initializing node {} of class {}", node.index, lifecycle.getClass());
-            }
-            try {
-                lifecycle.init();
-                if (isTrace) {
-                    rootGraph.logger.trace("Node Initializing {} of class {} complete", node.index, lifecycle.getClass());
-                }
-            } catch (CancellationException e) {
-                if (isTrace) {
-                    rootGraph.logger.trace("Node Initializing {} of class {} cancelled", node.index, lifecycle.getClass());
-                }
-                throw e;
-            } catch (CompletionException ce) {
-                if (isTrace) {
-                    rootGraph.logger.trace("Node Initializing {} of class {} error", node.index, lifecycle.getClass(), ce.getCause());
-                }
-                throw ce;
-            } catch (RuntimeException | Error e) {
-                if (isTrace) {
-                    rootGraph.logger.trace("Node Initializing {} of class {} error", node.index, lifecycle.getClass(), e);
-                }
-                throw e;
-            } catch (Throwable e) {
-                if (isTrace) {
-                    rootGraph.logger.trace("Initializing node {} of class {} error", node.index, lifecycle.getClass(), e);
-                }
-                throw new IllegalStateException("Lifecycle init failed with checked exception for node %s at index %s".formatted(node.type(), node.index), e);
-            }
-        }
-
-        var iEdges = draw.getInterceptorEdges();
-        var iOffsets = draw.getInterceptorOffsets();
-        var interStart = iOffsets[node.index];
-        var interEnd = iOffsets[node.index + 1];
-
-        if (interStart != interEnd) {
-            for (var i = interStart; i < interEnd; i++) {
-                var interceptorIndex = iEdges[i];
-                var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
-
-                if (isTrace) {
-                    rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {}", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass());
-                }
                 try {
-                    var intercepted = (T) interceptorObject.afterInit(newObject);
-                    if (isTrace) {
-                        rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} complete", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass());
-                    }
-                    newObject = intercepted;
-                } catch (RuntimeException | Error e) {
-                    if (isTrace) {
-                        rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} error", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass(), e);
-                    }
-                    throw e;
+                    lifecycle.init();
                 } catch (Throwable e) {
-                    if (isTrace) {
-                        rootGraph.logger.trace("Intercepting init node {} of class {} with node {} of class {} error", node.index, newObject.getClass(), interceptorIndex, interceptorObject.getClass(), e);
-                    }
-                    throw new IllegalStateException("Graph interceptor failed with checked exception for node %s".formatted(node.type()), e);
+                    throw e;
                 }
             }
+
+            var iEdges = draw.getInterceptorEdges();
+            var iOffsets = draw.getInterceptorOffsets();
+            var interStart = iOffsets[idx];
+            var interEnd = iOffsets[idx + 1];
+
+            if (interStart != interEnd) {
+                for (var i = interStart; i < interEnd; i++) {
+                    var interceptorIndex = iEdges[i];
+                    var interceptorObject = (GraphInterceptor<Object>) tmpArray[interceptorIndex];
+                    var intercepted = (T) interceptorObject.afterInit(newObject);
+                    newObject = intercepted;
+                }
+            }
+            tmpArray[idx] = newObject;
+            VarHandle.fullFence();
+            nodeCreationStates.set(idx, 2);
+        } catch (Throwable t) {
+            nodeCreationStates.set(idx, 0);
+            throw t;
         }
-        tmpArray[node.index] = newObject;
-        VarHandle.fullFence();
     }
 
     public void commit(int startFrom) {
@@ -306,6 +276,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
         var oldValuesToRelease = startFrom > 0 ? new Object[length] : null;
         var rootListeners = rootGraph.getRefreshListenerIndices();
         var cache = rootGraph.getConditionResultsCache();
+
         for (var i = 0; i < length; i++) {
             if (changedNodes[i] == 1) {
                 var newVal = tmpArray[i];
@@ -320,6 +291,12 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                     rootListeners.set(i);
                 } else {
                     rootListeners.clear(i);
+                }
+
+                nodeCreationStates.set(i, 0);
+            } else {
+                if (nodeCreationStates.get(i) == 1) {
+                    nodeCreationStates.set(i, 0);
                 }
             }
 
@@ -347,14 +324,16 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
             for (var i = length - 1; i >= 0; i--) {
                 var oldVal = oldValuesToRelease[i];
-                if (oldVal == null) continue;
+                if (oldVal == null) {
+                    continue;
+                }
 
                 try {
                     var interStart = iOffsets[i];
                     var interEnd = iOffsets[i + 1];
 
                     for (var j = interEnd - 1; j >= interStart; j--) {
-                        int interceptorIndex = iEdges[j];
+                        var interceptorIndex = iEdges[j];
                         var interceptorObject = (GraphInterceptor<Object>) oldValuesToRelease[interceptorIndex];
                         if (interceptorObject == null) {
                             interceptorObject = (GraphInterceptor<Object>) rootRawObjects[interceptorIndex];
@@ -390,6 +369,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
                         closeable.close();
                     }
                 } catch (Exception _) {}
+                nodeCreationStates.set(i, 0);
             }
         }
     }
