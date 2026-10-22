@@ -3,16 +3,11 @@ package io.koraframework.json.annotation.processor;
 import com.palantir.javapoet.JavaFile;
 import io.koraframework.annotation.processor.common.CommonUtils;
 import io.koraframework.annotation.processor.common.ComparableTypeMirror;
-import io.koraframework.annotation.processor.common.SealedTypeUtils;
-import io.koraframework.json.annotation.processor.reader.DelegatingReaderGenerator;
-import io.koraframework.json.annotation.processor.reader.EnumReaderGenerator;
-import io.koraframework.json.annotation.processor.reader.JsonReaderGenerator;
+import io.koraframework.json.annotation.processor.codec.JsonCodecGenerator;
+import io.koraframework.json.annotation.processor.codec.JsonEnumCodecGenerator;
+import io.koraframework.json.annotation.processor.codec.JsonDelegatingCodecGenerator;
+import io.koraframework.json.annotation.processor.codec.JsonSealedCodecGenerator;
 import io.koraframework.json.annotation.processor.reader.ReaderTypeMetaParser;
-import io.koraframework.json.annotation.processor.reader.SealedInterfaceReaderGenerator;
-import io.koraframework.json.annotation.processor.writer.DelegatingWriterGenerator;
-import io.koraframework.json.annotation.processor.writer.EnumWriterGenerator;
-import io.koraframework.json.annotation.processor.writer.JsonWriterGenerator;
-import io.koraframework.json.annotation.processor.writer.SealedInterfaceWriterGenerator;
 import io.koraframework.json.annotation.processor.writer.WriterTypeMetaParser;
 
 import javax.annotation.processing.ProcessingEnvironment;
@@ -23,6 +18,8 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import java.util.Objects;
+import java.util.HashSet;
+import java.util.Set;
 
 public class JsonProcessor {
     private final ProcessingEnvironment processingEnv;
@@ -30,14 +27,11 @@ public class JsonProcessor {
     private final Types types;
     private final ReaderTypeMetaParser readerTypeMetaParser;
     private final WriterTypeMetaParser writerTypeMetaParser;
-    private final JsonWriterGenerator writerGenerator;
-    private final JsonReaderGenerator readerGenerator;
-    private final SealedInterfaceReaderGenerator sealedReaderGenerator;
-    private final SealedInterfaceWriterGenerator sealedWriterGenerator;
-    private final EnumReaderGenerator enumReaderGenerator;
-    private final EnumWriterGenerator enumWriterGenerator;
-    private final DelegatingReaderGenerator delegatingReaderGenerator;
-    private final DelegatingWriterGenerator delegatingWriterGenerator;
+    private final JsonCodecGenerator codecGenerator;
+    private final JsonSealedCodecGenerator sealedCodecGenerator;
+    private final JsonEnumCodecGenerator enumCodecGenerator;
+    private final JsonDelegatingCodecGenerator delegatingCodecGenerator;
+    private final Set<String> generatedCodecs = new HashSet<>();
 
     public JsonProcessor(ProcessingEnvironment processingEnv) {
         this.processingEnv = processingEnv;
@@ -46,111 +40,88 @@ public class JsonProcessor {
         var knownTypes = new KnownType();
         this.readerTypeMetaParser = new ReaderTypeMetaParser(this.processingEnv, knownTypes);
         this.writerTypeMetaParser = new WriterTypeMetaParser(processingEnv, knownTypes);
-        this.writerGenerator = new JsonWriterGenerator(this.processingEnv);
-        this.readerGenerator = new JsonReaderGenerator(this.processingEnv);
-        this.sealedReaderGenerator = new SealedInterfaceReaderGenerator(this.processingEnv);
-        this.sealedWriterGenerator = new SealedInterfaceWriterGenerator(this.processingEnv);
-        this.enumReaderGenerator = new EnumReaderGenerator();
-        this.enumWriterGenerator = new EnumWriterGenerator();
-        this.delegatingReaderGenerator = new DelegatingReaderGenerator();
-        this.delegatingWriterGenerator = new DelegatingWriterGenerator();
+        this.codecGenerator = new JsonCodecGenerator(this.processingEnv);
+        this.sealedCodecGenerator = new JsonSealedCodecGenerator(this.processingEnv);
+        this.enumCodecGenerator = new JsonEnumCodecGenerator();
+        this.delegatingCodecGenerator = new JsonDelegatingCodecGenerator();
     }
 
     public void generateReader(TypeElement jsonElement) {
         var jsonElementType = jsonElement.asType();
         var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var readerClassName = JsonUtils.jsonReaderName(this.types, jsonElementType);
-        var readerElement = this.elements.getTypeElement(packageElement + "." + readerClassName);
-        if (readerElement != null) {
+        var codecClassName = JsonUtils.jsonReaderName(this.types, jsonElementType).replace("JsonReader", "JsonCodec");
+        var fullCodecName = packageElement + "." + codecClassName;
+
+        if (!generatedCodecs.add(fullCodecName) || this.elements.getTypeElement(fullCodecName) != null) {
             return;
         }
         if (jsonElement.getKind() == ElementKind.ENUM) {
-            this.generateEnumReader(jsonElement);
+            this.generateEnumCodec(jsonElement);
             return;
         }
         if (jsonElement.getModifiers().contains(Modifier.SEALED)) {
-            this.generateSealedRootReader(jsonElement);
+            this.generateSealedCodec(jsonElement);
             return;
         }
-        if (this.delegatingReaderGenerator.detectReaderFactory(jsonElement) != null) {
-            var readerType = this.delegatingReaderGenerator.generate(jsonElement);
-            CommonUtils.safeWriteTo(this.processingEnv, JavaFile.builder(packageElement, readerType).build());
+        if (this.delegatingCodecGenerator.detectReaderFactory(jsonElement) != null || this.delegatingCodecGenerator.detectWriterMethod(jsonElement) != null) {
+            var codecType = this.delegatingCodecGenerator.generate(jsonElement);
+            if (codecType != null) {
+                CommonUtils.safeWriteTo(this.processingEnv, JavaFile.builder(packageElement, codecType).build());
+            }
             return;
         }
-        this.generateDtoReader(jsonElement, jsonElementType);
+        this.generateDtoCodec(jsonElement, jsonElementType);
     }
-
-    private void generateSealedRootReader(TypeElement jsonElement) {
-        var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var sealedReaderType = this.sealedReaderGenerator.generateSealedReader(jsonElement);
-
-        var javaFile = JavaFile.builder(packageElement, sealedReaderType).build();
-        CommonUtils.safeWriteTo(this.processingEnv, javaFile);
-    }
-
-    private void generateEnumReader(TypeElement jsonElement) {
-        var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var sealedReaderType = this.enumReaderGenerator.generateForEnum(jsonElement);
-
-        var javaFile = JavaFile.builder(packageElement, sealedReaderType).build();
-        CommonUtils.safeWriteTo(this.processingEnv, javaFile);
-    }
-
-    private void generateDtoReader(TypeElement typeElement, TypeMirror jsonTypeMirror) {
-        var packageElement = JsonUtils.jsonClassPackage(this.elements, typeElement);
-        var meta = Objects.requireNonNull(this.readerTypeMetaParser.parse(typeElement, jsonTypeMirror));
-        var readerType = Objects.requireNonNull(this.readerGenerator.generate(meta));
-
-        var javaFile = JavaFile.builder(packageElement, readerType).build();
-        CommonUtils.safeWriteTo(this.processingEnv, javaFile);
-    }
-
-    private void generateEnumWriter(TypeElement jsonElement) {
-        var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var enumWriterType = this.enumWriterGenerator.generateEnumWriter(jsonElement);
-        var javaFile = JavaFile.builder(packageElement, enumWriterType).build();
-        CommonUtils.safeWriteTo(this.processingEnv, javaFile);
-    }
-
     public void generateWriter(TypeElement jsonElement) {
         var wrapper = new ComparableTypeMirror(this.types, jsonElement.asType());
         var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var writerClassName = JsonUtils.jsonWriterName(this.types, wrapper.typeMirror());
-        var writerElement = this.elements.getTypeElement(packageElement + "." + writerClassName);
-        if (writerElement != null) {
+        var codecClassName = JsonUtils.jsonWriterName(this.types, wrapper.typeMirror()).replace("JsonWriter", "JsonCodec");
+        var fullCodecName = packageElement + "." + codecClassName;
+
+        if (!generatedCodecs.add(fullCodecName) || this.elements.getTypeElement(fullCodecName) != null) {
             return;
         }
         if (jsonElement.getKind() == ElementKind.ENUM) {
-            this.generateEnumWriter(jsonElement);
+            this.generateEnumCodec(jsonElement);
             return;
         }
         if (jsonElement.getModifiers().contains(Modifier.SEALED)) {
-            this.generateSealedWriter(jsonElement);
+            this.generateSealedCodec(jsonElement);
             return;
         }
-        if (this.delegatingWriterGenerator.detectWriterMethod(jsonElement) != null) {
-            var delegatingWriterType = this.delegatingWriterGenerator.generate(jsonElement);
-            CommonUtils.safeWriteTo(this.processingEnv, JavaFile.builder(packageElement, delegatingWriterType).build());
+        if (this.delegatingCodecGenerator.detectReaderFactory(jsonElement) != null || this.delegatingCodecGenerator.detectWriterMethod(jsonElement) != null) {
+            var codecType = this.delegatingCodecGenerator.generate(jsonElement);
+            if (codecType != null) {
+                CommonUtils.safeWriteTo(this.processingEnv, JavaFile.builder(packageElement, codecType).build());
+            }
             return;
         }
-        this.tryGenerateWriter(jsonElement, jsonElement.asType());
+        this.generateDtoCodec(jsonElement, jsonElement.asType());
     }
 
+    private void generateDtoCodec(TypeElement typeElement, TypeMirror jsonTypeMirror) {
+        var packageElement = JsonUtils.jsonClassPackage(this.elements, typeElement);
+        var readerMeta = Objects.requireNonNull(this.readerTypeMetaParser.parse(typeElement, jsonTypeMirror));
+        var writerMeta = Objects.requireNonNull(this.writerTypeMetaParser.parse(typeElement, jsonTypeMirror));
+        var codecType = Objects.requireNonNull(this.codecGenerator.generate(readerMeta, writerMeta));
 
-    private void generateSealedWriter(TypeElement jsonElement) {
-        var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var sealedWriterType = this.sealedWriterGenerator.generateSealedWriter(jsonElement, SealedTypeUtils.collectFinalPermittedSubtypes(types, elements, jsonElement));
-
-        var javaFile = JavaFile.builder(packageElement, sealedWriterType).build();
+        var javaFile = JavaFile.builder(packageElement, codecType).build();
         CommonUtils.safeWriteTo(this.processingEnv, javaFile);
     }
 
-    private void tryGenerateWriter(TypeElement jsonElement, TypeMirror jsonTypeMirror) {
-        var meta = Objects.requireNonNull(this.writerTypeMetaParser.parse(jsonElement, jsonTypeMirror));
+    private void generateEnumCodec(TypeElement jsonElement) {
         var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
-        var writerType = Objects.requireNonNull(this.writerGenerator.generate(meta));
+        var codecType = this.enumCodecGenerator.generateForEnum(jsonElement);
 
-        var javaFile = JavaFile.builder(packageElement, writerType).build();
+        var javaFile = JavaFile.builder(packageElement, codecType).build();
+        CommonUtils.safeWriteTo(this.processingEnv, javaFile);
+    }
+
+    private void generateSealedCodec(TypeElement jsonElement) {
+        var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
+        var sealedCodecType = this.sealedCodecGenerator.generateSealedCodec(jsonElement);
+
+        var javaFile = JavaFile.builder(packageElement, sealedCodecType).build();
         CommonUtils.safeWriteTo(this.processingEnv, javaFile);
     }
 }

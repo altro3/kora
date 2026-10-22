@@ -206,7 +206,7 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
             var factory = (Graph.Factory<Object>) rootGraph.draw().getNodeFactory(idx);
             // println("[" + threadName + "][GRAPH-" + graphHash + "] Node " + idx + " calling factory.get()...");
-            var newObject = Objects.requireNonNull(factory.get(this));
+            var newObject = Objects.requireNonNull(factory.get(this, idx));
 
             var isUnchanged = false;
             if (oldObject != null) {
@@ -364,10 +364,6 @@ public final class OptimizedTmpGraph implements RefreshableGraph {
 
     Object[] getRawTmpArray() {
         return tmpArray;
-    }
-
-    byte[] getRawChangedNodes() {
-        return changedNodes;
     }
 
     private static class TmpValueOf<T> implements ValueOf<T> {
