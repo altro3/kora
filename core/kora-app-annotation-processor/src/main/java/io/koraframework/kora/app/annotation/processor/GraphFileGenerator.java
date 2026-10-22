@@ -127,6 +127,7 @@ public class GraphFileGenerator {
         var totalPartitions = (expectedNodes + COMPONENTS_PER_PARTITION - 1) / COMPONENTS_PER_PARTITION;
 
         var baseStaticBlock = CodeBlock.builder()
+            .addStatement("var _ = $T.getenv($S)", System.class, "KORA_WARMUP_CHECK")
             .addStatement("impl = new $T()", implClass)
             .addStatement("graphDraw = new $T($T.class, (short) $L, (short) $L, (short) $L, (short) $L, (short) $L)",
                 CommonClassNames.applicationGraphDraw, classElement,

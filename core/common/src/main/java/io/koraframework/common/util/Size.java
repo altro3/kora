@@ -1,9 +1,6 @@
 package io.koraframework.common.util;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 
 public final class Size {
 
@@ -65,12 +62,10 @@ public final class Size {
         this.type = type;
 
         if (type == Type.BYTES) {
-            this.value = bytes;
+            value = bytes;
         } else {
-            double v = (double) bytes / type.toBytes();
-            BigDecimal bd = BigDecimal.valueOf(v);
-            bd = bd.setScale(2, RoundingMode.HALF_UP);
-            this.value = bd.doubleValue();
+            var v = (double) bytes / type.toBytes();
+            value = Math.round(v * 100.0) / 100.0;
         }
     }
 
@@ -78,7 +73,7 @@ public final class Size {
      * @return exact even value of current size type
      */
     public long valueExact() {
-        return ((long) value);
+        return (long) value;
     }
 
     /**
@@ -89,16 +84,15 @@ public final class Size {
     }
 
     public double valueRounded(int scale) {
-        if(scale < 1) {
+        if (scale < 1) {
             return valueExact();
-        } else if(scale == 2) {
+        } else if (scale == 2) {
             return valueRounded();
         }
 
-        double v = (double) bytes / type.toBytes();
-        BigDecimal bd = BigDecimal.valueOf(v);
-        bd = bd.setScale(scale, RoundingMode.HALF_UP);
-        return bd.doubleValue();
+        var v = (double) bytes / type.toBytes();
+        var factor = Math.pow(10, scale);
+        return Math.round(v * factor) / factor;
     }
 
     public Type type() {
@@ -132,7 +126,7 @@ public final class Size {
             throw new IllegalArgumentException("Malformed negative value, can't be size: " + bytes);
         }
 
-        for (Type sizeType : BINARY) {
+        for (var sizeType : BINARY) {
             if (bytes >= sizeType.toBytes()) {
                 return new Size(bytes, sizeType);
             }
@@ -152,7 +146,7 @@ public final class Size {
             throw new IllegalArgumentException("Malformed negative value, can't be size: " + bytes);
         }
 
-        for (Type sizeType : SI) {
+        for (var sizeType : SI) {
             if (bytes >= sizeType.toBytes()) {
                 return new Size(bytes, sizeType);
             }
@@ -165,11 +159,11 @@ public final class Size {
         Long size = null;
         Type type = null;
 
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
+        for (var i = 0; i < value.length(); i++) {
+            var c = value.charAt(i);
             if (Character.isLetter(c)) {
                 try {
-                    String v = value.substring(0, i).strip();
+                    var v = value.substring(0, i).strip();
                     size = Long.parseLong(v);
                     if (size < 0) {
                         throw new IllegalArgumentException("Malformed negative value, can't be size: " + value);
@@ -178,8 +172,8 @@ public final class Size {
                     throw new IllegalArgumentException("Can't extract size number part from: " + value);
                 }
 
-                String typeAsStr = value.substring(i).strip();
-                for (Type sizeType : ALL) {
+                var typeAsStr = value.substring(i).strip();
+                for (var sizeType : ALL) {
                     if (sizeType == Type.BYTES && typeAsStr.equalsIgnoreCase("B")) {
                         type = sizeType;
                         break;
@@ -198,7 +192,7 @@ public final class Size {
 
         if (size == null) {
             try {
-                long bytes = Long.parseLong(value);
+                var bytes = Long.parseLong(value);
                 if (bytes < 0) {
                     throw new IllegalArgumentException("Malformed negative value, can't be size: " + value);
                 }
@@ -214,22 +208,23 @@ public final class Size {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
-        Size size = (Size) o;
+        if (!(o instanceof Size size)) return false;
         return bytes == size.bytes;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(bytes);
+        return Long.hashCode(bytes);
     }
 
     @Override
     public String toString() {
         if (type == Type.BYTES) {
             return bytes + "B";
-        } else {
-            return BigDecimal.valueOf(valueRounded()).stripTrailingZeros().toPlainString() + type.name();
         }
+        if (value == (long) value) {
+            return String.format(java.util.Locale.ROOT, "%d%s", (long) value, type.name());
+        }
+        return String.format(java.util.Locale.ROOT, "%.2f%s", value, type.name());
     }
 }

@@ -16,6 +16,7 @@ import static java.lang.IO.println;
 
 public final class OptimizedGraphImpl implements InitializedGraph {
 
+    private static final boolean KORA_GRAPH_DEBUG = Boolean.getBoolean("kora.graph.debug");
     private static final long SLOW_NODE_INIT_THRESHOLD_NANOS = Long.parseLong(System.getProperty("kora.graph.slowNodeInitThresholdMillis", "100")) * 1_000_000L;
     private static final VarHandle OBJECTS_VH = MethodHandles.arrayElementVarHandle(Object[].class);
     private static final VarHandle CONDITION_VH = MethodHandles.arrayElementVarHandle(int[].class);
@@ -32,7 +33,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
     }
 
-    final Logger logger;
+    private @Nullable Logger logger;
     private final ApplicationGraphDraw draw;
     private final ReentrantLock mutationLock = new ReentrantLock();
     private final AtomicIntegerArray nodeCreationStates; // 0 - не создано, 1 - создается, 2 - готово
@@ -46,10 +47,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
     public OptimizedGraphImpl(ApplicationGraphDraw draw) {
         this.draw = draw;
-        this.logger = LoggerFactory.getLogger(draw.getRoot());
-        this.graphObjects = new Object[draw.size()];
-        this.conditionResultsCache = new int[draw.size()];
-        this.nodeCreationStates = new AtomicIntegerArray(draw.size());
+        graphObjects = new Object[draw.size()];
+        conditionResultsCache = new int[draw.size()];
+        nodeCreationStates = new AtomicIntegerArray(draw.size());
+        if (KORA_GRAPH_DEBUG) {
+            logger = LoggerFactory.getLogger(draw.getRoot());
+        }
     }
 
     @Override
@@ -121,19 +124,30 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     @Override
     public void init() {
         mutationLock.lock();
-        logger.debug("Dependency container initializing...");
-        var started = System.nanoTime();
+        var l = logger;
+        if (l != null) {
+            l.debug("Dependency container initializing...");
+        }
+        var started = l != null ? System.nanoTime() : 0L;
         try {
             initializeSubgraph((short) 0, true);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Dependency container initialized in {}ms", tookForLogging(started));
+            if (l != null && l.isDebugEnabled()) {
+                l.debug("Dependency container initialized in {}ms", tookForLogging(started));
             }
         } catch (Exception e) {
-            logger.debug("Dependency container initialization failed", e);
+            ensureLogger().debug("Dependency container initialization failed", e);
             throw e;
         } finally {
             mutationLock.unlock();
         }
+    }
+
+    private Logger ensureLogger() {
+        var l = logger;
+        if (l == null) {
+            logger = l = LoggerFactory.getLogger(draw.getRoot());
+        }
+        return l;
     }
 
     @Override
@@ -141,17 +155,18 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         var fromNode = (NodeImpl<?>) fromNodeRaw;
         mutationLock.lock();
         var fromNodeObj = OBJECTS_VH.getVolatile(graphObjects, fromNode.index);
-        if (logger.isDebugEnabled()) {
-            logger.debug("Dependency container refreshing from node {} of class {}...", fromNode.index, fromNodeObj != null ? fromNodeObj.getClass() : "null");
+        var l = logger;
+        if (l != null && l.isDebugEnabled()) {
+            l.debug("Dependency container refreshing from node {} of class {}...", fromNode.index, fromNodeObj != null ? fromNodeObj.getClass() : "null");
         }
-        var started = System.nanoTime();
+        var started = l != null ? System.nanoTime() : 0L;
         try {
             initializeSubgraph(fromNode.index, false);
-            if (logger.isDebugEnabled()) {
-                logger.debug("Dependency container refreshed in {}ms", tookForLogging(started));
+            if (l != null && l.isDebugEnabled()) {
+                l.debug("Dependency container refreshed in {}ms", tookForLogging(started));
             }
         } catch (Throwable e) {
-            logger.debug("Dependency container refresh error", e);
+            ensureLogger().debug("Dependency container refresh error", e);
             throw e;
         } finally {
             mutationLock.unlock();
@@ -161,15 +176,18 @@ public final class OptimizedGraphImpl implements InitializedGraph {
     @Override
     public void release() {
         mutationLock.lock();
-        logger.debug("Dependency container releasing...");
-        var started = System.nanoTime();
+        var l = logger;
+        if (l != null) {
+            l.debug("Dependency container releasing...");
+        }
+        var started = l != null ? System.nanoTime() : 0L;
         try {
             releaseAllInternal();
-            if (logger.isDebugEnabled()) {
-                logger.debug("Dependency container released in {}ms", tookForLogging(started));
+            if (l != null && l.isDebugEnabled()) {
+                l.debug("Dependency container released in {}ms", tookForLogging(started));
             }
         } catch (Exception e) {
-            logger.debug("Dependency container releasing failed", e);
+            ensureLogger().debug("Dependency container releasing failed", e);
             throw e;
         } finally {
             mutationLock.unlock();
@@ -196,14 +214,17 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 try {
                     listener.graphRefreshed();
                 } catch (Throwable t) {
-                    logger.warn("Error calling refresh listener for node at index {}", i, t);
+                    ensureLogger().warn("Error calling refresh listener for node at index {}", i, t);
                 }
             }
         }
     }
 
     private void initializeSubgraph(short startFrom, boolean isFullInit) {
-        logger.trace("Materializing graph objects {}", startFrom);
+        var l = logger;
+        if (l != null) {
+            l.trace("Materializing graph objects {}", startFrom);
+        }
 
         var size = draw.size();
         var dependentNodes = new BitSet(size);
@@ -243,7 +264,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 }
             }
 
-            for (int i = size - 1; i >= startFrom; i--) {
+            for (var i = size - 1; i >= startFrom; i--) {
                 if (dependentNodes.get(i)) {
                     var oldInstance = OBJECTS_VH.getVolatile(graphObjects, i);
                     if (oldInstance != null && !(oldInstance instanceof ConditionFailedValue)) {
@@ -266,15 +287,15 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                                 closeableOld.close();
                             }
                         } catch (Throwable t) {
-                            logger.warn("Error releasing old instance during refresh at index {}", i, t);
+                            ensureLogger().warn("Error releasing old instance during refresh at index {}", i, t);
                         }
                     }
                 }
             }
         }
 
-        var isDebug = logger.isDebugEnabled();
-        var isTrace = logger.isTraceEnabled();
+        var isDebug = l != null && l.isDebugEnabled();
+        var isTrace = l != null && l.isTraceEnabled();
         var tmpGraph = new OptimizedTmpGraph(this);
 
         var tasks = new NodeTask[size];
@@ -354,11 +375,9 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             }
         }
 
-        // println(" Main thread entering wait loop. globalRemainingTasks=" + globalRemainingTasks);
         while (globalRemainingTasks > 0 && errorChannel == null) {
             LockSupport.park();
         }
-        // println(" Main thread broke wait loop. globalRemainingTasks=" + globalRemainingTasks + ", error=" + errorChannel);
 
         var error = errorChannel;
         if (error != null) {
@@ -447,7 +466,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             if (isDebug) {
                 var tookNanos = System.nanoTime() - start;
                 if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
-                    logger.debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
+                    ensureLogger().debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
                 }
             }
 
@@ -565,9 +584,11 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
 
         if (error != null) {
-            if (error instanceof RuntimeException re) throw re;
-            if (error instanceof Error err) throw err;
-            throw new RuntimeException(error);
+            switch (error) {
+                case RuntimeException re -> throw re;
+                case Error err -> throw err;
+                default -> throw new RuntimeException(error);
+            }
         }
     }
 
