@@ -56,6 +56,10 @@ public interface Graph {
 
     interface Factory<T> {
         T get(RefreshableGraph graph) throws Exception;
+
+        default T get(RefreshableGraph graph, int index) throws Exception {
+            return get(graph);
+        }
     }
 
     @SafeVarargs

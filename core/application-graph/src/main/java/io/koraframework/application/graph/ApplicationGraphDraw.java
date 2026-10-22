@@ -493,26 +493,6 @@ public class ApplicationGraphDraw {
         return new CsrNodeList(graphNodes, downstreamEdges, start, end);
     }
 
-    static class ReplacedGraphFactory<T> implements Graph.Factory<T> {
-        final NodeImpl<?>[] nodes;
-        final NodeImpl<T> node;
-
-        public ReplacedGraphFactory(NodeImpl<?>[] nodes, NodeImpl<T> node) {
-            this.nodes = nodes;
-            this.node = node;
-        }
-
-        @Override
-        public T get(RefreshableGraph graph) throws Exception {
-            var originalFactory = (Graph.Factory<T>) node.graphDraw.getNodeFactory(node.index);
-            return originalFactory.get(new ReplacedGraphProxy(graph, nodes));
-        }
-
-        static RefreshableGraph replaced(NodeImpl<?>[] nodes, Graph graph) {
-            return new ReplacedGraphProxy(graph, nodes);
-        }
-    }
-
     private static final class ReplacedGraphProxy implements RefreshableGraph {
         private final Graph graph;
         private final NodeImpl<?>[] nodes;
