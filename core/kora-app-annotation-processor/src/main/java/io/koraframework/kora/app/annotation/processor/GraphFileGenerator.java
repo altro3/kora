@@ -99,7 +99,6 @@ public class GraphFileGenerator {
         var packageElement = (PackageElement) classElement.getEnclosingElement();
         var implClass = ClassName.get(packageElement.getQualifiedName().toString(), "$" + classElement.getSimpleName() + "Impl");
         var graphName = classElement.getSimpleName() + "Graph";
-        var graphTypeName = ClassName.get(packageElement.getQualifiedName().toString(), graphName);
 
         var classBuilder = TypeSpec.classBuilder(graphName)
             .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
@@ -200,13 +199,13 @@ public class GraphFileGenerator {
                     var ib = CodeBlock.builder().add("new io.koraframework.application.graph.internal.NodeImpl<?>[]{");
                     for (var j = 0; j < interceptorsFor.size(); j++) {
                         if (j > 0) ib.add(", ");
-                        ib.add("($T<?>) $L", ClassName.get("io.koraframework.application.graph.internal", "NodeImpl"), resolveNodePath(interceptorsFor.get(j).component()));
+                        ib.add("($T<?>) $L", ClassName.get("io.koraframework.application.graph.internal", "NodeImpl"), resolveNodePath(interceptorsFor.get(j).component(), p));
                     }
                     ib.add("}");
                     interceptorBuilder = ib.build();
                 }
 
-                var conditionCode = buildConditionLambda(component);
+                var conditionCode = buildConditionLambda(component, p);
 
                 var consumers = downstreamMap.get(i);
                 CodeBlock downstreamCode;
@@ -227,7 +226,7 @@ public class GraphFileGenerator {
                 );
 
                 var declaration = component.declaration();
-                var dependenciesCode = generateDependenciesCode(ctx, component, 0);
+                var dependenciesCode = generateDependenciesCode(ctx, component, 0, p);
                 var innerCodeBlock = CodeBlock.builder();
                 switch (declaration) {
                     case ComponentDeclaration.AnnotatedComponent annotatedComponent -> {
@@ -244,9 +243,9 @@ public class GraphFileGenerator {
                     }
                     case ComponentDeclaration.FromModuleComponent moduleComponent -> {
                         if (moduleComponent.module() instanceof ModuleDeclaration.ClassModule || moduleComponent.module() instanceof ModuleDeclaration.FactoryModule) {
-                            var customDepsCode = generateDependenciesCode(ctx, component, 1);
+                            var customDepsCode = generateDependenciesCode(ctx, component, 1, p);
                             var moduleInstDep = component.dependencies().getFirst();
-                            var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep);
+                            var moduleInstCode = resolveDependencyPath(ctx, moduleInstDep, p);
                             if (moduleInstDep instanceof ComponentDependency.SingleDependency) {
                                 innerCodeBlock.add("g.get($L).", moduleInstCode);
                             } else {
@@ -348,23 +347,30 @@ public class GraphFileGenerator {
         return JavaFile.builder(packageElement.getQualifiedName().toString(), classBuilder.build()).build();
     }
 
-    private CodeBlock generateDependenciesCode(ProcessingContext ctx, ResolvedComponent component, int startFrom) {
+    private CodeBlock generateDependenciesCode(ProcessingContext ctx, ResolvedComponent component, int startFrom, int currentPartition) {
         var resolvedDependencies = component.dependencies();
         if (resolvedDependencies.isEmpty()) {
             return CodeBlock.of("");
         }
         var b = CodeBlock.builder();
-
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
             if (i > startFrom) b.add(", ");
             var resolvedDependency = resolvedDependencies.get(i);
             var depCode = resolvedDependency.write(ctx);
-            b.add("$L", depCode);
+            var depStr = depCode.toString();
+            for (var comp : components) {
+                var globalIdx = components.indexOf(comp);
+                var targetPartition = globalIdx / COMPONENTS_PER_PARTITION;
+                if (targetPartition != currentPartition) {
+                    depStr = depStr.replaceAll("\\b" + comp.fieldName() + "\\b", "Partition" + targetPartition + "." + comp.fieldName());
+                }
+            }
+            b.add("$L", CodeBlock.of(depStr));
         }
         return b.build();
     }
 
-    private CodeBlock resolveDependencyPath(ProcessingContext ctx, ComponentDependency dependency) {
+    private CodeBlock resolveDependencyPath(ProcessingContext ctx, ComponentDependency dependency, int currentPartition) {
         ResolvedComponent targetComponent = switch (dependency) {
             case ComponentDependency.SingleDependency single -> switch (single) {
                 case ComponentDependency.TargetDependency target -> target.component();
@@ -374,13 +380,24 @@ public class GraphFileGenerator {
             };
             default -> null;
         };
-
         if (targetComponent != null) {
             var globalIndex = components.indexOf(targetComponent);
-            return CodeBlock.of("nodes[$L]", globalIndex);
+            var targetPartition = globalIndex / COMPONENTS_PER_PARTITION;
+            if (targetPartition == currentPartition) {
+                return CodeBlock.of("$L", targetComponent.fieldName());
+            }
+            return CodeBlock.of("Partition$L.$L", targetPartition, targetComponent.fieldName());
         }
-
-        return dependency.write(ctx);
+        var depCode = dependency.write(ctx);
+        var depStr = depCode.toString();
+        for (var comp : components) {
+            var globalIdx = components.indexOf(comp);
+            var targetPartition = globalIdx / COMPONENTS_PER_PARTITION;
+            if (targetPartition != currentPartition) {
+                depStr = depStr.replaceAll("\\b" + comp.fieldName() + "\\b", "Partition" + targetPartition + "." + comp.fieldName());
+            }
+        }
+        return CodeBlock.of(depStr);
     }
 
     private int countDependencies(CodeBlock codeBlock) {
@@ -389,47 +406,42 @@ public class GraphFileGenerator {
         return str.split(",").length;
     }
 
-    private String resolveNodePath(ResolvedComponent comp) {
+    private String resolveNodePath(ResolvedComponent comp, int currentPartition) {
         var idx = components.indexOf(comp);
         if (idx == -1) {
             return comp.fieldName();
         }
-        return "nodes[" + idx + "]";
+        var targetPartition = idx / COMPONENTS_PER_PARTITION;
+        if (targetPartition == currentPartition) {
+            return comp.fieldName();
+        }
+        return "Partition" + targetPartition + "." + comp.fieldName();
     }
 
-    private CodeBlock buildConditionLambda(ResolvedComponent component) {
+    private CodeBlock buildConditionLambda(ResolvedComponent component, int currentPartition) {
         if (component.parentConditions().isEmpty() && component.declaration().condition() == null) {
             return CodeBlock.of("null");
         } else if (component.parentConditions().isEmpty()) {
             var condComp = Objects.requireNonNull(conditions.get(component.declaration().condition()));
-            return CodeBlock.of("g -> g.condition($L).eval()", resolveNodePath(condComp));
+            return CodeBlock.of("g -> g.condition($L).eval()", resolveNodePath(condComp, currentPartition));
         } else if (component.declaration().condition() == null) {
-            return CodeBlock.of("g -> $L.eval()", parentCondition(component));
+            return CodeBlock.of("g -> $L.eval()", parentCondition(component, currentPartition));
         } else {
             var condComp = Objects.requireNonNull(conditions.get(component.declaration().condition()));
-            return CodeBlock.of("g -> $T.and($L, g.condition($L)).eval()", CommonClassNames.graphCondition, parentCondition(component), resolveNodePath(condComp));
+            return CodeBlock.of("g -> $T.and($L, g.condition($L)).eval()", CommonClassNames.graphCondition, parentCondition(component, currentPartition), resolveNodePath(condComp, currentPartition));
         }
     }
 
-    private CodeBlock parentCondition(ResolvedComponent component) {
-        if (component.parentConditions().size() == 1) {
-            var conditionComponent = Objects.requireNonNull(conditions.get(component.parentConditions().iterator().next()));
-            return CodeBlock.of("g.condition($L)", resolveNodePath(conditionComponent));
-        } else {
-            var b = CodeBlock.builder();
-            b.add("$T.or(", CommonClassNames.graphCondition);
-            var parentConditions = new ArrayList<>(component.parentConditions());
-            for (int i = 0; i < parentConditions.size(); i++) {
-                if (i > 0) {
-                    b.add(", ");
-                }
-                var condition = parentConditions.get(i);
-                var conditionComponent = Objects.requireNonNull(conditions.get(condition));
-                b.add("g.condition($L)", resolveNodePath(conditionComponent));
-            }
-            b.add(")");
-            return b.build();
+    private CodeBlock parentCondition(ResolvedComponent component, int currentPartition) {
+        var parentConditions = component.parentConditions();
+        var iterator = parentConditions.iterator();
+        var condComp = Objects.requireNonNull(conditions.get(iterator.next()));
+        var cb = CodeBlock.builder().add("g.condition($L)", resolveNodePath(condComp, currentPartition));
+        while (iterator.hasNext()) {
+            var nextComp = Objects.requireNonNull(conditions.get(iterator.next()));
+            cb = CodeBlock.builder().add("$T.and($L, g.condition($L))", CommonClassNames.graphCondition, cb.build(), resolveNodePath(nextComp, currentPartition));
         }
+        return cb.build();
     }
 
     private List<List<Integer>> invertGraphToDownstream() {
