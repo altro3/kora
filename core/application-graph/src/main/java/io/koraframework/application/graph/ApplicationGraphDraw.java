@@ -49,24 +49,28 @@ public class ApplicationGraphDraw {
 
     public ApplicationGraphDraw(Class<?> root, short expectedNodes, short expectedCreateEdges, short expectedRefreshEdges, short expectedInterceptorEdges, short expectedDownstreamEdges) {
         this.root = root;
-        this.graphNodes = new NodeImpl<?>[expectedNodes];
-        this.createOffsets = new short[expectedNodes + 1];
-        this.refreshOffsets = new short[expectedNodes + 1];
-        this.interceptorOffsets = new short[expectedNodes + 1];
-        this.downstreamOffsets = new short[expectedNodes + 1];
+        createOffsets = new short[expectedNodes + 1];
+        refreshOffsets = new short[expectedNodes + 1];
+        interceptorOffsets = new short[expectedNodes + 1];
+        downstreamOffsets = new short[expectedNodes + 1];
 
-        this.createEdges = new short[expectedCreateEdges];
-        this.refreshEdges = new short[expectedRefreshEdges];
-        this.interceptorEdges = new short[expectedInterceptorEdges];
-        this.downstreamEdges = new short[expectedDownstreamEdges];
+        createEdges = new short[expectedCreateEdges];
+        refreshEdges = new short[expectedRefreshEdges];
+        interceptorEdges = new short[expectedInterceptorEdges];
+        downstreamEdges = new short[expectedDownstreamEdges];
 
-        this.typeFirstIndex = new TypeShortMap(expectedNodes);
-        this.nextTypeNode = new short[expectedNodes];
-        Arrays.fill(this.nextTypeNode, (short) -1);
-        this.nodeTypes = new Type[expectedNodes];
-        this.nodeTags = new Class<?>[expectedNodes];
-        this.nodeConditions = new Function[expectedNodes];
-        this.nodeFactories = new Graph.Factory<?>[expectedNodes];
+        typeFirstIndex = new TypeShortMap(expectedNodes);
+        nextTypeNode = new short[expectedNodes];
+        Arrays.fill(nextTypeNode, (short) -1);
+        nodeTypes = new Type[expectedNodes];
+        nodeTags = new Class<?>[expectedNodes];
+        nodeConditions = new Function[expectedNodes];
+        nodeFactories = new Graph.Factory<?>[expectedNodes];
+
+        graphNodes = new NodeImpl<?>[expectedNodes];
+        for (short i = 0; i < expectedNodes; i++) {
+            graphNodes[i] = new NodeImpl<>(this, i);
+        }
     }
 
     public Class<?> getRoot() {
@@ -117,7 +121,7 @@ public class ApplicationGraphDraw {
 
         interceptorOffsets[currentIndex] = interceptorEdgesSize;
         if (interceptors != null && interceptors.length > 0) {
-            for (int i = 0; i < interceptors.length; i++) {
+            for (short i = 0; i < interceptors.length; i++) {
                 interceptorEdges[interceptorEdgesSize++] = interceptors[i].index;
             }
         }
@@ -134,9 +138,6 @@ public class ApplicationGraphDraw {
         nodeTags[currentIndex] = tag;
         nodeConditions[currentIndex] = condition;
         nodeFactories[currentIndex] = factory;
-
-        var node = new NodeImpl<T>(this, currentIndex);
-        graphNodes[currentIndex] = node;
         size++;
 
         var firstIdx = typeFirstIndex.get(type);
@@ -145,7 +146,7 @@ public class ApplicationGraphDraw {
         }
         typeFirstIndex.put(type, currentIndex);
 
-        return node;
+        return (Node<T>) graphNodes[currentIndex];
     }
 
     public InitializedGraph init() {
@@ -484,15 +485,6 @@ public class ApplicationGraphDraw {
         return new CsrNodeList(graphNodes, refreshEdges, start, end);
     }
 
-    public List<Node<?>> getNodeDownstreamConsumers(short nodeIndex) {
-        short start = downstreamOffsets[nodeIndex];
-        short end = downstreamOffsets[nodeIndex + 1];
-        if (start == end) {
-            return List.of();
-        }
-        return new CsrNodeList(graphNodes, downstreamEdges, start, end);
-    }
-
     private static final class ReplacedGraphProxy implements RefreshableGraph {
         private final Graph graph;
         private final NodeImpl<?>[] nodes;
@@ -574,7 +566,7 @@ public class ApplicationGraphDraw {
         @Override
         public T get(RefreshableGraph graph) throws Exception {
             NodeImpl<?> targetNode = targetNodes[nodeIndex];
-            Graph.Factory<T> originalFactory = (Graph.Factory<T>) targetNode.graphDraw.getNodeFactory(nodeIndex);
+            var originalFactory = (Graph.Factory<T>) targetNode.graphDraw.getNodeFactory(nodeIndex);
             return originalFactory.get(new ReplacedGraphProxy(graph, targetNodes));
         }
     }
