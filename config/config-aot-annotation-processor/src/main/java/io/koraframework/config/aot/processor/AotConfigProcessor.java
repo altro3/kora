@@ -11,9 +11,11 @@ import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.regex.*;
 
 public class AotConfigProcessor extends AbstractKoraProcessor {
-    private final Map<String, Object> compileTimeConfig = new HashMap<>();
+    private final Map<String, Object> baseConfig = new HashMap<>();
+    private final Map<String, Map<String, Object>> profileConfigs = new HashMap<>();
     private boolean isConfigLoaded = false;
     private final Set<ClassName> generatedModules = new LinkedHashSet<>();
 
@@ -22,37 +24,72 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         return Set.of(ConfigClassNames.configSourceAnnotation);
     }
 
-    private void loadConfigAtCompileTime() {
-        if (isConfigLoaded) {
-            return;
-        }
+    private void loadAllConfigsAtCompileTime() {
+        if (isConfigLoaded) return;
         isConfigLoaded = true;
 
-        var hoconContent = readResource("application.conf");
-        if (!hoconContent.isBlank()) {
-            var profile = getActiveProfile();
-            var profileContent = profile.isBlank() ? "" : readResource("application-" + profile + ".conf");
-            compileTimeConfig.putAll(HoconAotParser.parse(hoconContent, profileContent));
-            return;
+        var hoconBase = readResource("application.conf");
+        var yamlBase = readResource("application.yaml");
+        if (yamlBase.isBlank()) {
+            yamlBase = readResource("application.yml");
         }
 
-        var yamlContent = readResource("application.yaml");
-        if (yamlContent.isBlank()) {
-            yamlContent = readResource("application.yml");
+        if (!hoconBase.isBlank()) {
+            var parsed = HoconAotParser.parse(hoconBase, null);
+            if (parsed != null) baseConfig.putAll(parsed);
+        } else if (!yamlBase.isBlank()) {
+            var parsed = YamlAotParser.parse(yamlBase, null);
+            if (parsed != null) baseConfig.putAll(parsed);
         }
-        if (!yamlContent.isBlank()) {
-            var profile = getActiveProfile();
-            var profileContent = profile.isBlank() ? "" : readResource("application-" + profile + ".yaml");
-            if (profileContent.isBlank() && !profile.isBlank()) {
-                profileContent = readResource("application-" + profile + ".yml");
+
+        var discoveredProfiles = discoverProfileFiles();
+        for (var entry : discoveredProfiles.entrySet()) {
+            var profileName = entry.getKey();
+            var files = entry.getValue();
+            var pConfig = new HashMap<String, Object>();
+
+            for (var file : files) {
+                Map<String, Object> parsed;
+                if (file.filename().endsWith(".conf")) {
+                    parsed = HoconAotParser.parse(hoconBase.isBlank() ? null : hoconBase, file.content());
+                } else {
+                    parsed = YamlAotParser.parse(yamlBase.isBlank() ? null : yamlBase, file.content());
+                }
+                if (parsed != null) pConfig.putAll(parsed);
             }
-            compileTimeConfig.putAll(YamlAotParser.parse(yamlContent, profileContent));
+            profileConfigs.put(profileName, pConfig);
         }
     }
 
-    private String getActiveProfile() {
-        var profile = System.getProperty("kora.profiles", System.getenv("KORA_PROFILES"));
-        return profile != null ? profile.trim() : "";
+    private Map<String, List<ProfileFile>> discoverProfileFiles() {
+        var result = new HashMap<String, List<ProfileFile>>();
+        var pattern = Pattern.compile("application-(.+)\\.(conf|yaml|yml)");
+        try {
+            var runDir = Path.of(System.getProperty("user.dir", "."));
+            var searchPaths = List.of(
+                runDir.resolve("src/main/resources"),
+                runDir.resolve("build/resources/main")
+            );
+            for (var searchPath : searchPaths) {
+                if (Files.exists(searchPath)) {
+                    try (var stream = Files.walk(searchPath)) {
+                        stream.filter(Files::isRegularFile).forEach(p -> {
+                            var filename = p.getFileName().toString();
+                            var matcher = pattern.matcher(filename);
+                            if (matcher.matches()) {
+                                var profile = matcher.group(1);
+                                try {
+                                    var content = Files.readString(p, StandardCharsets.UTF_8);
+                                    result.computeIfAbsent(profile, _ -> new ArrayList<>())
+                                        .add(new ProfileFile(filename, content));
+                                } catch (IOException ignored) {}
+                            }
+                        });
+                    }
+                }
+            }
+        } catch (IOException ignored) {}
+        return result;
     }
 
     private String readResource(String name) {
@@ -62,22 +99,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 try (var is = resource.openInputStream()) {
                     return new String(is.readAllBytes(), StandardCharsets.UTF_8);
                 }
-            } catch (IOException ignored) {}
+            } catch (IOException ignored) {
+            }
         }
 
         try {
             var runDir = Path.of(System.getProperty("user.dir", "."));
-            var searchPath = runDir.resolve("build/in-test-generated");
-            if (Files.exists(searchPath)) {
-                try (var stream = Files.walk(searchPath)) {
-                    var foundFile = stream
-                        .filter(Files::isRegularFile)
-                        .filter(p -> p.getFileName().toString().equals(name))
-                        .findFirst();
-
-                    if (foundFile.isPresent()) {
-                        return Files.readString(foundFile.get(), StandardCharsets.UTF_8);
-                    }
+            var searchPaths = List.of(
+                runDir.resolve("build/in-test-generated"),
+                runDir.resolve("build/in-test-generated/classes"),
+                runDir.resolve("build/resources/main")
+            );
+            for (var path : searchPaths) {
+                var file = path.resolve(name);
+                if (Files.exists(file)) {
+                    return Files.readString(file, StandardCharsets.UTF_8);
                 }
             }
         } catch (IOException ignored) {}
@@ -92,18 +128,17 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             return;
         }
 
-        loadConfigAtCompileTime();
+        loadAllConfigsAtCompileTime();
 
         for (var annotated : annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of())) {
             var config = (TypeElement) annotated.element();
             var moduleName = config.getSimpleName() + "AotModule";
             var packageElement = elements.getPackageOf(config);
             var packageName = packageElement.getQualifiedName().toString();
-            var mapperSimpleName = "$" + config.getSimpleName().toString() + "_ConfigValueMapper";
-            var implClassName = ClassName.get(packageName, mapperSimpleName, config.getSimpleName().toString() + "_Impl");
-            var generatedModuleClassName = ClassName.get(packageName, moduleName);
+            var mapperSimpleName = "$" + config.getSimpleName() + "_ConfigValueMapper";
+            var implClassName = ClassName.get(packageName, mapperSimpleName, config.getSimpleName() + "_Impl");
 
-            generatedModules.add(generatedModuleClassName);
+            generatedModules.add(ClassName.get(packageName, moduleName));
 
             var typeBuilder = TypeSpec.interfaceBuilder(moduleName)
                 .addOriginatingElement(config)
@@ -112,12 +147,9 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 .addModifiers(Modifier.PUBLIC);
 
             var path = AnnotationUtils.<String>parseAnnotationValueWithoutDefault(
-                AnnotationUtils.findAnnotation(config, ConfigClassNames.configSourceAnnotation),
-                "value"
+                AnnotationUtils.findAnnotation(config, ConfigClassNames.configSourceAnnotation), "value"
             );
-            if (path == null) {
-                path = "";
-            }
+            if (path == null) path = "";
 
             var configNameStr = config.getSimpleName().toString();
             var methodName = Character.toLowerCase(configNameStr.charAt(0)) + configNameStr.substring(1);
@@ -135,25 +167,47 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     var fullKey = path.isBlank() ? field.name() : path + "." + field.name();
                     var envKey = fullKey.toUpperCase().replace('.', '_').replace('-', '_');
 
-                    // Железно достаём значение из компиляционной мапы
-                    var rawValue = getConfigValue(compileTimeConfig, fullKey);
-                    var defaultsAccessor = CodeBlock.of("AotDefaults.INSTANCE.$L()", field.name());
+                    var isFirst = true;
+                    var hasProfiles = false;
+                    var profileValuesBuilder = CodeBlock.builder().add("new Object[] {");
+
+                    for (var entry : profileConfigs.entrySet()) {
+                        var profileVal = getConfigValue(entry.getValue(), fullKey);
+                        if (profileVal != null) {
+                            hasProfiles = true;
+                            if (!isFirst) profileValuesBuilder.add(", ");
+                            isFirst = false;
+                            profileValuesBuilder.add("$S, $S", entry.getKey(), profileVal.toString());
+                        }
+                    }
+                    profileValuesBuilder.add("}");
+                    var profileValuesCode = hasProfiles ? profileValuesBuilder.build() : CodeBlock.of("null");
+
+                    var baseVal = getConfigValue(baseConfig, fullKey);
+                    var baseValBuilder = CodeBlock.builder();
+                    appendLiteral(baseValBuilder, baseVal);
+                    var baseValCode = baseValBuilder.build();
+
+                    var hasDefault = false;
+                    for (var methodElement : javax.lang.model.util.ElementFilter.methodsIn(config.getEnclosedElements())) {
+                        if (methodElement.getSimpleName().toString().equals(field.name()) && methodElement.getModifiers().contains(Modifier.DEFAULT)) {
+                            hasDefault = true;
+                            break;
+                        }
+                    }
 
                     initCode.add("  ");
                     if (field.typeName().equals(TypeName.INT) || field.typeName().equals(TypeName.INT.box())) {
-                        initCode.add("resolveInt($S, $S, $L, $L)", envKey, fullKey, rawValue != null ? rawValue : "null", defaultsAccessor);
+                        initCode.add("resolveInt($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
                     } else if (field.typeName().equals(TypeName.BOOLEAN) || field.typeName().equals(TypeName.BOOLEAN.box())) {
-                        initCode.add("resolveBoolean($S, $S, $L, $L)", envKey, fullKey, rawValue != null ? rawValue : "null", defaultsAccessor);
+                        initCode.add("resolveBoolean($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
                     } else if (field.typeName().equals(ClassName.get(String.class))) {
-                        // Строковые литералы обязательно гоним через $S, чтобы JavaPoet ставил кавычки "localhost"
-                        initCode.add("resolveString($S, $S, $S, $L)", envKey, fullKey, rawValue != null ? rawValue.toString() : null, defaultsAccessor);
+                        initCode.add("resolveString($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
                     } else {
-                        initCode.add("resolveObject($S, $S, $L, $L)", envKey, fullKey, rawValue != null ? rawValue : "null", defaultsAccessor);
+                        initCode.add("resolveObject($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
                     }
 
-                    if (i < configFields.size() - 1) {
-                        initCode.add(",\n");
-                    }
+                    if (i < configFields.size() - 1) initCode.add(",\n");
                 }
                 initCode.add("\n);\n");
                 method.addCode(initCode.build());
@@ -161,49 +215,188 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             typeBuilder.addMethod(method.build());
             addResolveHelpers(typeBuilder);
-            typeBuilder.addMethod(createResolveObjectMethod());
-
-            var defaultsBuilder = TypeSpec.classBuilder("AotDefaults")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                .addSuperinterface(ClassName.get(config));
-
-            for (var methodElement : javax.lang.model.util.ElementFilter.methodsIn(config.getEnclosedElements())) {
-                if (methodElement.getModifiers().contains(Modifier.DEFAULT)) {
-                    continue;
-                }
-
-                var returnType = TypeName.get(methodElement.getReturnType());
-                var mSpec = MethodSpec.methodBuilder(methodElement.getSimpleName().toString())
-                    .addModifiers(Modifier.PUBLIC)
-                    .returns(returnType);
-
-                if (returnType.equals(TypeName.INT) || returnType.equals(TypeName.INT.box())) {
-                    mSpec.addStatement("return 0");
-                } else if (returnType.equals(TypeName.BOOLEAN) || returnType.equals(TypeName.BOOLEAN.box())) {
-                    mSpec.addStatement("return false");
-                } else {
-                    mSpec.addStatement("return null");
-                }
-                defaultsBuilder.addMethod(mSpec.build());
-            }
-
-            defaultsBuilder.addField(FieldSpec.builder(ClassName.get(config), "INSTANCE")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                .initializer("new AotDefaults()")
-                .build());
-
-            typeBuilder.addType(defaultsBuilder.build());
 
             var javaFile = JavaFile.builder(packageName, typeBuilder.build()).build();
             CommonUtils.safeWriteTo(processingEnv, javaFile);
         }
     }
 
-    private void generateGlobalAotConfigModule() {
-        if (generatedModules.isEmpty()) {
+    private void appendLiteral(CodeBlock.Builder builder, Object value) {
+        if (value == null) {
+            builder.add("null");
             return;
         }
+        switch (value) {
+            case String s -> builder.add("$S", s);
+            case List<?> list -> appendList(builder, list);
+            case Map<?, ?> map -> appendMap(builder, (Map<String, Object>) map);
+            default -> builder.add("$L", value);
+        }
+    }
 
+    private void appendList(CodeBlock.Builder builder, List<?> list) {
+        if (list.isEmpty()) {
+            builder.add("$T.of()", List.class);
+            return;
+        }
+        builder.add("$T.of(", List.class);
+        var iterator = list.iterator();
+        while (iterator.hasNext()) {
+            appendLiteral(builder, iterator.next());
+            if (iterator.hasNext()) {
+                builder.add(", ");
+            }
+        }
+        builder.add(")");
+    }
+
+    private void appendMap(CodeBlock.Builder builder, Map<String, Object> map) {
+        if (map.isEmpty()) {
+            builder.add("$T.of()", Map.class);
+            return;
+        }
+        builder.add("$T.of(", Map.class);
+        var iterator = map.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            builder.add("$S, ", entry.getKey());
+            appendLiteral(builder, entry.getValue());
+            if (iterator.hasNext()) {
+                builder.add(", ");
+            }
+        }
+        builder.add(")");
+    }
+
+    private void addResolveHelpers(TypeSpec.Builder typeBuilder) {
+        var profileHolder = TypeSpec.classBuilder("AotProfileHolder")
+            .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+            .addField(FieldSpec.builder(String[].class, "ACTIVE_PROFILES")
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                .initializer("""
+                    System.getProperty("kora.profiles") != null
+                    ? System.getProperty("kora.profiles").split(",")
+                    : (System.getenv("KORA_PROFILES") != null ? System.getenv("KORA_PROFILES").split(",") : new String[0])
+                    """)
+                .build())
+            .build();
+
+        typeBuilder.addType(profileHolder);
+
+        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveRaw")
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+            .returns(Object.class)
+            .addParameter(String.class, "envKey")
+            .addParameter(String.class, "sysKey")
+            .addParameter(Object[].class, "profileValues")
+            .addParameter(Object.class, "baseValue")
+            .addCode("""
+                var env = System.getenv(envKey);
+                if (env != null) return env;
+                var sys = System.getProperty(sysKey);
+                if (sys != null) return sys;
+                
+                if (profileValues != null) {
+                    var actives = AotProfileHolder.ACTIVE_PROFILES;
+                    for (var active : actives) {
+                        var trimmed = active.trim();
+                        for (int i = 0; i < profileValues.length; i += 2) {
+                            if (trimmed.equals(profileValues[i])) return profileValues[i+1];
+                        }
+                    }
+                }
+                return baseValue;
+                """)
+            .build());
+
+        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveString")
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+            .returns(String.class)
+            .addParameter(String.class, "envKey")
+            .addParameter(String.class, "sysKey")
+            .addParameter(Object[].class, "profileValues")
+            .addParameter(Object.class, "baseValue")
+            .addParameter(boolean.class, "hasDefault")
+            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
+            .addStatement("if (value != null) return value.toString()")
+            .addCode("""
+                if (hasDefault) return null;
+                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
+                """)
+            .build());
+
+        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveInt")
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+            .returns(int.class)
+            .addParameter(String.class, "envKey")
+            .addParameter(String.class, "sysKey")
+            .addParameter(Object[].class, "profileValues")
+            .addParameter(Object.class, "baseValue")
+            .addParameter(boolean.class, "hasDefault")
+            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
+            .addStatement("if (value instanceof Number n) return n.intValue()")
+            .addStatement("if (value != null) return Integer.parseInt(value.toString())")
+            .addCode("""
+                if (hasDefault) return 0;
+                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
+                """)
+            .build());
+
+        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveBoolean")
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+            .returns(boolean.class)
+            .addParameter(String.class, "envKey")
+            .addParameter(String.class, "sysKey")
+            .addParameter(Object[].class, "profileValues")
+            .addParameter(Object.class, "baseValue")
+            .addParameter(boolean.class, "hasDefault")
+            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
+            .addStatement("if (value instanceof Boolean b) return b")
+            .addStatement("if (value != null) return Boolean.parseBoolean(value.toString())")
+            .addCode("""
+                if (hasDefault) return false;
+                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
+                """)
+            .build());
+
+        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveObject")
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+            .returns(Object.class)
+            .addParameter(String.class, "envKey")
+            .addParameter(String.class, "sysKey")
+            .addParameter(Object[].class, "profileValues")
+            .addParameter(Object.class, "baseValue")
+            .addParameter(boolean.class, "hasDefault")
+            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
+            .addStatement("if (value != null) return value")
+            .addCode("""
+                if (hasDefault) return null;
+                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
+                """)
+            .build());
+    }
+
+    private Object getConfigValue(Map<String, Object> map, String path) {
+        if (map == null || path.isBlank()) return null;
+        if (map.containsKey(path)) return map.get(path);
+
+        var parts = path.split("\\.");
+        var current = (Object) map;
+
+        for (var part : parts) {
+            if (current instanceof Map<?, ?> currentMap) {
+                current = currentMap.get(part);
+            } else {
+                current = null;
+                break;
+            }
+        }
+        if (current != null) return current;
+        return map.get(path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path);
+    }
+
+    private void generateGlobalAotConfigModule() {
+        if (generatedModules.isEmpty()) return;
         var targetPackage = generatedModules.iterator().next().packageName();
         var globalModuleName = "AotConfigModule";
         var globalModuleBuilder = TypeSpec.interfaceBuilder(globalModuleName)
@@ -219,101 +412,5 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         CommonUtils.safeWriteTo(processingEnv, javaFile);
     }
 
-    private void addResolveHelpers(TypeSpec.Builder typeBuilder) {
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveString")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(String.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(String.class, "fileValue")
-            .addParameter(String.class, "fallback")
-            .addStatement("var value = resolveRaw(envKey, sysKey, fileValue)")
-            .addStatement("return value != null ? value.toString() : fallback")
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveInt")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(int.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object.class, "fileValue")
-            .addParameter(int.class, "fallback")
-            .addStatement("var value = resolveRaw(envKey, sysKey, fileValue)")
-            .addStatement("if (value == null) return fallback")
-            .addStatement("if (value instanceof Number n) return n.intValue()")
-            .addStatement("return Integer.parseInt(value.toString())")
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveBoolean")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(boolean.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object.class, "fileValue")
-            .addParameter(boolean.class, "fallback")
-            .addStatement("var value = resolveRaw(envKey, sysKey, fileValue)")
-            .addStatement("if (value == null) return fallback")
-            .addStatement("if (value instanceof Boolean b) return b")
-            .addStatement("return Boolean.parseBoolean(value.toString())")
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveObject")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(Object.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object.class, "fileValue")
-            .addParameter(Object.class, "fallback")
-            .addStatement("var value = resolveRaw(envKey, sysKey, fileValue)")
-            .addStatement("return value != null ? value : fallback")
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveRaw")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(Object.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object.class, "fileValue")
-            .addCode("""
-                        var env = System.getenv(envKey);
-                        if (env != null) return env;
-                        var sys = System.getProperty(sysKey);
-                        if (sys != null) return sys;
-                        return fileValue;
-                        """)
-            .build());
-    }
-
-    private Object getConfigValue(Map<String, Object> map, String path) {
-        if (map.containsKey(path)) {
-            return map.get(path);
-        }
-        var parts = path.split("\\.");
-        Object current = map;
-        for (var part : parts) {
-            if (current instanceof Map<?, ?> currentMap) {
-                current = currentMap.get(part);
-            } else {
-                return null;
-            }
-        }
-        return current;
-    }
-
-    private MethodSpec createResolveObjectMethod() {
-        return MethodSpec.methodBuilder("resolveObject")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(Object.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object.class, "fallback")
-            .addCode("""
-                var env = System.getenv(envKey);
-                if (env != null) return env;
-                var sys = System.getProperty(sysKey);
-                if (sys != null) return sys;
-                return fallback;
-                """)
-            .build();
-    }
+    private record ProfileFile(String filename, String content) {}
 }
