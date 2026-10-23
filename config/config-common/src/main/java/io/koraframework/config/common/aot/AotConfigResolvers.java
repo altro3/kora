@@ -32,6 +32,51 @@ public final class AotConfigResolvers {
         return activeProfiles;
     }
 
+    public static String toKebabCase(String input) {
+        if (input == null || input.isEmpty()) return input;
+
+        var result = new StringBuilder();
+        char[] chars = input.toCharArray();
+
+        for (int i = 0; i < chars.length; i++) {
+            char c = chars[i];
+            if (Character.isUpperCase(c)) {
+                if (i > 0) {
+                    char prev = chars[i - 1];
+                    boolean prevIsLowerOrDigit = Character.isLowerCase(prev) || Character.isDigit(prev);
+                    boolean nextIsLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
+
+                    if (prevIsLowerOrDigit || (Character.isUpperCase(prev) && nextIsLower)) {
+                        result.append('-');
+                    }
+                }
+                result.append(Character.toLowerCase(c));
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
+    }
+
+    public static String toCamelCase(String input) {
+        if (input == null || !input.contains("-")) return input;
+        var result = new StringBuilder();
+        boolean capitalizeNext = false;
+        for (char c : input.toCharArray()) {
+            if (c == '-') {
+                capitalizeNext = true;
+            } else {
+                if (capitalizeNext) {
+                    result.append(Character.toUpperCase(c));
+                    capitalizeNext = false;
+                } else {
+                    result.append(c);
+                }
+            }
+        }
+        return result.toString();
+    }
+
     private @Nullable Object resolveRaw(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue) {
         var env = System.getenv(envKey);
         if (env != null) return env;
@@ -48,6 +93,16 @@ public final class AotConfigResolvers {
 
         var sys = System.getProperty(sysKey);
         if (sys != null) return sys;
+
+        if (sysKey.contains("-")) {
+            var camelKey = toCamelCase(sysKey);
+            var sysCamel = System.getProperty(camelKey);
+            if (sysCamel != null) return sysCamel;
+        } else {
+            var kebabKey = toKebabCase(sysKey);
+            var sysKebab = System.getProperty(kebabKey);
+            if (sysKebab != null) return sysKebab;
+        }
 
         if (profileValues != null) {
             var profiles = getActiveProfiles();

@@ -13,15 +13,14 @@ public final class HoconAotParser {
                 var profileConfig = ConfigFactory.parseString(profileContent);
                 mainConfig = profileConfig.withFallback(mainConfig);
             }
-            // Позволяем компилятору не падать на отсутствующих ENV переменныx
-            var resolved = mainConfig.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
+            var resolved = mainConfig.resolve(ConfigResolveOptions.defaults()
+                .setAllowUnresolved(true));
             return toAotMap(resolved.root());
         } catch (Exception ignored) {
             return Map.of();
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static Map<String, Object> toAotMap(ConfigObject object) {
         var result = new LinkedHashMap<String, Object>(object.size());
         for (var entry : object.entrySet()) {

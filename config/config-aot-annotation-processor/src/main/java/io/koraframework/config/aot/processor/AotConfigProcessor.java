@@ -14,6 +14,9 @@ import java.util.*;
 import java.util.regex.*;
 import java.util.stream.*;
 
+import static io.koraframework.config.common.aot.AotConfigResolvers.toCamelCase;
+import static io.koraframework.config.common.aot.AotConfigResolvers.toKebabCase;
+
 public class AotConfigProcessor extends AbstractKoraProcessor {
     private final Map<String, Object> baseConfig = new HashMap<>();
     private final Map<String, Map<String, Object>> profileConfigs = new HashMap<>();
@@ -394,51 +397,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         return null;
-    }
-
-    private static String toKebabCase(String input) {
-        if (input == null || input.isEmpty()) return input;
-
-        var result = new StringBuilder();
-        char[] chars = input.toCharArray();
-
-        for (int i = 0; i < chars.length; i++) {
-            char c = chars[i];
-            if (Character.isUpperCase(c)) {
-                if (i > 0) {
-                    char prev = chars[i - 1];
-                    boolean prevIsLowerOrDigit = Character.isLowerCase(prev) || Character.isDigit(prev);
-                    boolean nextIsLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
-
-                    if (prevIsLowerOrDigit || (Character.isUpperCase(prev) && nextIsLower)) {
-                        result.append('-');
-                    }
-                }
-                result.append(Character.toLowerCase(c));
-            } else {
-                result.append(c);
-            }
-        }
-        return result.toString();
-    }
-
-    private static String toCamelCase(String input) {
-        if (input == null || !input.contains("-")) return input;
-        var result = new StringBuilder();
-        boolean capitalizeNext = false;
-        for (char c : input.toCharArray()) {
-            if (c == '-') {
-                capitalizeNext = true;
-            } else {
-                if (capitalizeNext) {
-                    result.append(Character.toUpperCase(c));
-                    capitalizeNext = false;
-                } else {
-                    result.append(c);
-                }
-            }
-        }
-        return result.toString();
     }
 
     private void generateGlobalAotConfigModule() {
