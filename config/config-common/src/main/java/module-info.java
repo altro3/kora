@@ -12,4 +12,5 @@ module kora.config.common {
     exports io.koraframework.config.common.impl;
     exports io.koraframework.config.common.util;
     exports io.koraframework.config.common.exception;
+    exports io.koraframework.config.common.aot;
 }

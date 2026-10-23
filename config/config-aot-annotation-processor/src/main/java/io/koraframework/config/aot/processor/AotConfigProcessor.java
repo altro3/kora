@@ -99,17 +99,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 try (var is = resource.openInputStream()) {
                     return new String(is.readAllBytes(), StandardCharsets.UTF_8);
                 }
-            } catch (IOException ignored) {
-            }
+            } catch (IOException ignored) {}
         }
 
         try {
             var runDir = Path.of(System.getProperty("user.dir", "."));
             var searchPaths = List.of(
+                runDir.resolve("src/main/resources"),
+                runDir.resolve("build/resources/main"),
                 runDir.resolve("build/in-test-generated"),
                 runDir.resolve("build/in-test-generated/classes"),
-                runDir.resolve("build/resources/main")
+                runDir.resolve("build/in-test-generated/sources"),
+                Path.of("build/in-test-generated/classes"),
+                Path.of("build/in-test-generated/sources")
             );
+
             for (var path : searchPaths) {
                 var file = path.resolve(name);
                 if (Files.exists(file)) {
@@ -130,6 +134,9 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
         loadAllConfigsAtCompileTime();
 
+        var resolversClass = ClassName.get("io.koraframework.config.common.aot", "AotConfigResolvers");
+        var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
+
         for (var annotated : annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of())) {
             var config = (TypeElement) annotated.element();
             var moduleName = config.getSimpleName() + "AotModule";
@@ -137,6 +144,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             var packageName = packageElement.getQualifiedName().toString();
             var mapperSimpleName = "$" + config.getSimpleName() + "_ConfigValueMapper";
             var implClassName = ClassName.get(packageName, mapperSimpleName, config.getSimpleName() + "_Impl");
+            var mapperClassName = ClassName.get(packageName, mapperSimpleName);
 
             generatedModules.add(ClassName.get(packageName, moduleName));
 
@@ -155,7 +163,17 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             var methodName = Character.toLowerCase(configNameStr.charAt(0)) + configNameStr.substring(1);
             var method = MethodSpec.methodBuilder(methodName)
                 .returns(TypeName.get(config.asType()))
+                .addAnnotation(defaultComponentAnno)
                 .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT);
+
+            // 1. Проверяем НА УРОВНЕ КОМПИЛЯЦИИ, есть ли вообще дефолты в этом интерфейсе
+            var interfaceHasAnyDefaults = false;
+            for (var methodElement : javax.lang.model.util.ElementFilter.methodsIn(config.getEnclosedElements())) {
+                if (methodElement.getModifiers().contains(Modifier.DEFAULT)) {
+                    interfaceHasAnyDefaults = true;
+                    break;
+                }
+            }
 
             var configFields = ConfigUtils.parseFields(types, config).left();
             if (configFields != null && !configFields.isEmpty()) {
@@ -177,7 +195,8 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                             hasProfiles = true;
                             if (!isFirst) profileValuesBuilder.add(", ");
                             isFirst = false;
-                            profileValuesBuilder.add("$S, $S", entry.getKey(), profileVal.toString());
+                            profileValuesBuilder.add("$S, ", entry.getKey());
+                            appendLiteral(profileValuesBuilder, profileVal);
                         }
                     }
                     profileValuesBuilder.add("}");
@@ -188,6 +207,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     appendLiteral(baseValBuilder, baseVal);
                     var baseValCode = baseValBuilder.build();
 
+                    // Проверяем, имеет ли конкретно это поле дефолтное значение
                     var hasDefault = false;
                     for (var methodElement : javax.lang.model.util.ElementFilter.methodsIn(config.getEnclosedElements())) {
                         if (methodElement.getSimpleName().toString().equals(field.name()) && methodElement.getModifiers().contains(Modifier.DEFAULT)) {
@@ -197,14 +217,37 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     }
 
                     initCode.add("  ");
+                    boolean needsFullParams = hasProfiles || baseVal != null;
+
+                    // 2. Строим выражение для дефолта: если дефолтов в интерфейсе вообще нет, сразу пишем литерал
+                    String defExpr;
                     if (field.typeName().equals(TypeName.INT) || field.typeName().equals(TypeName.INT.box())) {
-                        initCode.add("resolveInt($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
+                        defExpr = interfaceHasAnyDefaults ? CodeBlock.of("$T.DEFAULTS.$L()", mapperClassName, field.name()).toString() : "0";
+                        if (needsFullParams) {
+                            initCode.add("resolveInt($S, $S, $L, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault, defExpr);
+                        } else {
+                            initCode.add("resolveInt($S, $S, $L, $L)", envKey, fullKey, hasDefault, defExpr);
+                        }
                     } else if (field.typeName().equals(TypeName.BOOLEAN) || field.typeName().equals(TypeName.BOOLEAN.box())) {
-                        initCode.add("resolveBoolean($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
+                        defExpr = interfaceHasAnyDefaults ? CodeBlock.of("$T.DEFAULTS.$L()", mapperClassName, field.name()).toString() : "false";
+                        if (needsFullParams) {
+                            initCode.add("resolveBoolean($S, $S, $L, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault, defExpr);
+                        } else {
+                            initCode.add("resolveBoolean($S, $S, $L, $L)", envKey, fullKey, hasDefault, defExpr);
+                        }
                     } else if (field.typeName().equals(ClassName.get(String.class))) {
-                        initCode.add("resolveString($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
+                        defExpr = interfaceHasAnyDefaults ? CodeBlock.of("$T.DEFAULTS.$L()", mapperClassName, field.name()).toString() : "null";
+                        if (needsFullParams) {
+                            initCode.add("resolveString($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, defExpr);
+                        } else {
+                            initCode.add("resolveString($S, $S, $L)", envKey, fullKey, defExpr);
+                        }
                     } else {
-                        initCode.add("resolveObject($S, $S, $L, $L, $L)", envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
+                        if (needsFullParams) {
+                            initCode.add("($T) resolveObject($S, $S, $L, $L, $L)", field.typeName(), envKey, fullKey, profileValuesCode, baseValCode, hasDefault);
+                        } else {
+                            initCode.add("($T) resolveObject($S, $S, $L)", field.typeName(), envKey, fullKey, hasDefault);
+                        }
                     }
 
                     if (i < configFields.size() - 1) initCode.add(",\n");
@@ -214,9 +257,11 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             }
 
             typeBuilder.addMethod(method.build());
-            addResolveHelpers(typeBuilder);
 
-            var javaFile = JavaFile.builder(packageName, typeBuilder.build()).build();
+            var javaFile = JavaFile.builder(packageName, typeBuilder.build())
+                .addStaticImport(resolversClass, "*")
+                .build();
+
             CommonUtils.safeWriteTo(processingEnv, javaFile);
         }
     }
@@ -228,9 +273,11 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
         switch (value) {
             case String s -> builder.add("$S", s);
+            case Number n -> builder.add("$L", n);
+            case Boolean b -> builder.add("$L", b);
             case List<?> list -> appendList(builder, list);
             case Map<?, ?> map -> appendMap(builder, (Map<String, Object>) map);
-            default -> builder.add("$L", value);
+            default -> builder.add("$S", value.toString());
         }
     }
 
@@ -239,15 +286,13 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             builder.add("$T.of()", List.class);
             return;
         }
-        builder.add("$T.of(", List.class);
+        builder.add("$T.asList(new Object[]{", Arrays.class);
         var iterator = list.iterator();
         while (iterator.hasNext()) {
             appendLiteral(builder, iterator.next());
-            if (iterator.hasNext()) {
-                builder.add(", ");
-            }
+            if (iterator.hasNext()) builder.add(", ");
         }
-        builder.add(")");
+        builder.add("})");
     }
 
     private void appendMap(CodeBlock.Builder builder, Map<String, Object> map) {
@@ -255,144 +300,72 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             builder.add("$T.of()", Map.class);
             return;
         }
-        builder.add("$T.of(", Map.class);
+        builder.add("Stream.of(\n");
         var iterator = map.entrySet().iterator();
         while (iterator.hasNext()) {
             var entry = iterator.next();
-            builder.add("$S, ", entry.getKey());
+            builder.add("  new $T.SimpleImmutableEntry<>($S, ", AbstractMap.class, entry.getKey());
             appendLiteral(builder, entry.getValue());
-            if (iterator.hasNext()) {
-                builder.add(", ");
-            }
+            builder.add(")");
+            if (iterator.hasNext()) builder.add(",\n");
         }
-        builder.add(")");
-    }
-
-    private void addResolveHelpers(TypeSpec.Builder typeBuilder) {
-        var profileHolder = TypeSpec.classBuilder("AotProfileHolder")
-            .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-            .addField(FieldSpec.builder(String[].class, "ACTIVE_PROFILES")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                .initializer("""
-                    System.getProperty("kora.profiles") != null
-                    ? System.getProperty("kora.profiles").split(",")
-                    : (System.getenv("KORA_PROFILES") != null ? System.getenv("KORA_PROFILES").split(",") : new String[0])
-                    """)
-                .build())
-            .build();
-
-        typeBuilder.addType(profileHolder);
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveRaw")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(Object.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object[].class, "profileValues")
-            .addParameter(Object.class, "baseValue")
-            .addCode("""
-                var env = System.getenv(envKey);
-                if (env != null) return env;
-                var sys = System.getProperty(sysKey);
-                if (sys != null) return sys;
-                
-                if (profileValues != null) {
-                    var actives = AotProfileHolder.ACTIVE_PROFILES;
-                    for (var active : actives) {
-                        var trimmed = active.trim();
-                        for (int i = 0; i < profileValues.length; i += 2) {
-                            if (trimmed.equals(profileValues[i])) return profileValues[i+1];
-                        }
-                    }
-                }
-                return baseValue;
-                """)
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveString")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(String.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object[].class, "profileValues")
-            .addParameter(Object.class, "baseValue")
-            .addParameter(boolean.class, "hasDefault")
-            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
-            .addStatement("if (value != null) return value.toString()")
-            .addCode("""
-                if (hasDefault) return null;
-                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
-                """)
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveInt")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(int.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object[].class, "profileValues")
-            .addParameter(Object.class, "baseValue")
-            .addParameter(boolean.class, "hasDefault")
-            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
-            .addStatement("if (value instanceof Number n) return n.intValue()")
-            .addStatement("if (value != null) return Integer.parseInt(value.toString())")
-            .addCode("""
-                if (hasDefault) return 0;
-                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
-                """)
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveBoolean")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(boolean.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object[].class, "profileValues")
-            .addParameter(Object.class, "baseValue")
-            .addParameter(boolean.class, "hasDefault")
-            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
-            .addStatement("if (value instanceof Boolean b) return b")
-            .addStatement("if (value != null) return Boolean.parseBoolean(value.toString())")
-            .addCode("""
-                if (hasDefault) return false;
-                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
-                """)
-            .build());
-
-        typeBuilder.addMethod(MethodSpec.methodBuilder("resolveObject")
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
-            .returns(Object.class)
-            .addParameter(String.class, "envKey")
-            .addParameter(String.class, "sysKey")
-            .addParameter(Object[].class, "profileValues")
-            .addParameter(Object.class, "baseValue")
-            .addParameter(boolean.class, "hasDefault")
-            .addStatement("var value = resolveRaw(envKey, sysKey, profileValues, baseValue)")
-            .addStatement("if (value != null) return value")
-            .addCode("""
-                if (hasDefault) return null;
-                throw new java.util.NoSuchElementException("Required configuration property is missing: " + sysKey);
-                """)
-            .build());
+        builder.add("\n).collect($T.toMap(Map.Entry::getKey, Map.Entry::getValue, (a,b)->b, $T::new))",
+            java.util.stream.Collectors.class, LinkedHashMap.class);
     }
 
     private Object getConfigValue(Map<String, Object> map, String path) {
         if (map == null || path.isBlank()) return null;
-        if (map.containsKey(path)) return map.get(path);
 
         var parts = path.split("\\.");
-        var current = (Object) map;
+        Object current = map;
 
         for (var part : parts) {
             if (current instanceof Map<?, ?> currentMap) {
-                current = currentMap.get(part);
+                var value = currentMap.get(part);
+                if (value != null) {
+                    current = value;
+                    continue;
+                }
+
+                var kebabPart = toKebabCase(part);
+                value = currentMap.get(kebabPart);
+                if (value != null) {
+                    current = value;
+                    continue;
+                }
+
+                return null;
             } else {
-                current = null;
-                break;
+                return null;
             }
         }
-        if (current != null) return current;
-        return map.get(path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path);
+        return current;
+    }
+
+    private static String toKebabCase(String input) {
+        if (input == null || input.isEmpty()) return input;
+
+        var result = new StringBuilder();
+        char[] chars = input.toCharArray();
+
+        for (int i = 0; i < chars.length; i++) {
+            char c = chars[i];
+            if (Character.isUpperCase(c)) {
+                if (i > 0) {
+                    char prev = chars[i - 1];
+                    boolean prevIsLowerOrDigit = Character.isLowerCase(prev) || Character.isDigit(prev);
+                    boolean nextIsLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
+
+                    if (prevIsLowerOrDigit || (Character.isUpperCase(prev) && nextIsLower)) {
+                        result.append('-');
+                    }
+                }
+                result.append(Character.toLowerCase(c));
+            } else {
+                result.append(c);
+            }
+        }
+        return result.toString();
     }
 
     private void generateGlobalAotConfigModule() {
