@@ -16,6 +16,7 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
     @Override
     protected String commonImports() {
         return super.commonImports() + """
+            import io.koraframework.config.common.annotation.ConfigSource;
             import io.koraframework.config.annotation.processor.*;
             """;
     }
@@ -26,6 +27,10 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
             Files.createDirectories(targetDir);
             createdResourcePath = targetDir.resolve(configFileName);
             Files.writeString(createdResourcePath, configContent);
+
+            var classOutputDir = Paths.get("build", "in-test-generated", "classes");
+            Files.createDirectories(classOutputDir);
+            Files.writeString(classOutputDir.resolve(configFileName), configContent);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
