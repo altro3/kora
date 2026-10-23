@@ -415,8 +415,6 @@ public class ConfigParserGenerator {
             classBuilder.addMethod(getterBuilder.build());
         }
 
-        // ... [Начало метода без изменений до hashCodeBuilder] ...
-
         var hashCodeBuilder = MethodSpec.methodBuilder("hashCode")
             .addModifiers(Modifier.PUBLIC)
             .addAnnotation(Override.class)

@@ -1,6 +1,7 @@
 dependencies {
     api project(":core:kora-app-annotation-processor")
     api project(':aop:aop-annotation-processor')
+    api project(':config:config-aot-annotation-processor')
     api project(':config:config-annotation-processor')
     api project(':json:json-annotation-processor')
     api project(':http:http-server-annotation-processor')

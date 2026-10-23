@@ -7,6 +7,7 @@ import io.koraframework.kora.app.annotation.processor.declaration.*;
 import io.koraframework.kora.app.annotation.processor.interceptor.*;
 
 import javax.lang.model.element.*;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.function.*;
 
@@ -128,6 +129,7 @@ public class GraphFileGenerator {
 
         var baseStaticBlock = CodeBlock.builder()
             .addStatement("var _ = $T.getenv($S)", System.class, "KORA_WARMUP_CHECK")
+            .addStatement("var _ = $T.systemDefault()", ZoneId.class)
             .addStatement("impl = new $T()", implClass)
             .addStatement("graphDraw = new $T($T.class, (short) $L, (short) $L, (short) $L, (short) $L, (short) $L)",
                 CommonClassNames.applicationGraphDraw, classElement,

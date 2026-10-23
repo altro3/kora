@@ -1,28 +1,21 @@
 package io.koraframework.http.server.undertow;
 
-import io.koraframework.application.graph.ValueOf;
-import io.koraframework.common.Configurer;
-import io.koraframework.common.readiness.ReadinessProbe;
-import io.koraframework.common.readiness.ReadinessProbeFailure;
-import io.koraframework.common.util.TimeUtils;
-import io.koraframework.http.server.common.HttpServer;
-import io.koraframework.http.server.common.HttpServerConfig;
-import io.koraframework.logging.common.arg.StructuredArgument;
-import io.undertow.Undertow;
-import io.undertow.UndertowOptions;
-import io.undertow.server.HttpHandler;
-import io.undertow.server.HttpServerExchange;
-import io.undertow.server.handlers.GracefulShutdownHandler;
-import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.xnio.Options;
-import org.xnio.XnioWorker;
+import io.koraframework.application.graph.*;
+import io.koraframework.common.*;
+import io.koraframework.common.readiness.*;
+import io.koraframework.common.util.*;
+import io.koraframework.http.server.common.*;
+import io.koraframework.logging.common.arg.*;
+import io.undertow.*;
+import io.undertow.server.*;
+import io.undertow.server.handlers.*;
+import org.jspecify.annotations.*;
+import org.slf4j.*;
+import org.xnio.*;
 
-import java.net.BindException;
-import java.net.InetSocketAddress;
-import java.time.Duration;
-import java.util.concurrent.atomic.AtomicReference;
+import java.net.*;
+import java.time.*;
+import java.util.concurrent.atomic.*;
 
 public class UndertowHttpServer implements HttpServer, ReadinessProbe {
 
@@ -31,6 +24,7 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final ValueOf<HttpHandler> httpHandler;
     private final ValueOf<HttpServerConfig> httpServerConfig;
+    private final ValueOf<UndertowConfig> undertowConfig;
     private final GracefulShutdownHandler gracefulShutdown;
     private final String name;
     private final XnioWorker xnioWorker;
@@ -47,6 +41,7 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
                               @Nullable Configurer<Undertow.Builder> configurer) {
         this.httpHandler = httpHandler;
         this.httpServerConfig = httpServerConfig;
+        this.undertowConfig = undertowConfig;
         this.name = name;
         this.xnioWorker = xnioWorker;
         this.configurer = configurer;
@@ -108,9 +103,12 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
             .setHandler(this.gracefulShutdown)
             .addHttpListener(config.port(), "0.0.0.0")
             .setWorker(this.xnioWorker)
+            .setIoThreads(undertowConfig.get().ioThreads())
             .setSocketOption(Options.READ_TIMEOUT, ((int) config.socketReadTimeout().toMillis()))
             .setSocketOption(Options.WRITE_TIMEOUT, ((int) config.socketWriteTimeout().toMillis()))
             .setSocketOption(Options.KEEP_ALIVE, config.socketKeepAliveEnabled())
+            .setSocketOption(Options.TCP_NODELAY, true)
+            .setServerOption(UndertowOptions.ENABLE_STATISTICS, false)
             .setServerOption(UndertowOptions.ALWAYS_SET_KEEP_ALIVE, config.headerKeepAliveEnabled())
             .setServerOption(UndertowOptions.ALWAYS_SET_DATE, config.headerServerDateEnabled())
             .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, config.maxRequestBodySize().toBytes());
