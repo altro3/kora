@@ -268,49 +268,35 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             }
 
             if (isNestedInterface) {
-                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, false);\n", currentPath, field.name()));
+                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false);\n", currentPath, field.name()));
                 generateFieldResolvers(chunkAppender, targetElement, fullKey, parser);
                 continue;
             }
 
             var baseVal = parser.getConfigValue(fullKey);
-            var baseValBlock = convertToCodeBlock(baseVal);
 
-            chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
-                currentPath, field.name(), baseValBlock, hasInterfaceDefault
+            CodeBlock baseValBlock;
+            CodeBlock fallbackBlock = CodeBlock.of("null");
+
+            if (baseVal instanceof HoconAotParser.FallbackHolder holder) {
+                baseValBlock = CodeBlock.of("$S", holder.rawExpression);
+                fallbackBlock = convertToCodeBlock(holder.fallbackValue);
+            } else {
+                baseValBlock = convertToCodeBlock(baseVal);
+            }
+
+            // Передаем и базовое выражение, и вычисленный при компиляции дефолт
+            chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L);\n",
+                currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault
             ));
         }
     }
 
     private CodeBlock convertToCodeBlock(Object koraValue) {
-        if (koraValue == null) {
-            return CodeBlock.of("null");
-        }
-
-        if (koraValue instanceof String str) {
-            String trimmed = str.trim();
-            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                try {
-                    var parsed = com.typesafe.config.ConfigFactory.parseString("value = " + trimmed);
-                    var configList = parsed.getList("value");
-
-                    var builder = CodeBlock.builder().add("new Object[] { ");
-                    for (int i = 0; i < configList.size(); i++) {
-                        builder.add(convertToCodeBlock(configList.get(i).unwrapped()));
-                        if (i < configList.size() - 1) builder.add(", ");
-                    }
-                    return builder.add(" }").build();
-                } catch (Exception ignored) {}
-            }
-            return CodeBlock.of("$S", str);
-        }
-
-        if (koraValue instanceof Number num) {
-            return CodeBlock.of("$L", num);
-        }
-        if (koraValue instanceof Boolean bool) {
-            return CodeBlock.of("$L", bool);
-        }
+        if (koraValue == null) return CodeBlock.of("null");
+        if (koraValue instanceof String str) return CodeBlock.of("$S", str);
+        if (koraValue instanceof Number num) return CodeBlock.of("$L", num);
+        if (koraValue instanceof Boolean bool) return CodeBlock.of("$L", bool);
         if (koraValue instanceof List<?> list) {
             var builder = CodeBlock.builder().add("new Object[] { ");
             for (int i = 0; i < list.size(); i++) {
@@ -329,23 +315,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             }
             return builder.add("\n)").build();
         }
-
-        if (koraValue instanceof ConfigValue.StringValue str) {
-            return convertToCodeBlock(str.value());
-        }
-        if (koraValue instanceof ConfigValue.NumberValue num) {
-            return CodeBlock.of("$L", num.value());
-        }
-        if (koraValue instanceof ConfigValue.BooleanValue bool) {
-            return CodeBlock.of("$L", bool.value());
-        }
-        if (koraValue instanceof ConfigValue.ArrayValue array) {
-            return convertToCodeBlock(array.value());
-        }
-        if (koraValue instanceof ConfigValue.ObjectValue obj) {
-            return convertToCodeBlock(obj.value());
-        }
-
         return CodeBlock.of("$S", koraValue.toString());
     }
 
