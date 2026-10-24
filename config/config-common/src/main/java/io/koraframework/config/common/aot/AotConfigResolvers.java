@@ -25,8 +25,8 @@ public final class AotConfigResolvers {
             rootMap.put(fieldName, value);
         } else {
             String[] pathParts = configPath.split("\\.");
-            Map<String, ConfigValue<?>> currentMap = rootMap;
-            SimpleConfigValueOrigin origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(pathParts[0]));
+            var currentMap = rootMap;
+            var origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(pathParts[0]));
 
             for (int i = 0; i < pathParts.length; i++) {
                 String part = pathParts[i];

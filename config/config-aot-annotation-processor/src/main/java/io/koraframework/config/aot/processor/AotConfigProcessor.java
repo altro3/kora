@@ -10,15 +10,16 @@ import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
-import javax.lang.model.util.*;
 import javax.tools.*;
 import java.io.*;
 import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.function.*;
 
 public class AotConfigProcessor extends AbstractKoraProcessor {
 
+    private static final int MAX_FIELDS_PER_CHUNK = 400;
     private static final ConfigRenderOptions CONCISE_NO_JSON = ConfigRenderOptions.concise().setJson(false);
 
     private Config baseConfig = null;
@@ -106,7 +107,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         if (!isConfigLoaded) {
-            var firstConfig = (TypeElement) targetElements.get(0).element();
+            var firstConfig = (TypeElement) targetElements.getFirst().element();
             var firstPackageElement = elements.getPackageOf(firstConfig);
             var firstPackageName = firstPackageElement.getQualifiedName().toString();
             loadAllConfigsAtCompileTime(firstPackageName);
@@ -158,7 +159,55 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 initCode.add("  $T.root()\n", valuePath);
                 initCode.add(");\n\n");
                 initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, configValue);
-                generateFieldResolvers(initCode, config, path, baseConfig);
+
+                class ChunkContext {
+                    int totalFields = 0;
+                    int currentChunkMethodIndex = 0;
+                    CodeBlock.Builder currentChunkBuilder = CodeBlock.builder();
+                }
+                final ChunkContext ctx = new ChunkContext();
+
+                final String currentMethodName = methodName;
+                Consumer<CodeBlock> chunkAppender = (codeLine) -> {
+                    ctx.currentChunkBuilder.add(codeLine);
+                    ctx.totalFields++;
+
+                    if (ctx.totalFields % MAX_FIELDS_PER_CHUNK == 0) {
+                        String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
+                        var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
+                            .addModifiers(Modifier.PRIVATE)
+                            .addParameter(ParameterizedTypeName.get(
+                                ClassName.get(Map.class),
+                                ClassName.get(String.class),
+                                ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
+                            ), "rootMap")
+                            .addCode(ctx.currentChunkBuilder.build())
+                            .build();
+                        typeBuilder.addMethod(chunkMethod);
+                        initCode.add("$L(rootMap);\n", chunkMethodName);
+
+                        ctx.currentChunkBuilder = CodeBlock.builder();
+                        ctx.currentChunkMethodIndex++;
+                    }
+                };
+
+                generateFieldResolvers(chunkAppender, config, path, baseConfig);
+
+                if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
+                    String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
+                    var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
+                        .addModifiers(Modifier.PRIVATE)
+                        .addParameter(ParameterizedTypeName.get(
+                            ClassName.get(Map.class),
+                            ClassName.get(String.class),
+                            ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
+                        ), "rootMap")
+                        .addCode(ctx.currentChunkBuilder.build())
+                        .build();
+                    typeBuilder.addMethod(chunkMethod);
+                    initCode.add("$L(rootMap);\n", chunkMethodName);
+                }
+
                 initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", objectValue);
 
                 if (path.isBlank()) {
@@ -168,7 +217,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 }
 
                 initCode.add("return mapper.map(targetValue);\n");
-
                 method.addCode(initCode.build());
             }
 
@@ -182,7 +230,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
     }
 
-    private void generateFieldResolvers(com.palantir.javapoet.CodeBlock.Builder initCode, javax.lang.model.element.TypeElement configElement, String currentPath, com.typesafe.config.Config currentConfig) {
+    private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, Config currentConfig) {
         var configFields = ConfigUtils.parseFields(types, configElement).left();
         if (configFields == null) return;
 
@@ -192,34 +240,31 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             var typeName = field.typeName();
 
             boolean isNestedInterface = false;
-            javax.lang.model.element.TypeElement targetElement = null;
+            TypeElement targetElement = null;
 
-            if (typeName instanceof com.palantir.javapoet.ClassName className && !isStandardType(className.toString())) {
+            if (typeName instanceof ClassName className && !isStandardType(className.toString())) {
                 targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
                 if (targetElement == null) {
                     String binaryName = className.packageName() + "." + String.join("$", className.simpleNames());
                     targetElement = processingEnv.getElementUtils().getTypeElement(binaryName);
                 }
-
-                if (targetElement != null && targetElement.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
+                if (targetElement != null && targetElement.getKind() == ElementKind.INTERFACE) {
                     isNestedInterface = true;
                 }
             }
 
             if (isNestedInterface) {
-                initCode.add("resolveAndPut(rootMap, $S, $S, null, false);\n",
-                    currentPath, field.name()
-                );
-                generateFieldResolvers(initCode, targetElement, fullKey, currentConfig);
+                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, false);\n", currentPath, field.name()));
+                generateFieldResolvers(chunkAppender, targetElement, fullKey, currentConfig);
                 continue;
             }
 
             var baseVal = getConfigValue(currentConfig, fullKey);
             var baseValBlock = baseVal != null ? CodeBlock.of("$S", baseVal.toString()) : CodeBlock.of("null");
 
-            initCode.add("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
+            chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
                 currentPath, field.name(), baseValBlock, hasInterfaceDefault
-            );
+            ));
         }
     }
 
@@ -229,21 +274,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             || className.startsWith("java.util.");
     }
 
-    private Object getConfigValue(com.typesafe.config.Config config, String path) {
+    private Object getConfigValue(Config config, String path) {
         if (config == null || path.isBlank()) {
             return null;
         }
 
         String[] parts = path.split("\\.");
-        com.typesafe.config.ConfigObject currentObject = config.root();
-        com.typesafe.config.ConfigValue targetValue = null;
+        ConfigObject currentObject = config.root();
+        ConfigValue targetValue = null;
 
         for (int i = 0; i < parts.length; i++) {
             String key = parts[i];
             targetValue = currentObject.get(key);
 
             if (targetValue == null) {
-                java.util.List<String> relaxedNames = io.koraframework.config.common.PathElement.get(key).relaxedNames();
+                List<String> relaxedNames = PathElement.get(key).relaxedNames();
                 for (String variant : relaxedNames) {
                     targetValue = currentObject.get(variant);
                     if (targetValue != null) {
@@ -258,28 +303,28 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             if (i < parts.length - 1) {
                 try {
-                    if (targetValue.valueType() == com.typesafe.config.ConfigValueType.OBJECT) {
-                        currentObject = (com.typesafe.config.ConfigObject) targetValue;
+                    if (targetValue.valueType() == ConfigValueType.OBJECT) {
+                        currentObject = (ConfigObject) targetValue;
                     } else {
                         return null;
                     }
-                } catch (com.typesafe.config.ConfigException.NotResolved notResolved) {
+                } catch (ConfigException.NotResolved notResolved) {
                     return targetValue.render(CONCISE_NO_JSON);
                 }
             }
         }
 
         try {
-            if (targetValue.valueType() == com.typesafe.config.ConfigValueType.NULL) {
+            if (targetValue.valueType() == ConfigValueType.NULL) {
                 return null;
             }
 
-            if (targetValue.valueType() == com.typesafe.config.ConfigValueType.LIST) {
-                return targetValue.render(com.typesafe.config.ConfigRenderOptions.concise());
+            if (targetValue.valueType() == ConfigValueType.LIST) {
+                return targetValue.render(ConfigRenderOptions.concise());
             }
 
             return targetValue.unwrapped();
-        } catch (com.typesafe.config.ConfigException.NotResolved notResolved) {
+        } catch (ConfigException.NotResolved notResolved) {
             return targetValue.render(CONCISE_NO_JSON);
         }
     }
