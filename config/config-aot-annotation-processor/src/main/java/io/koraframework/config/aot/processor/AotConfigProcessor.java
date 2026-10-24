@@ -3,6 +3,7 @@ package io.koraframework.config.aot.processor;
 import com.palantir.javapoet.*;
 import com.typesafe.config.*;
 import com.typesafe.config.Config;
+import com.typesafe.config.ConfigValue;
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.*;
 import io.koraframework.config.common.*;
@@ -17,6 +18,9 @@ import java.nio.file.*;
 import java.util.*;
 
 public class AotConfigProcessor extends AbstractKoraProcessor {
+
+    private static final ConfigRenderOptions CONCISE_NO_JSON = ConfigRenderOptions.concise().setJson(false);
+
     private Config baseConfig = null;
     private boolean isConfigLoaded = false;
     private final Set<ClassName> generatedModules = new LinkedHashSet<>();
@@ -51,7 +55,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         if (baseConfig != null) {
-            baseConfig = baseConfig.resolve();
+            baseConfig = baseConfig.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
         }
     }
 
@@ -153,28 +157,8 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 initCode.add("  new $T(\"aot-compiled\"),\n", configOrigin);
                 initCode.add("  $T.root()\n", valuePath);
                 initCode.add(");\n\n");
-
-                initCode.add("var rootMap = new $T<String, $T<?>>();\n", java.util.LinkedHashMap.class, configValue);
-
-                for (var field : configFields) {
-                    var fullKey = path.isBlank() ? field.name() : path + "." + field.name();
-                    var baseVal = getConfigValue(baseConfig, fullKey);
-
-                    var hasInterfaceDefault = false;
-                    for (var methodElement : javax.lang.model.util.ElementFilter.methodsIn(config.getEnclosedElements())) {
-                        if (methodElement.getSimpleName().toString().equals(field.name()) && methodElement.getModifiers().contains(Modifier.DEFAULT)) {
-                            hasInterfaceDefault = true;
-                            break;
-                        }
-                    }
-
-                    var baseValBlock = baseVal != null ? CodeBlock.of("$S", baseVal.toString()) : CodeBlock.of("null");
-
-                    initCode.add("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
-                        path, field.name(), baseValBlock, hasInterfaceDefault
-                    );
-                }
-
+                initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, configValue);
+                generateFieldResolvers(initCode, config, path, baseConfig);
                 initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", objectValue);
 
                 if (path.isBlank()) {
@@ -198,35 +182,96 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
     }
 
+    private void generateFieldResolvers(com.palantir.javapoet.CodeBlock.Builder initCode, javax.lang.model.element.TypeElement configElement, String currentPath, com.typesafe.config.Config currentConfig) {
+        var configFields = ConfigUtils.parseFields(types, configElement).left();
+        if (configFields == null) return;
+
+        for (var field : configFields) {
+            var fullKey = currentPath.isBlank() ? field.name() : currentPath + "." + field.name();
+
+            var hasInterfaceDefault = field.hasDefault();
+            var typeName = field.typeName();
+
+            if (typeName instanceof com.palantir.javapoet.ClassName className && !isStandardType(className.toString())) {
+                var targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
+                if (targetElement != null && targetElement.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
+                    generateFieldResolvers(initCode, targetElement, fullKey, currentConfig);
+                    continue;
+                }
+            }
+
+            var baseVal = getConfigValue(currentConfig, fullKey);
+            var baseValBlock = baseVal != null ? CodeBlock.of("$S", baseVal.toString()) : CodeBlock.of("null");
+
+            initCode.add("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
+                currentPath, field.name(), baseValBlock, hasInterfaceDefault
+            );
+        }
+    }
+
+    private boolean isStandardType(String className) {
+        return className.startsWith("java.lang.")
+            || className.startsWith("java.time.")
+            || className.startsWith("java.util.");
+    }
+
     private Object getConfigValue(Config config, String path) {
         if (config == null || path.isBlank()) {
             return null;
         }
 
-        if (!config.hasPath(path)) {
-            var key = path.contains(".") ? path.substring(path.lastIndexOf('.') + 1) : path;
-            var prefix = path.contains(".") ? path.substring(0, path.lastIndexOf('.') + 1) : "";
-            var relaxedNames = PathElement.get(key).relaxedNames();
+        String[] parts = path.split("\\.");
+        ConfigObject currentObject = config.root();
+        ConfigValue targetValue = null;
 
-            for (var variant : relaxedNames) {
-                var alternativePath = prefix + variant;
-                if (config.hasPath(alternativePath)) {
-                    path = alternativePath;
-                    break;
+        for (int i = 0; i < parts.length; i++) {
+            String key = parts[i];
+            targetValue = currentObject.get(key);
+
+            if (targetValue == null) {
+                List<String> relaxedNames = PathElement.get(key).relaxedNames();
+                for (String variant : relaxedNames) {
+                    targetValue = currentObject.get(variant);
+                    if (targetValue != null) {
+                        break;
+                    }
+                }
+            }
+
+            if (targetValue == null) {
+                return null;
+            }
+
+            if (i < parts.length - 1) {
+                try {
+                    if (targetValue.valueType() == ConfigValueType.OBJECT) {
+                        currentObject = (ConfigObject) targetValue;
+                    } else {
+                        return null;
+                    }
+                } catch (ConfigException.NotResolved notResolved) {
+                    return targetValue.render(CONCISE_NO_JSON);
                 }
             }
         }
 
-        if (!config.hasPath(path)) {
-            return null;
-        }
+        try {
+            if (targetValue.valueType() == ConfigValueType.NULL) {
+                return null;
+            }
 
-        var configValue = config.getValue(path);
-        if (configValue.valueType() == ConfigValueType.NULL) {
-            return null;
-        }
+            if (targetValue.valueType() == ConfigValueType.OBJECT) {
+                return null;
+            }
 
-        return configValue.unwrapped();
+            if (targetValue.valueType() == ConfigValueType.LIST) {
+                return targetValue.render(ConfigRenderOptions.concise());
+            }
+
+            return targetValue.unwrapped();
+        } catch (ConfigException.NotResolved notResolved) {
+            return targetValue.render(CONCISE_NO_JSON);
+        }
     }
 
     private void generateGlobalAotConfigModule() {
