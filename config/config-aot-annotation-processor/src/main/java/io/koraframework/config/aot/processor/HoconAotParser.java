@@ -10,14 +10,14 @@ import java.util.*;
 
 public final class HoconAotParser implements AotConfigParser {
 
-    private Config baseConfig;
+    private Config resolvedConfig;
+    private final Map<String, String> optionalPlaceholders = new HashMap<>();
 
     @Override
     public void loadAndMerge(ClassLoader classLoader, String customResource, String customFile) {
         ConfigParseOptions parseOptions = ConfigParseOptions.defaults().setClassLoader(classLoader);
 
         Config referenceConfig = ConfigFactory.parseResources("reference.conf", parseOptions);
-        referenceConfig = referenceConfig.resolve(ConfigResolveOptions.defaults());
 
         Config appConfig;
         if (customFile != null && !customFile.isBlank()) {
@@ -29,17 +29,51 @@ public final class HoconAotParser implements AotConfigParser {
         }
 
         Config merged = appConfig.withFallback(referenceConfig);
-        baseConfig = merged.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
+
+        collectOptionalPlaceholders("", merged.root());
+
+        resolvedConfig = merged.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
+    }
+
+    private void collectOptionalPlaceholders(String currentPath, ConfigValue value) {
+        if (value instanceof ConfigObject obj) {
+            for (var entry : obj.entrySet()) {
+                String nextPath = currentPath.isBlank() ? entry.getKey() : currentPath + "." + entry.getKey();
+                collectOptionalPlaceholders(nextPath, entry.getValue());
+            }
+        } else if (value instanceof ConfigList list) {
+            for (int i = 0; i < list.size(); i++) {
+                String nextPath = currentPath + "[" + i + "]";
+                collectOptionalPlaceholders(nextPath, list.get(i));
+            }
+        } else {
+            String rawValue = value.render(ConfigRenderOptions.concise().setJson(false));
+            if (rawValue != null && rawValue.contains("${?")) {
+                if (rawValue.contains(",") && !rawValue.startsWith("${")) {
+                    return;
+                }
+
+                if (rawValue.startsWith("\"") && rawValue.endsWith("\"")) {
+                    rawValue = rawValue.substring(1, rawValue.length() - 1);
+                }
+                optionalPlaceholders.put(currentPath, rawValue);
+            }
+        }
     }
 
     @Override
     public Object getConfigValue(String path) {
-        if (baseConfig == null || path.isBlank()) {
+        if (resolvedConfig == null || path.isBlank()) {
             return null;
         }
 
+        // Если этот путь изначально содержал опциональный плейсхолдер — отдаем сохраненный сырой оригинал
+        if (optionalPlaceholders.containsKey(path)) {
+            return optionalPlaceholders.get(path);
+        }
+
         String[] parts = path.split("\\.");
-        ConfigObject currentObject = baseConfig.root();
+        ConfigObject currentObject = resolvedConfig.root();
         ConfigValue targetValue = null;
 
         for (int i = 0; i < parts.length; i++) {
@@ -69,10 +103,10 @@ public final class HoconAotParser implements AotConfigParser {
             }
         }
 
-        return extractUnresolvedValue(targetValue);
+        return extractUnresolvedValue(targetValue, path);
     }
 
-    private Object extractUnresolvedValue(ConfigValue hoconValue) {
+    private Object extractUnresolvedValue(ConfigValue hoconValue, String currentPath) {
         if (hoconValue == null) {
             return null;
         }
@@ -80,35 +114,37 @@ public final class HoconAotParser implements AotConfigParser {
         if (hoconValue instanceof ConfigObject obj) {
             var map = new LinkedHashMap<String, Object>(obj.size());
             for (var entry : obj.entrySet()) {
-                map.put(entry.getKey(), extractUnresolvedValue(entry.getValue()));
+                String nextPath = currentPath.isBlank() ? entry.getKey() : currentPath + "." + entry.getKey();
+                if (optionalPlaceholders.containsKey(nextPath)) {
+                    map.put(entry.getKey(), optionalPlaceholders.get(nextPath));
+                } else {
+                    map.put(entry.getKey(), extractUnresolvedValue(entry.getValue(), nextPath));
+                }
             }
             return map;
         }
 
         if (hoconValue instanceof ConfigList list) {
             var res = new ArrayList<>(list.size());
-            for (ConfigValue item : list) {
-                res.add(extractUnresolvedValue(item));
+            for (int i = 0; i < list.size(); i++) {
+                String nextPath = currentPath + "[" + i + "]";
+                if (optionalPlaceholders.containsKey(nextPath)) {
+                    res.add(optionalPlaceholders.get(nextPath));
+                } else {
+                    res.add(extractUnresolvedValue(list.get(i), nextPath));
+                }
             }
             return res;
-        }
-
-        String rendered = hoconValue.render(ConfigRenderOptions.concise().setJson(false));
-        if (rendered != null && rendered.contains("${")) {
-            if (rendered.startsWith("\"") && rendered.endsWith("\"")) {
-                rendered = rendered.substring(1, rendered.length() - 1);
-            }
-            return rendered;
         }
 
         try {
             return hoconValue.unwrapped();
         } catch (ConfigException.NotResolved notResolved) {
-            String fallbackRender = hoconValue.render(ConfigRenderOptions.concise().setJson(false));
-            if (fallbackRender != null && fallbackRender.startsWith("\"") && fallbackRender.endsWith("\"")) {
-                fallbackRender = fallbackRender.substring(1, fallbackRender.length() - 1);
+            String rendered = hoconValue.render(ConfigRenderOptions.concise().setJson(false));
+            if (rendered != null && rendered.startsWith("\"") && rendered.endsWith("\"")) {
+                rendered = rendered.substring(1, rendered.length() - 1);
             }
-            return fallbackRender;
+            return rendered;
         }
     }
 }

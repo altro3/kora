@@ -20,6 +20,7 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
             }
             
             app {
+                withFallback = ${?NON_EXISTENT_VAR}"default-fallback"
                 envName = ${shared.environment}
                 description = "Running in "${shared.environment}" mode"
                 connectTimeout = ${shared.globalTimeout}
@@ -28,7 +29,6 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
                 releaseDate = "2026-10-25"
                 createdAt = "2026-10-25T12:00:00"
                 fromEnv = ${MY_ENV_VAR}
-                withFallback = ${?NON_EXISTENT_VAR}"default-fallback"
                 nested {
                     targetEnv = ${shared.environment}
                     deeplyNested {
