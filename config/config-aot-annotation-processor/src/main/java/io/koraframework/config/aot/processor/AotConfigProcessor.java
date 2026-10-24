@@ -188,16 +188,30 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
         for (var field : configFields) {
             var fullKey = currentPath.isBlank() ? field.name() : currentPath + "." + field.name();
-
             var hasInterfaceDefault = field.hasDefault();
             var typeName = field.typeName();
 
+            boolean isNestedInterface = false;
+            javax.lang.model.element.TypeElement targetElement = null;
+
             if (typeName instanceof com.palantir.javapoet.ClassName className && !isStandardType(className.toString())) {
-                var targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
-                if (targetElement != null && targetElement.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
-                    generateFieldResolvers(initCode, targetElement, fullKey, currentConfig);
-                    continue;
+                targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
+                if (targetElement == null) {
+                    String binaryName = className.packageName() + "." + String.join("$", className.simpleNames());
+                    targetElement = processingEnv.getElementUtils().getTypeElement(binaryName);
                 }
+
+                if (targetElement != null && targetElement.getKind() == javax.lang.model.element.ElementKind.INTERFACE) {
+                    isNestedInterface = true;
+                }
+            }
+
+            if (isNestedInterface) {
+                initCode.add("resolveAndPut(rootMap, $S, $S, null, false);\n",
+                    currentPath, field.name()
+                );
+                generateFieldResolvers(initCode, targetElement, fullKey, currentConfig);
+                continue;
             }
 
             var baseVal = getConfigValue(currentConfig, fullKey);
@@ -215,21 +229,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             || className.startsWith("java.util.");
     }
 
-    private Object getConfigValue(Config config, String path) {
+    private Object getConfigValue(com.typesafe.config.Config config, String path) {
         if (config == null || path.isBlank()) {
             return null;
         }
 
         String[] parts = path.split("\\.");
-        ConfigObject currentObject = config.root();
-        ConfigValue targetValue = null;
+        com.typesafe.config.ConfigObject currentObject = config.root();
+        com.typesafe.config.ConfigValue targetValue = null;
 
         for (int i = 0; i < parts.length; i++) {
             String key = parts[i];
             targetValue = currentObject.get(key);
 
             if (targetValue == null) {
-                List<String> relaxedNames = PathElement.get(key).relaxedNames();
+                java.util.List<String> relaxedNames = io.koraframework.config.common.PathElement.get(key).relaxedNames();
                 for (String variant : relaxedNames) {
                     targetValue = currentObject.get(variant);
                     if (targetValue != null) {
@@ -244,35 +258,32 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             if (i < parts.length - 1) {
                 try {
-                    if (targetValue.valueType() == ConfigValueType.OBJECT) {
-                        currentObject = (ConfigObject) targetValue;
+                    if (targetValue.valueType() == com.typesafe.config.ConfigValueType.OBJECT) {
+                        currentObject = (com.typesafe.config.ConfigObject) targetValue;
                     } else {
                         return null;
                     }
-                } catch (ConfigException.NotResolved notResolved) {
+                } catch (com.typesafe.config.ConfigException.NotResolved notResolved) {
                     return targetValue.render(CONCISE_NO_JSON);
                 }
             }
         }
 
         try {
-            if (targetValue.valueType() == ConfigValueType.NULL) {
+            if (targetValue.valueType() == com.typesafe.config.ConfigValueType.NULL) {
                 return null;
             }
 
-            if (targetValue.valueType() == ConfigValueType.OBJECT) {
-                return null;
-            }
-
-            if (targetValue.valueType() == ConfigValueType.LIST) {
-                return targetValue.render(ConfigRenderOptions.concise());
+            if (targetValue.valueType() == com.typesafe.config.ConfigValueType.LIST) {
+                return targetValue.render(com.typesafe.config.ConfigRenderOptions.concise());
             }
 
             return targetValue.unwrapped();
-        } catch (ConfigException.NotResolved notResolved) {
+        } catch (com.typesafe.config.ConfigException.NotResolved notResolved) {
             return targetValue.render(CONCISE_NO_JSON);
         }
     }
+
 
     private void generateGlobalAotConfigModule() {
         if (generatedModules.isEmpty()) return;
