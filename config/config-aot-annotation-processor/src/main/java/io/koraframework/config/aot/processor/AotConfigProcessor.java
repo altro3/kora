@@ -39,8 +39,20 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         String customFile = processingEnv.getOptions().get("config.file");
         if (customFile == null) customFile = System.getProperty("config.file");
 
-        // Строим кастомный ClassLoader на основе путей поиска проекта
-        List<URL> urls = new ArrayList<>();
+        var urls = new ArrayList<URL>();
+
+        ClassLoader processorClassLoader = getClass().getClassLoader();
+        try {
+            List<String> filesToSearch = List.of("reference.conf", "application.yaml", "application.yml");
+            for (String fileName : filesToSearch) {
+                Enumeration<URL> resources = processorClassLoader.getResources(fileName);
+                while (resources.hasMoreElements()) {
+                    URL resourceUrl = resources.nextElement();
+                    urls.add(resourceUrl);
+                }
+            }
+        } catch (Exception ignored) {}
+
         try {
             var runDir = Path.of(System.getProperty("user.dir", "."));
             String packagePath = packageName.replace('.', '/');
@@ -53,19 +65,17 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             for (var path : searchPaths) {
                 if (Files.exists(path)) {
-                    urls.add(path.toUri().toURL());
+                    var fileUrl = path.toUri().toURL();
+                    if (!urls.contains(fileUrl)) {
+                        urls.add(fileUrl);
+                    }
                 }
-            }
-            var resourcesPath = runDir.resolve("src/main/resources");
-            if (Files.exists(resourcesPath)) {
-                urls.add(resourcesPath.toUri().toURL());
             }
         } catch (Exception ignored) {}
 
-        ClassLoader parentLoader = Thread.currentThread().getContextClassLoader();
         ClassLoader finalClassLoader = urls.isEmpty()
-            ? parentLoader
-            : new URLClassLoader(urls.toArray(new URL[0]), parentLoader);
+            ? processorClassLoader
+            : new URLClassLoader(urls.toArray(new URL[0]), processorClassLoader);
 
         boolean isYaml = false;
         try {
