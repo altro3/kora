@@ -6,14 +6,17 @@ import io.koraframework.config.common.origin.*;
 import org.jspecify.annotations.*;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class AotConfigResolvers {
 
     private static final SimpleConfigOrigin AOT_ORIGIN = new SimpleConfigOrigin("aot-compiled");
+    private static final Pattern PLACEOHOLDER_PATTERN = Pattern.compile("\\$\\{([^}]+)\\}");
 
     private AotConfigResolvers() {}
 
-    public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable String baseValue, boolean hasInterfaceDefault) {
+    public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable Object baseValue, boolean hasInterfaceDefault) {
         String fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
 
         var value = resolveValue(fullSysKey, baseValue, hasInterfaceDefault);
@@ -53,7 +56,7 @@ public final class AotConfigResolvers {
         }
     }
 
-    public static @Nullable ConfigValue<?> resolveValue(String sysKey, @Nullable String baseValue, boolean hasInterfaceDefault) {
+    public static @Nullable ConfigValue<?> resolveValue(String sysKey, @Nullable Object baseValue, boolean hasInterfaceDefault) {
         String lastPart = sysKey.contains(".") ? sysKey.substring(sysKey.lastIndexOf('.') + 1) : sysKey;
         String prefix = sysKey.contains(".") ? sysKey.substring(0, sysKey.lastIndexOf('.') + 1) : "";
 
@@ -62,24 +65,20 @@ public final class AotConfigResolvers {
         for (String variant : relaxedVariants) {
             String fullKey = (prefix + variant).replace('.', '_').replace('-', '_').toUpperCase();
             var env = System.getenv(fullKey);
-            if (env != null) return toConfigValue(sysKey, env);
+            if (env != null) return toKoraValue(sysKey, env);
 
             var sysEnvFallback = System.getProperty(fullKey);
-            if (sysEnvFallback != null) return toConfigValue(sysKey, sysEnvFallback);
+            if (sysEnvFallback != null) return toKoraValue(sysKey, sysEnvFallback);
         }
 
         for (String variant : relaxedVariants) {
             String fullSysKey = prefix + variant;
             var sys = System.getProperty(fullSysKey);
-            if (sys != null) return toConfigValue(sysKey, sys);
+            if (sys != null) return toKoraValue(sysKey, sys);
         }
 
         if (baseValue != null) {
-            String resolvedPlaceholder = tryResolvePlaceholder(baseValue);
-            if (resolvedPlaceholder != null) {
-                return toConfigValue(sysKey, resolvedPlaceholder);
-            }
-            return toConfigValue(sysKey, baseValue);
+            return toKoraValue(sysKey, baseValue);
         }
 
         if (hasInterfaceDefault) return null;
@@ -88,45 +87,81 @@ public final class AotConfigResolvers {
         return new ConfigValue.ObjectValue(origin, new LinkedHashMap<>());
     }
 
-    private static @Nullable String tryResolvePlaceholder(String value) {
-        if (value == null || !value.contains("${")) {
-            return null;
+    private static ConfigValue<?> toKoraValue(String path, Object value) {
+        var origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(path));
+
+        if (value instanceof String str) {
+            if (str.contains("${")) {
+                String resolved = tryResolveInterpolatedPlaceholders(str);
+                return new ConfigValue.StringValue(origin, resolved != null ? resolved : str);
+            }
+            return new ConfigValue.StringValue(origin, str);
         }
-
-        int start = value.indexOf("${");
-        int end = value.indexOf("}", start);
-        if (end == -1) {
-            return null;
+        if (value instanceof Number num) {
+            return new ConfigValue.NumberValue(origin, num);
         }
-
-        String content = value.substring(start + 2, end).trim();
-        boolean optional = content.startsWith("?");
-        if (optional) {
-            content = content.substring(1).trim();
+        if (value instanceof Boolean bool) {
+            return new ConfigValue.BooleanValue(origin, bool);
         }
-
-        String varName = content;
-        String fallback = null;
-        if (content.contains(":")) {
-            int colonIndex = content.indexOf(":");
-            varName = content.substring(0, colonIndex).trim();
-            fallback = content.substring(colonIndex + 1).trim();
+        if (value instanceof Map<?, ?> map) {
+            var res = new LinkedHashMap<String, ConfigValue<?>>(map.size());
+            for (var entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                res.put(key, toKoraValue(path + "." + key, entry.getValue()));
+            }
+            return new ConfigValue.ObjectValue(origin, res);
         }
-
-        var envVal = System.getenv(varName);
-        if (envVal != null) return envVal;
-
-        var sysVal = System.getProperty(varName);
-        if (sysVal != null) return sysVal;
-
-        if (fallback != null) return fallback;
-        if (optional) return "";
-
-        return null;
+        if (value instanceof Object[] array) {
+            var res = new ArrayList<ConfigValue<?>>(array.length);
+            for (int i = 0; i < array.length; i++) {
+                res.add(toKoraValue(path + "[" + i + "]", array[i]));
+            }
+            return new ConfigValue.ArrayValue(origin, List.copyOf(res));
+        }
+        return new ConfigValue.StringValue(origin, String.valueOf(value));
     }
 
-    private static ConfigValue.StringValue toConfigValue(String path, String value) {
-        var origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(path));
-        return new ConfigValue.StringValue(origin, value);
+    private static @Nullable String tryResolveInterpolatedPlaceholders(String value) {
+        StringBuilder sb = new StringBuilder();
+        Matcher matcher = PLACEOHOLDER_PATTERN.matcher(value);
+        int lastAppendPosition = 0;
+        boolean hasUnresolvedRequired = false;
+
+        while (matcher.find()) {
+            sb.append(value, lastAppendPosition, matcher.start());
+            String content = matcher.group(1).trim();
+
+            boolean optional = content.startsWith("?");
+            if (optional) {
+                content = content.substring(1).trim();
+            }
+
+            String varName = content;
+            String fallback = null;
+            if (content.contains(":")) {
+                int colonIndex = content.indexOf(":");
+                varName = content.substring(0, colonIndex).trim();
+                fallback = content.substring(colonIndex + 1).trim();
+            }
+
+            String resolved = System.getenv(varName);
+            if (resolved == null) {
+                resolved = System.getProperty(varName);
+            }
+            if (resolved == null && fallback != null) {
+                resolved = fallback;
+            }
+
+            if (resolved != null) {
+                sb.append(resolved);
+            } else if (!optional) {
+                hasUnresolvedRequired = true;
+                sb.append(matcher.group(0));
+            }
+            lastAppendPosition = matcher.end();
+        }
+
+        sb.append(value, lastAppendPosition, value.length());
+        return hasUnresolvedRequired ? null : sb.toString();
     }
 }

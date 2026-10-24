@@ -10,7 +10,6 @@ import java.util.*;
 
 public final class HoconAotParser implements AotConfigParser {
 
-    private static final ConfigRenderOptions CONCISE_NO_JSON = ConfigRenderOptions.concise().setJson(false);
     private Config baseConfig;
 
     @Override
@@ -62,30 +61,54 @@ public final class HoconAotParser implements AotConfigParser {
             }
 
             if (i < parts.length - 1) {
-                try {
-                    if (targetValue.valueType() == ConfigValueType.OBJECT) {
-                        currentObject = (ConfigObject) targetValue;
-                    } else {
-                        return null;
-                    }
-                } catch (ConfigException.NotResolved notResolved) {
-                    return targetValue.render(CONCISE_NO_JSON);
+                if (targetValue instanceof ConfigObject configObject) {
+                    currentObject = configObject;
+                } else {
+                    return null;
                 }
             }
         }
 
+        return extractUnresolvedValue(targetValue);
+    }
+
+    private Object extractUnresolvedValue(ConfigValue hoconValue) {
+        if (hoconValue == null) {
+            return null;
+        }
+
+        if (hoconValue instanceof ConfigObject obj) {
+            var map = new LinkedHashMap<String, Object>(obj.size());
+            for (var entry : obj.entrySet()) {
+                map.put(entry.getKey(), extractUnresolvedValue(entry.getValue()));
+            }
+            return map;
+        }
+
+        if (hoconValue instanceof ConfigList list) {
+            var res = new ArrayList<>(list.size());
+            for (ConfigValue item : list) {
+                res.add(extractUnresolvedValue(item));
+            }
+            return res;
+        }
+
+        String rendered = hoconValue.render(ConfigRenderOptions.concise().setJson(false));
+        if (rendered != null && rendered.contains("${")) {
+            if (rendered.startsWith("\"") && rendered.endsWith("\"")) {
+                rendered = rendered.substring(1, rendered.length() - 1);
+            }
+            return rendered;
+        }
+
         try {
-            if (targetValue.valueType() == ConfigValueType.NULL) {
-                return null;
-            }
-
-            if (targetValue.valueType() == ConfigValueType.LIST) {
-                return targetValue.render(ConfigRenderOptions.concise());
-            }
-
-            return targetValue.unwrapped();
+            return hoconValue.unwrapped();
         } catch (ConfigException.NotResolved notResolved) {
-            return targetValue.render(CONCISE_NO_JSON);
+            String fallbackRender = hoconValue.render(ConfigRenderOptions.concise().setJson(false));
+            if (fallbackRender != null && fallbackRender.startsWith("\"") && fallbackRender.endsWith("\"")) {
+                fallbackRender = fallbackRender.substring(1, fallbackRender.length() - 1);
+            }
+            return fallbackRender;
         }
     }
 }

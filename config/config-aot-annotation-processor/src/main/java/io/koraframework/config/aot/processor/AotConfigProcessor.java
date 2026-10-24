@@ -3,6 +3,7 @@ package io.koraframework.config.aot.processor;
 import com.palantir.javapoet.*;
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.*;
+import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
@@ -273,12 +274,79 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             }
 
             var baseVal = parser.getConfigValue(fullKey);
-            var baseValBlock = baseVal != null ? CodeBlock.of("$S", baseVal.toString()) : CodeBlock.of("null");
+            var baseValBlock = convertToCodeBlock(baseVal);
 
             chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
                 currentPath, field.name(), baseValBlock, hasInterfaceDefault
             ));
         }
+    }
+
+    private CodeBlock convertToCodeBlock(Object koraValue) {
+        if (koraValue == null) {
+            return CodeBlock.of("null");
+        }
+
+        if (koraValue instanceof String str) {
+            String trimmed = str.trim();
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                try {
+                    var parsed = com.typesafe.config.ConfigFactory.parseString("value = " + trimmed);
+                    var configList = parsed.getList("value");
+
+                    var builder = CodeBlock.builder().add("new Object[] { ");
+                    for (int i = 0; i < configList.size(); i++) {
+                        builder.add(convertToCodeBlock(configList.get(i).unwrapped()));
+                        if (i < configList.size() - 1) builder.add(", ");
+                    }
+                    return builder.add(" }").build();
+                } catch (Exception ignored) {}
+            }
+            return CodeBlock.of("$S", str);
+        }
+
+        if (koraValue instanceof Number num) {
+            return CodeBlock.of("$L", num);
+        }
+        if (koraValue instanceof Boolean bool) {
+            return CodeBlock.of("$L", bool);
+        }
+        if (koraValue instanceof List<?> list) {
+            var builder = CodeBlock.builder().add("new Object[] { ");
+            for (int i = 0; i < list.size(); i++) {
+                builder.add(convertToCodeBlock(list.get(i)));
+                if (i < list.size() - 1) builder.add(", ");
+            }
+            return builder.add(" }").build();
+        }
+        if (koraValue instanceof Map<?, ?> map) {
+            var builder = CodeBlock.builder().add("$T.ofEntries(\n", Map.class);
+            var entries = new ArrayList<>(map.entrySet());
+            for (int i = 0; i < entries.size(); i++) {
+                var entry = entries.get(i);
+                builder.add("    $T.entry($S, $L)", Map.class, String.valueOf(entry.getKey()), convertToCodeBlock(entry.getValue()));
+                if (i < entries.size() - 1) builder.add(",\n");
+            }
+            return builder.add("\n)").build();
+        }
+
+        if (koraValue instanceof ConfigValue.StringValue str) {
+            return convertToCodeBlock(str.value());
+        }
+        if (koraValue instanceof ConfigValue.NumberValue num) {
+            return CodeBlock.of("$L", num.value());
+        }
+        if (koraValue instanceof ConfigValue.BooleanValue bool) {
+            return CodeBlock.of("$L", bool.value());
+        }
+        if (koraValue instanceof ConfigValue.ArrayValue array) {
+            return convertToCodeBlock(array.value());
+        }
+        if (koraValue instanceof ConfigValue.ObjectValue obj) {
+            return convertToCodeBlock(obj.value());
+        }
+
+        return CodeBlock.of("$S", koraValue.toString());
     }
 
     private boolean isStandardType(String className) {
