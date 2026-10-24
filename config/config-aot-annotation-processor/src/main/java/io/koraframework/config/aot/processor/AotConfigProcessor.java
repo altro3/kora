@@ -107,7 +107,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         if (!isConfigLoaded) {
-            var firstConfig = (TypeElement) targetElements.getFirst().element();
+            var firstConfig = (TypeElement) targetElements.get(0).element();
             var firstPackageElement = elements.getPackageOf(firstConfig);
             var firstPackageName = firstPackageElement.getQualifiedName().toString();
             loadAllConfigsAtCompileTime(firstPackageName);
@@ -164,11 +164,12 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     int totalFields = 0;
                     int currentChunkMethodIndex = 0;
                     CodeBlock.Builder currentChunkBuilder = CodeBlock.builder();
+                    final List<MethodSpec> chunkMethods = new ArrayList<>();
                 }
                 final ChunkContext ctx = new ChunkContext();
 
                 final String currentMethodName = methodName;
-                Consumer<CodeBlock> chunkAppender = (codeLine) -> {
+                java.util.function.Consumer<CodeBlock> chunkAppender = (codeLine) -> {
                     ctx.currentChunkBuilder.add(codeLine);
                     ctx.totalFields++;
 
@@ -176,14 +177,18 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                         String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
                         var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
                             .addModifiers(Modifier.PRIVATE)
-                            .addParameter(ParameterizedTypeName.get(
-                                ClassName.get(Map.class),
-                                ClassName.get(String.class),
-                                ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
-                            ), "rootMap")
+                            .addParameter(
+                                ParameterizedTypeName.get(
+                                    ClassName.get(Map.class),
+                                    ClassName.get(String.class),
+                                    ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
+                                ),
+                                "rootMap"
+                            )
                             .addCode(ctx.currentChunkBuilder.build())
                             .build();
-                        typeBuilder.addMethod(chunkMethod);
+                        ctx.chunkMethods.add(chunkMethod);
+
                         initCode.add("$L(rootMap);\n", chunkMethodName);
 
                         ctx.currentChunkBuilder = CodeBlock.builder();
@@ -197,14 +202,17 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
                     var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
                         .addModifiers(Modifier.PRIVATE)
-                        .addParameter(ParameterizedTypeName.get(
-                            ClassName.get(Map.class),
-                            ClassName.get(String.class),
-                            ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
-                        ), "rootMap")
+                        .addParameter(
+                            ParameterizedTypeName.get(
+                                ClassName.get(Map.class),
+                                ClassName.get(String.class),
+                                ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
+                            ),
+                            "rootMap"
+                        )
                         .addCode(ctx.currentChunkBuilder.build())
                         .build();
-                    typeBuilder.addMethod(chunkMethod);
+                    ctx.chunkMethods.add(chunkMethod);
                     initCode.add("$L(rootMap);\n", chunkMethodName);
                 }
 
@@ -218,9 +226,13 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
                 initCode.add("return mapper.map(targetValue);\n");
                 method.addCode(initCode.build());
+                typeBuilder.addMethod(method.build());
+                for (MethodSpec chunk : ctx.chunkMethods) {
+                    typeBuilder.addMethod(chunk);
+                }
+            } else {
+                typeBuilder.addMethod(method.build());
             }
-
-            typeBuilder.addMethod(method.build());
 
             var javaFile = JavaFile.builder(packageName, typeBuilder.build())
                 .addStaticImport(resolversClass, "*")
@@ -229,6 +241,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             CommonUtils.safeWriteTo(processingEnv, javaFile);
         }
     }
+
 
     private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, Config currentConfig) {
         var configFields = ConfigUtils.parseFields(types, configElement).left();
