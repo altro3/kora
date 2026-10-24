@@ -42,16 +42,16 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         if (!hoconBase.isBlank()) {
-            this.baseConfig = ConfigFactory.parseString(hoconBase);
+            baseConfig = ConfigFactory.parseString(hoconBase);
         } else if (!yamlBase.isBlank()) {
             var parsedMap = YamlAotParser.parse(yamlBase, null);
             if (parsedMap != null) {
-                this.baseConfig = ConfigFactory.parseMap(parsedMap);
+                baseConfig = ConfigFactory.parseMap(parsedMap);
             }
         }
 
-        if (this.baseConfig != null) {
-            this.baseConfig = this.baseConfig.resolve();
+        if (baseConfig != null) {
+            baseConfig = baseConfig.resolve();
         }
     }
 
