@@ -200,7 +200,7 @@ public class AotConfigProcessorTest extends AbstractAotConfigTest {
             "application-dev.yaml", devYaml
         );
 
-        compileAotConfig("application.yaml", baseYaml, profiles, """
+        compileAotConfig("application.yaml", baseYaml, """
             @ConfigSource("app")
             public interface ComplexConfig {
                 String host();       // Останется из базового конфига ("base-host")

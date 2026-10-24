@@ -2,7 +2,7 @@ package io.koraframework.config.aot.processor;
 
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.processor.*;
-import io.koraframework.config.common.aot.AotConfigResolvers;
+import io.koraframework.config.common.aot.*;
 import io.koraframework.validation.annotation.processor.*;
 import org.intellij.lang.annotations.*;
 import org.junit.jupiter.api.*;
@@ -21,7 +21,7 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
             """;
     }
 
-    protected void compileAotConfig(String configFileName, String configContent, Map<String, String> profiles, @Language("java") String... sources) {
+    protected void compileAotConfig(String configFileName, String configContent, @Language("java") String... sources) {
         try {
             var testClass = this.testInfo.getTestClass().get();
             var testMethod = this.testInfo.getTestMethod().get();
@@ -30,16 +30,10 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
             var classOutputDir = Paths.get(".", "build", "in-test-generated", "classes").resolve(packagePath);
             Files.createDirectories(classOutputDir);
             Files.writeString(classOutputDir.resolve(configFileName), configContent);
-            for (var entry : profiles.entrySet()) {
-                Files.writeString(classOutputDir.resolve(entry.getKey()), entry.getValue());
-            }
 
             var targetDir = Paths.get(".", "build", "in-test-generated", "sources").resolve(packagePath);
             Files.createDirectories(targetDir);
             Files.writeString(targetDir.resolve(configFileName), configContent);
-            for (var entry : profiles.entrySet()) {
-                Files.writeString(targetDir.resolve(entry.getKey()), entry.getValue());
-            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -51,31 +45,18 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
         compileResult.assertSuccess();
     }
 
-    protected void compileAotConfig(String configFileName, String configContent, @Language("java") String... sources) {
-        compileAotConfig(configFileName, configContent, Map.of(), sources);
-    }
-
     @AfterEach
     void cleanupResource() {
-        AotConfigResolvers.clear();
-
         try {
             var targetClassesDir = Paths.get("build", "in-test-generated", "classes");
+            Files.deleteIfExists(targetClassesDir.resolve("application.conf"));
             Files.deleteIfExists(targetClassesDir.resolve("application.yaml"));
-            Files.deleteIfExists(targetClassesDir.resolve("application-common.yaml"));
-            Files.deleteIfExists(targetClassesDir.resolve("application-local.yaml"));
-            Files.deleteIfExists(targetClassesDir.resolve("application-dev.yaml"));
+            Files.deleteIfExists(targetClassesDir.resolve("application.yml"));
 
             var targetSourcesDir = Paths.get("build", "in-test-generated", "sources");
+            Files.deleteIfExists(targetSourcesDir.resolve("application.conf"));
             Files.deleteIfExists(targetSourcesDir.resolve("application.yaml"));
-            Files.deleteIfExists(targetSourcesDir.resolve("application-common.yaml"));
-            Files.deleteIfExists(targetSourcesDir.resolve("application-local.yaml"));
-            Files.deleteIfExists(targetSourcesDir.resolve("application-dev.yaml"));
-
-            var resourcesDir = Paths.get("src", "main", "resources");
-            Files.deleteIfExists(resourcesDir.resolve("application-common.yaml"));
-            Files.deleteIfExists(resourcesDir.resolve("application-local.yaml"));
-            Files.deleteIfExists(resourcesDir.resolve("application-dev.yaml"));
+            Files.deleteIfExists(targetSourcesDir.resolve("application.yml"));
         } catch (IOException ignored) {}
     }
 }

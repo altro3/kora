@@ -1,184 +1,72 @@
 package io.koraframework.config.common.aot;
 
-import io.koraframework.config.common.exception.*;
+import io.koraframework.config.common.*;
+import io.koraframework.config.common.impl.*;
 import io.koraframework.config.common.origin.*;
 import org.jspecify.annotations.*;
 
+import java.util.*;
+
 public final class AotConfigResolvers {
 
-    private static @Nullable AotConfigResolvers INSTANCE = new AotConfigResolvers();
-    private String @Nullable [] activeProfiles;
+    private static final SimpleConfigOrigin AOT_ORIGIN = new SimpleConfigOrigin("aot-compiled");
 
     private AotConfigResolvers() {}
 
-    public static void clear() {
-        INSTANCE = null;
-    }
+    public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable String baseValue, boolean hasInterfaceDefault) {
+        String fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
 
-    private static AotConfigResolvers getInstance() {
-        var current = INSTANCE;
-        if (current == null) {
-            return new AotConfigResolvers();
-        }
-        return current;
-    }
+        var value = resolveValue(fullSysKey, baseValue, hasInterfaceDefault);
+        if (value != null) {
+            if (configPath.isBlank()) {
+                rootMap.put(fieldName, value);
+            } else {
+                var origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(configPath));
 
-    private String[] getActiveProfiles() {
-        if (activeProfiles == null) {
-            activeProfiles = System.getProperty("kora.profiles") != null
-                ? System.getProperty("kora.profiles").split(",")
-                : (System.getenv("KORA_PROFILES") != null ? System.getenv("KORA_PROFILES").split(",") : new String[0]);
-        }
-        return activeProfiles;
-    }
-
-    public static String toKebabCase(String input) {
-        if (input == null || input.isEmpty()) return input;
-
-        var result = new StringBuilder();
-        char[] chars = input.toCharArray();
-
-        for (int i = 0; i < chars.length; i++) {
-            char c = chars[i];
-            if (Character.isUpperCase(c)) {
-                if (i > 0) {
-                    char prev = chars[i - 1];
-                    boolean prevIsLowerOrDigit = Character.isLowerCase(prev) || Character.isDigit(prev);
-                    boolean nextIsLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
-
-                    if (prevIsLowerOrDigit || (Character.isUpperCase(prev) && nextIsLower)) {
-                        result.append('-');
+                rootMap.compute(configPath, (_, existing) -> {
+                    Map<String, ConfigValue<?>> targetMap;
+                    if (existing instanceof ConfigValue.ObjectValue oldObj) {
+                        targetMap = new LinkedHashMap<>(oldObj.value());
+                    } else {
+                        targetMap = new LinkedHashMap<>();
                     }
-                }
-                result.append(Character.toLowerCase(c));
-            } else {
-                result.append(c);
+                    targetMap.put(fieldName, value);
+                    return new ConfigValue.ObjectValue(origin, targetMap);
+                });
             }
         }
-        return result.toString();
     }
 
-    public static String toCamelCase(String input) {
-        if (input == null || !input.contains("-")) return input;
-        var result = new StringBuilder();
-        boolean capitalizeNext = false;
-        for (char c : input.toCharArray()) {
-            if (c == '-') {
-                capitalizeNext = true;
-            } else {
-                if (capitalizeNext) {
-                    result.append(Character.toUpperCase(c));
-                    capitalizeNext = false;
-                } else {
-                    result.append(c);
-                }
-            }
-        }
-        return result.toString();
-    }
+    public static @Nullable ConfigValue<?> resolveValue(String sysKey, @Nullable String baseValue, boolean hasInterfaceDefault) {
+        String lastPart = sysKey.contains(".") ? sysKey.substring(sysKey.lastIndexOf('.') + 1) : sysKey;
+        String prefix = sysKey.contains(".") ? sysKey.substring(0, sysKey.lastIndexOf('.') + 1) : "";
 
-    private @Nullable Object resolveRaw(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue) {
-        var env = System.getenv(envKey);
-        if (env != null) return env;
+        List<String> relaxedVariants = PathElement.get(lastPart).relaxedNames();
 
-        var sysEnvFallback = System.getProperty(envKey);
-        if (sysEnvFallback != null) return sysEnvFallback;
+        for (String variant : relaxedVariants) {
+            String fullKey = (prefix + variant).replace('.', '_').replace('-', '_').toUpperCase();
+            var env = System.getenv(fullKey);
+            if (env != null) return toConfigValue(sysKey, env);
 
-        var cleanEnvKey = envKey.replace("_", "");
-        var envWithNoUnderscores = System.getenv(cleanEnvKey);
-        if (envWithNoUnderscores != null) return envWithNoUnderscores;
-
-        var sysEnvNoUnderscores = System.getProperty(cleanEnvKey);
-        if (sysEnvNoUnderscores != null) return sysEnvNoUnderscores;
-
-        var sys = System.getProperty(sysKey);
-        if (sys != null) return sys;
-
-        if (sysKey.contains("-")) {
-            var camelKey = toCamelCase(sysKey);
-            var sysCamel = System.getProperty(camelKey);
-            if (sysCamel != null) return sysCamel;
-        } else {
-            var kebabKey = toKebabCase(sysKey);
-            var sysKebab = System.getProperty(kebabKey);
-            if (sysKebab != null) return sysKebab;
+            var sysEnvFallback = System.getProperty(fullKey);
+            if (sysEnvFallback != null) return toConfigValue(sysKey, sysEnvFallback);
         }
 
-        if (profileValues != null) {
-            var profiles = getActiveProfiles();
-            for (int i = profiles.length - 1; i >= 0; i--) {
-                var trimmed = profiles[i].trim();
-                for (int j = 0; j < profileValues.length; j += 2) {
-                    if (trimmed.equals(profileValues[j])) return profileValues[j + 1];
-                }
-            }
+        for (String variant : relaxedVariants) {
+            String fullSysKey = prefix + variant;
+            var sys = System.getProperty(fullSysKey);
+            if (sys != null) return toConfigValue(sysKey, sys);
         }
-        return baseValue;
+
+        if (baseValue != null) return toConfigValue(sysKey, baseValue);
+
+        if (hasInterfaceDefault) return null;
+
+        return toConfigValue(sysKey, "");
     }
 
-    public static String resolveString(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable String defaultValue) {
-        var result = resolveNullableString(envKey, sysKey, profileValues, baseValue, hasDefault, defaultValue);
-        if (result == null) {
-            throw new ConfigValueException(aotOrigin(sysKey), "Required configuration property is missing: '%s' (ENV: '%s')".formatted(sysKey, envKey));
-        }
-        return result;
-    }
-
-    public static @Nullable String resolveNullableString(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable String defaultValue) {
-        var value = getInstance().resolveRaw(envKey, sysKey, profileValues, baseValue);
-        if (value != null) return value.toString();
-        if (hasDefault) return defaultValue;
-        return null;
-    }
-
-    public static int resolveInt(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Integer defaultValue) {
-        var result = resolveNullableInt(envKey, sysKey, profileValues, baseValue, hasDefault, defaultValue);
-        if (result == null) {
-            throw new ConfigValueException(aotOrigin(sysKey), "Required configuration property is missing: '%s' (ENV: '%s')".formatted(sysKey, envKey));
-        }
-        return result;
-    }
-
-    public static @Nullable Integer resolveNullableInt(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Integer defaultValue) {
-        var value = getInstance().resolveRaw(envKey, sysKey, profileValues, baseValue);
-        if (value instanceof Number n) return n.intValue();
-        if (value != null) return Integer.parseInt(value.toString());
-        if (hasDefault) return defaultValue;
-        return null;
-    }
-
-    public static boolean resolveBoolean(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Boolean defaultValue) {
-        var result = resolveNullableBoolean(envKey, sysKey, profileValues, baseValue, hasDefault, defaultValue);
-        if (result == null) {
-            throw new ConfigValueException(aotOrigin(sysKey), "Required configuration property is missing: '%s' (ENV: '%s')".formatted(sysKey, envKey));
-        }
-        return result;
-    }
-
-    public static @Nullable Boolean resolveNullableBoolean(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Boolean defaultValue) {
-        var value = getInstance().resolveRaw(envKey, sysKey, profileValues, baseValue);
-        if (value instanceof Boolean b) return b;
-        if (value != null) return Boolean.parseBoolean(value.toString());
-        if (hasDefault) return defaultValue;
-        return null;
-    }
-
-    public static Object resolveObject(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Object defaultValue) {
-        var result = resolveNullableObject(envKey, sysKey, profileValues, baseValue, hasDefault, defaultValue);
-        if (result == null) {
-            throw new ConfigValueException(aotOrigin(sysKey), "Required configuration property is missing: '%s' (ENV: '%s')".formatted(sysKey, envKey));
-        }
-        return result;
-    }
-
-    public static @Nullable Object resolveNullableObject(String envKey, String sysKey, Object @Nullable [] profileValues, @Nullable Object baseValue, boolean hasDefault, @Nullable Object defaultValue) {
-        var value = getInstance().resolveRaw(envKey, sysKey, profileValues, baseValue);
-        if (value != null) return value;
-        if (hasDefault) return defaultValue;
-        return null;
-    }
-
-    private static ConfigOrigin aotOrigin(String path) {
-        return () -> "AOT Property: " + path;
+    private static ConfigValue.StringValue toConfigValue(String path, String value) {
+        var origin = new SimpleConfigValueOrigin(AOT_ORIGIN, ConfigValuePath.root().child(path));
+        return new ConfigValue.StringValue(origin, value);
     }
 }
