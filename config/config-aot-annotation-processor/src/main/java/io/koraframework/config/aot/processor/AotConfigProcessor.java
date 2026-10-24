@@ -1,18 +1,12 @@
 package io.koraframework.config.aot.processor;
 
 import com.palantir.javapoet.*;
-import com.typesafe.config.*;
-import com.typesafe.config.Config;
-import com.typesafe.config.ConfigValue;
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.*;
-import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
-import javax.tools.*;
-import java.io.*;
-import java.nio.charset.*;
+import java.net.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
@@ -20,9 +14,8 @@ import java.util.function.*;
 public class AotConfigProcessor extends AbstractKoraProcessor {
 
     private static final int MAX_FIELDS_PER_CHUNK = 400;
-    private static final ConfigRenderOptions CONCISE_NO_JSON = ConfigRenderOptions.concise().setJson(false);
 
-    private Config baseConfig = null;
+    private AotConfigParser configParser = null;
     private boolean isConfigLoaded = false;
     private final Set<ClassName> generatedModules = new LinkedHashSet<>();
 
@@ -40,36 +33,14 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         if (isConfigLoaded) return;
         isConfigLoaded = true;
 
-        var hoconBase = readResource("application.conf", packageName);
-        var yamlBase = readResource("application.yaml", packageName);
-        if (yamlBase.isBlank()) {
-            yamlBase = readResource("application.yml", packageName);
-        }
+        String customResource = processingEnv.getOptions().get("config.resource");
+        if (customResource == null) customResource = System.getProperty("config.resource");
 
-        if (!hoconBase.isBlank()) {
-            baseConfig = ConfigFactory.parseString(hoconBase);
-        } else if (!yamlBase.isBlank()) {
-            var parsedMap = YamlAotParser.parse(yamlBase, null);
-            if (parsedMap != null) {
-                baseConfig = ConfigFactory.parseMap(parsedMap);
-            }
-        }
+        String customFile = processingEnv.getOptions().get("config.file");
+        if (customFile == null) customFile = System.getProperty("config.file");
 
-        if (baseConfig != null) {
-            baseConfig = baseConfig.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
-        }
-    }
-
-    private String readResource(String name, String packageName) {
-        for (var location : List.of(StandardLocation.CLASS_OUTPUT, StandardLocation.SOURCE_PATH)) {
-            try {
-                var resource = processingEnv.getFiler().getResource(location, "", name);
-                try (var is = resource.openInputStream()) {
-                    return new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                }
-            } catch (IOException ignored) {}
-        }
-
+        // Строим кастомный ClassLoader на основе путей поиска проекта
+        List<URL> urls = new ArrayList<>();
         try {
             var runDir = Path.of(System.getProperty("user.dir", "."));
             String packagePath = packageName.replace('.', '/');
@@ -81,14 +52,34 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             );
 
             for (var path : searchPaths) {
-                var file = path.resolve(name);
-                if (Files.exists(file)) {
-                    return Files.readString(file, StandardCharsets.UTF_8);
+                if (Files.exists(path)) {
+                    urls.add(path.toUri().toURL());
                 }
             }
-        } catch (IOException ignored) {}
+            var resourcesPath = runDir.resolve("src/main/resources");
+            if (Files.exists(resourcesPath)) {
+                urls.add(resourcesPath.toUri().toURL());
+            }
+        } catch (Exception ignored) {}
 
-        return "";
+        ClassLoader parentLoader = Thread.currentThread().getContextClassLoader();
+        ClassLoader finalClassLoader = urls.isEmpty()
+            ? parentLoader
+            : new URLClassLoader(urls.toArray(new URL[0]), parentLoader);
+
+        boolean isYaml = false;
+        try {
+            isYaml = finalClassLoader.getResource("application.yaml") != null
+                || finalClassLoader.getResource("application.yml") != null;
+        } catch (Exception ignored) {}
+
+        if (isYaml) {
+            configParser = new YamlAotParser();
+        } else {
+            configParser = new HoconAotParser();
+        }
+
+        configParser.loadAndMerge(finalClassLoader, customResource, customFile);
     }
 
     @Override
@@ -107,7 +98,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         if (!isConfigLoaded) {
-            var firstConfig = (TypeElement) targetElements.get(0).element();
+            var firstConfig = (TypeElement) targetElements.getFirst().element();
             var firstPackageElement = elements.getPackageOf(firstConfig);
             var firstPackageName = firstPackageElement.getQualifiedName().toString();
             loadAllConfigsAtCompileTime(firstPackageName);
@@ -169,7 +160,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 final ChunkContext ctx = new ChunkContext();
 
                 final String currentMethodName = methodName;
-                java.util.function.Consumer<CodeBlock> chunkAppender = (codeLine) -> {
+                Consumer<CodeBlock> chunkAppender = (codeLine) -> {
                     ctx.currentChunkBuilder.add(codeLine);
                     ctx.totalFields++;
 
@@ -196,7 +187,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     }
                 };
 
-                generateFieldResolvers(chunkAppender, config, path, baseConfig);
+                generateFieldResolvers(chunkAppender, config, path, configParser);
 
                 if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
                     String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
@@ -242,8 +233,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
     }
 
-
-    private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, Config currentConfig) {
+    private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, AotConfigParser parser) {
         var configFields = ConfigUtils.parseFields(types, configElement).left();
         if (configFields == null) return;
 
@@ -268,11 +258,11 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             if (isNestedInterface) {
                 chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, false);\n", currentPath, field.name()));
-                generateFieldResolvers(chunkAppender, targetElement, fullKey, currentConfig);
+                generateFieldResolvers(chunkAppender, targetElement, fullKey, parser);
                 continue;
             }
 
-            var baseVal = getConfigValue(currentConfig, fullKey);
+            var baseVal = parser.getConfigValue(fullKey);
             var baseValBlock = baseVal != null ? CodeBlock.of("$S", baseVal.toString()) : CodeBlock.of("null");
 
             chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L);\n",
@@ -286,62 +276,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             || className.startsWith("java.time.")
             || className.startsWith("java.util.");
     }
-
-    private Object getConfigValue(Config config, String path) {
-        if (config == null || path.isBlank()) {
-            return null;
-        }
-
-        String[] parts = path.split("\\.");
-        ConfigObject currentObject = config.root();
-        ConfigValue targetValue = null;
-
-        for (int i = 0; i < parts.length; i++) {
-            String key = parts[i];
-            targetValue = currentObject.get(key);
-
-            if (targetValue == null) {
-                List<String> relaxedNames = PathElement.get(key).relaxedNames();
-                for (String variant : relaxedNames) {
-                    targetValue = currentObject.get(variant);
-                    if (targetValue != null) {
-                        break;
-                    }
-                }
-            }
-
-            if (targetValue == null) {
-                return null;
-            }
-
-            if (i < parts.length - 1) {
-                try {
-                    if (targetValue.valueType() == ConfigValueType.OBJECT) {
-                        currentObject = (ConfigObject) targetValue;
-                    } else {
-                        return null;
-                    }
-                } catch (ConfigException.NotResolved notResolved) {
-                    return targetValue.render(CONCISE_NO_JSON);
-                }
-            }
-        }
-
-        try {
-            if (targetValue.valueType() == ConfigValueType.NULL) {
-                return null;
-            }
-
-            if (targetValue.valueType() == ConfigValueType.LIST) {
-                return targetValue.render(ConfigRenderOptions.concise());
-            }
-
-            return targetValue.unwrapped();
-        } catch (ConfigException.NotResolved notResolved) {
-            return targetValue.render(CONCISE_NO_JSON);
-        }
-    }
-
 
     private void generateGlobalAotConfigModule() {
         if (generatedModules.isEmpty()) return;

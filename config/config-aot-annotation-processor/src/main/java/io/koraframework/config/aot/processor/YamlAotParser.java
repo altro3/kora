@@ -5,7 +5,7 @@ import org.snakeyaml.engine.v2.api.LoadSettings;
 import java.util.HashMap;
 import java.util.Map;
 
-public final class YamlAotParser {
+public final class YamlAotParser implements AotConfigParser {
 
     @SuppressWarnings("unchecked")
     public static Map<String, Object> parse(String mainContent, String profileContent) {
@@ -55,5 +55,15 @@ public final class YamlAotParser {
                 result.put(key, entry.getValue());
             }
         }
+    }
+
+    @Override
+    public void loadAndMerge(ClassLoader classLoader, String customResource, String customFile) {
+
+    }
+
+    @Override
+    public Object getConfigValue(String path) {
+        return null;
     }
 }
