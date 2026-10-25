@@ -4,11 +4,12 @@ import io.koraframework.config.common.*;
 import io.koraframework.config.common.impl.*;
 import io.koraframework.config.common.origin.*;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.*;
 
 public final class AotConfigEvaluator {
 
-    private static final Map<String, String> runtimeOverrides = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Map<String, String> runtimeOverrides = new ConcurrentHashMap<>();
 
     private AotConfigEvaluator() {}
 
@@ -39,7 +40,7 @@ public final class AotConfigEvaluator {
             return new ConfigValue.NumberValue(createOrigin(path), defaultValue);
         }
         
-        Number parsed = null;
+        Number parsed;
         try {
             if (raw.contains(".")) {
                 parsed = Double.parseDouble(raw);
