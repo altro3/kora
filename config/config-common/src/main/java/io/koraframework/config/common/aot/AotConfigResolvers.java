@@ -68,65 +68,66 @@ public final class AotConfigResolvers {
         }
 
         var currentState = getState();
-        var pathParts = currentState.pathSplit.split(configPath);
+        String[] pathParts = currentState.pathSplit.split(configPath);
 
-        var containersChain = new ArrayList<>();
-        var partsChain = new ArrayList<String>();
-        var originsChain = new ArrayList<SimpleConfigValueOrigin>();
-
-        var currentContainer = (Object) rootMap;
+        Object currentContainer = rootMap;
         var currentPath = ConfigValuePath.root();
 
-        for (var i = 0; i < pathParts.length; i++) {
-            var part = pathParts[i];
+        for (int i = 0; i < pathParts.length; i++) {
+            String part = pathParts[i];
             currentPath = currentPath.child(part);
             var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, currentPath);
 
-            var isNextPartInteger = (i + 1 < pathParts.length) && pathParts[i + 1].matches("\\d+");
-
-            containersChain.add(currentContainer);
-            partsChain.add(part);
-            originsChain.add(origin);
+            boolean isNextPartInteger;
+            if (i + 1 < pathParts.length) {
+                isNextPartInteger = pathParts[i + 1].matches("\\d+");
+            } else {
+                isNextPartInteger = fieldName.matches("\\d+");
+            }
 
             if (currentContainer instanceof Map) {
                 @SuppressWarnings("unchecked")
                 var map = (Map<String, ConfigValue<?>>) currentContainer;
-                var existing = map.get(part);
+                ConfigValue<?> existing = map.get(part);
 
                 if (isNextPartInteger) {
                     var listData = new ArrayList<ConfigValue<?>>();
                     if (existing instanceof ConfigValue.ArrayValue arrayVal) {
                         listData.addAll(arrayVal.value());
                     }
+                    map.put(part, new ConfigValue.ArrayValue(origin, listData));
                     currentContainer = listData;
                 } else {
                     var targetMap = new LinkedHashMap<String, ConfigValue<?>>();
                     if (existing instanceof ConfigValue.ObjectValue oldObj) {
                         targetMap.putAll(oldObj.value());
                     }
+                    map.put(part, new ConfigValue.ObjectValue(origin, targetMap));
                     currentContainer = targetMap;
                 }
             } else {
                 @SuppressWarnings("unchecked")
                 var list = (List<ConfigValue<?>>) currentContainer;
-                var index = Integer.parseInt(part);
+                int index = Integer.parseInt(part);
 
                 while (list.size() <= index) {
                     list.add(new ConfigValue.NullValue(origin));
                 }
 
-                var existing = list.get(index);
+                ConfigValue<?> existing = list.get(index);
                 if (isNextPartInteger) {
                     var listData = new ArrayList<ConfigValue<?>>();
                     if (existing instanceof ConfigValue.ArrayValue arrayVal) {
                         listData.addAll(arrayVal.value());
                     }
+                    list.set(index, new ConfigValue.ArrayValue(origin, listData));
                     currentContainer = listData;
                 } else {
                     var targetMap = new LinkedHashMap<String, ConfigValue<?>>();
                     if (existing instanceof ConfigValue.ObjectValue oldObj) {
                         targetMap.putAll(oldObj.value());
                     }
+                    list.set(index, new ConfigValue.ObjectValue(origin, targetMap));
                     currentContainer = targetMap;
                 }
             }
@@ -139,43 +140,13 @@ public final class AotConfigResolvers {
         } else {
             @SuppressWarnings("unchecked")
             var list = (List<ConfigValue<?>>) currentContainer;
-            var index = Integer.parseInt(fieldName);
+            int index = Integer.parseInt(fieldName);
             var finalPath = currentPath.child(fieldName);
             var finalOrigin = new SimpleConfigValueOrigin(currentState.aotOrigin, finalPath);
             while (list.size() <= index) {
                 list.add(new ConfigValue.NullValue(finalOrigin));
             }
             list.set(index, value);
-        }
-
-        for (var i = pathParts.length - 1; i >= 0; i--) {
-            var parentContainer = containersChain.get(i);
-            var part = partsChain.get(i);
-            var origin = originsChain.get(i);
-
-            ConfigValue<?> wrappedValue;
-            if (currentContainer instanceof Map) {
-                @SuppressWarnings("unchecked")
-                var finishedMap = (Map<String, ConfigValue<?>>) currentContainer;
-                wrappedValue = new ConfigValue.ObjectValue(origin, finishedMap);
-            } else {
-                @SuppressWarnings("unchecked")
-                var finishedList = (List<ConfigValue<?>>) currentContainer;
-                wrappedValue = new ConfigValue.ArrayValue(origin, List.copyOf(finishedList));
-            }
-
-            if (parentContainer instanceof Map) {
-                @SuppressWarnings("unchecked")
-                var pMap = (Map<String, ConfigValue<?>>) parentContainer;
-                pMap.put(part, wrappedValue);
-            } else {
-                @SuppressWarnings("unchecked")
-                var pList = (List<ConfigValue<?>>) parentContainer;
-                var index = Integer.parseInt(part);
-                pList.set(index, wrappedValue);
-            }
-
-            currentContainer = parentContainer;
         }
     }
 
@@ -307,12 +278,27 @@ public final class AotConfigResolvers {
                 if (varName.contains(":")) {
                     varName = varName.substring(0, varName.indexOf(":")).trim();
                 }
-                String resolved = System.getenv(varName);
-                if (resolved == null) {
-                    String sysKey = varName.replace('_', '.').toLowerCase();
-                    resolved = System.getProperty(varName);
-                    if (resolved == null) resolved = System.getProperty(sysKey);
+
+                String resolved = null;
+                List<String> variants = PathElement.get(varName).relaxedNames();
+
+                for (String variant : variants) {
+                    String envKey = variant.replace('.', '_').replace('-', '_').toUpperCase();
+                    resolved = System.getenv(envKey);
+                    if (resolved != null) break;
                 }
+
+                if (resolved == null) {
+                    for (String variant : variants) {
+                        resolved = System.getProperty(variant);
+                        if (resolved != null) break;
+
+                        String sysKey = variant.replace('_', '.').toLowerCase();
+                        resolved = System.getProperty(sysKey);
+                        if (resolved != null) break;
+                    }
+                }
+
                 if (resolved == null) {
                     resolved = findInRootMap(rootMap, varName);
                 }
@@ -340,11 +326,24 @@ public final class AotConfigResolvers {
                 fallbackToken = content.substring(colonIndex + 1).trim();
             }
 
-            String resolved = System.getenv(varName);
+            String resolved = null;
+            List<String> variants = PathElement.get(varName).relaxedNames();
+
+            for (String variant : variants) {
+                String envKey = variant.replace('.', '_').replace('-', '_').toUpperCase();
+                resolved = System.getenv(envKey);
+                if (resolved != null) break;
+            }
+
             if (resolved == null) {
-                String sysKey = varName.replace('_', '.').toLowerCase();
-                resolved = System.getProperty(varName);
-                if (resolved == null) resolved = System.getProperty(sysKey);
+                for (String variant : variants) {
+                    resolved = System.getProperty(variant);
+                    if (resolved != null) break;
+
+                    String sysKey = variant.replace('_', '.').toLowerCase();
+                    resolved = System.getProperty(sysKey);
+                    if (resolved != null) break;
+                }
             }
 
             if (resolved == null) {
