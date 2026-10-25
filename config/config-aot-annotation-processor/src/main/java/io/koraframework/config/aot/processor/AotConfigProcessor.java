@@ -15,6 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
+import java.util.regex.*;
 
 public class AotConfigProcessor extends AbstractKoraProcessor {
 
@@ -27,7 +28,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     @Override
     public Set<String> getSupportedOptions() {
-        return Set.of("aot.config.force.reload");
+        return Set.of("aot.config.force.reload", "kora.config.project.dir");
     }
 
     @Override
@@ -92,6 +93,9 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         if (isConfigLoaded) return;
         isConfigLoaded = true;
 
+        var messager = processingEnv.getMessager();
+        messager.printMessage(Kind.NOTE, "[AOT-Config] loadAllConfigsAtCompileTime invoked for package: " + packageName);
+
         String customResource = processingEnv.getOptions().get("config.resource");
         if (customResource == null) customResource = System.getProperty("config.resource");
 
@@ -99,6 +103,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         if (customFile == null) customFile = System.getProperty("config.file");
 
         boolean isTestMode = "true".equalsIgnoreCase(processingEnv.getOptions().get("kora.config.aot.test.mode"));
+        String projectDirOption = processingEnv.getOptions().get("kora.config.project.dir");
 
         var urls = new ArrayList<URL>();
         ClassLoader processorClassLoader = getClass().getClassLoader();
@@ -110,43 +115,65 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 while (resources.hasMoreElements()) {
                     URL resourceUrl = resources.nextElement();
                     urls.add(resourceUrl);
+                    messager.printMessage(Kind.NOTE, "[AOT-Config] AGGREGATION: Discovered classpath resource from JAR: " + resourceUrl);
                 }
             }
         } catch (Exception ignored) {}
 
         try {
-            var runDir = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
             String packagePath = packageName.replace('.', '/');
             var searchPaths = new ArrayList<Path>();
 
             if (isTestMode) {
+                var runDir = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
                 searchPaths.add(runDir.resolve("build/in-test-generated/classes").resolve(packagePath));
                 searchPaths.add(runDir.resolve("build/in-test-generated/sources").resolve(packagePath));
             } else {
-                var dummyResource = processingEnv.getFiler().getResource(StandardLocation.CLASS_OUTPUT, "", "META-INF");
-                var classOutputPath = Path.of(dummyResource.toUri()).toAbsolutePath();
-
-                Path currentModuleDir = classOutputPath;
-                while (currentModuleDir != null && !currentModuleDir.getFileName().toString().equals("build") && currentModuleDir.getParent() != null) {
-                    currentModuleDir = currentModuleDir.getParent();
-                }
-                if (currentModuleDir != null && currentModuleDir.getParent() != null) {
-                    Path realResourcesDir = currentModuleDir.getParent().resolve("src/main/resources");
+                if (projectDirOption != null && !projectDirOption.isBlank()) {
+                    Path moduleDir = Path.of(projectDirOption).toAbsolutePath();
+                    Path realResourcesDir = moduleDir.resolve("src/main/resources");
                     if (Files.exists(realResourcesDir)) {
                         searchPaths.add(realResourcesDir);
                     }
                 }
+
+                String classPath = System.getProperty("java.class.path", "");
+                String pathSeparator = System.getProperty("path.separator", ";");
+
+                messager.printMessage(Kind.NOTE, "[AOT-Config] DIAGNOSTIC: Raw java.class.path: " + classPath);
+                messager.printMessage(Kind.NOTE, "[AOT-Config] DIAGNOSTIC: System path separator: '" + pathSeparator + "'");
+
+                String[] entries = classPath.split(Pattern.quote(pathSeparator));
+                int resourcesFound = 0;
+
+                for (String entry : entries) {
+                    if (entry.replace('\\', '/').contains("/build/resources/main")) {
+                        Path resPath = Path.of(entry).toAbsolutePath();
+                        if (Files.exists(resPath)) {
+                            searchPaths.add(resPath);
+                            resourcesFound++;
+                            messager.printMessage(Kind.NOTE, "[AOT-Config] AGGREGATION: Added dependency resources path: " + resPath);
+                        }
+                    }
+                }
+                messager.printMessage(Kind.NOTE, "[AOT-Config] DIAGNOSTIC: Total active dependency resource folders found: " + resourcesFound);
             }
 
             for (var path : searchPaths) {
-                if (Files.exists(path)) {
+                boolean exists = Files.exists(path);
+                if (exists) {
                     var fileUrl = path.toUri().toURL();
                     if (!urls.contains(fileUrl)) {
                         urls.add(fileUrl);
                     }
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            messager.printMessage(Kind.WARNING, "[AOT-Config] Error aggregating classpath paths: " + e.toString());
+        }
+
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Total distinct URLs collected for classloader: " + urls.size());
+
         ClassLoader finalClassLoader = urls.isEmpty()
             ? processorClassLoader
             : new URLClassLoader(urls.toArray(new URL[0]), processorClassLoader);
@@ -159,6 +186,8 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 || finalClassLoader.getResource("reference.yaml") != null;
         } catch (Exception ignored) {}
 
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Detected configuration format: " + (isYaml ? "YAML" : "HOCON"));
+
         if (isYaml) {
             configParser = new YamlAotParser();
         } else {
@@ -166,6 +195,18 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
 
         configParser.loadAndMerge(finalClassLoader, customResource, customFile);
+
+        if (configParser instanceof HoconAotParser hoconParser) {
+            try {
+                var field = HoconAotParser.class.getDeclaredField("baseConfig");
+                field.setAccessible(true);
+                com.typesafe.config.Config mergedConfig = (com.typesafe.config.Config) field.get(hoconParser);
+
+                messager.printMessage(Kind.NOTE, "[AOT-Config] ================= MERGED CONFIG GRAPH =================");
+                messager.printMessage(Kind.NOTE, mergedConfig.root().render(com.typesafe.config.ConfigRenderOptions.defaults().setComments(false).setOriginComments(true)));
+                messager.printMessage(Kind.NOTE, "[AOT-Config] =======================================================");
+            } catch (Exception ignored) {}
+        }
     }
 
     private void generateAotModuleForConfig(TypeElement config) {
