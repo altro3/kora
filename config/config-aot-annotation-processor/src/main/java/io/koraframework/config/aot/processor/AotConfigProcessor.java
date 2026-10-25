@@ -115,16 +115,13 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         } catch (Exception ignored) {}
 
         try {
-            var dummyResource = processingEnv.getFiler().getResource(StandardLocation.CLASS_OUTPUT, "", "META-INF");
-            var classOutputPath = Path.of(dummyResource.toUri()).getParent();
-
-            var projectBuildDir = classOutputPath.getParent().getParent().getParent();
-            var moduleDir = projectBuildDir.getParent();
+            var runDir = Path.of(System.getProperty("user.dir", "."));
+            String packagePath = packageName.replace('.', '/');
 
             var searchPaths = List.of(
-                classOutputPath,
-                moduleDir.resolve("src/main/resources"),
-                projectBuildDir.resolve("resources/main")
+                runDir.resolve("build/in-test-generated/classes").resolve(packagePath),
+                runDir.resolve("build/in-test-generated/sources").resolve(packagePath),
+                runDir.resolve("src/main/resources")
             );
 
             for (var path : searchPaths) {
@@ -135,21 +132,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     }
                 }
             }
-        } catch (Exception e) {
-            try {
-                var runDir = Path.of(System.getProperty("user.dir", "."));
-                var fallbackPaths = List.of(
-                    runDir.resolve("src/main/resources"),
-                    runDir.resolve("service-kora-benchmark-java/src/main/resources")
-                );
-                for (var path : fallbackPaths) {
-                    if (Files.exists(path)) {
-                        var fileUrl = path.toUri().toURL();
-                        if (!urls.contains(fileUrl)) urls.add(fileUrl);
-                    }
-                }
-            } catch (Exception ignored) {}
-        }
+        } catch (Exception ignored) {}
         ClassLoader finalClassLoader = urls.isEmpty()
             ? processorClassLoader
             : new URLClassLoader(urls.toArray(new URL[0]), processorClassLoader);
@@ -172,7 +155,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
     }
 
     private void generateAotModuleForConfig(TypeElement config) {
-        var resolversClass = ClassName.get("io.koraframework.config.aot", "AotConfigResolvers");
+        var resolversClass = ClassName.get("io.koraframework.config.aot", "AotConfigResolver");
         var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
 
         var moduleName = config.getSimpleName() + "AotModule";

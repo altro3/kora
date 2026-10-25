@@ -2,7 +2,6 @@ package io.koraframework.config.aot.processor;
 
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.processor.*;
-import io.koraframework.config.common.aot.*;
 import io.koraframework.validation.annotation.processor.*;
 import org.intellij.lang.annotations.*;
 import org.junit.jupiter.api.*;
