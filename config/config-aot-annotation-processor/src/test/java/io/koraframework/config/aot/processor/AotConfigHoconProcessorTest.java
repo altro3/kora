@@ -707,4 +707,73 @@ public class AotConfigHoconProcessorTest extends AbstractAotConfigTest {
             System.clearProperty("APP_TIMEOUT");
         }
     }
+
+    @Test
+    public void testMapWithEnumKeyAndRelaxedBinding() throws Exception {
+        var baseConf = """
+            app {
+              mode = "ENABLED"
+              featuresMap = {
+                "SOME_VALUE" = { p1 = "data1", p2 = "data2" }
+                "another-value" = { p1 = "data3", p2 = "data4" }
+              }
+            }
+            """;
+
+        compileAotConfig("application.conf", baseConf, """
+            import io.koraframework.config.common.annotation.*;
+            import java.util.*;
+            
+            @ConfigSource("app")
+            public interface EnumMapConfig {
+            
+                enum MyFeature {
+                    SOME_VALUE,
+                    ANOTHER_VALUE
+                }
+            
+                Map<MyFeature, NestedObj> featuresMap();
+            
+                @ConfigMapper
+                interface NestedObj {
+                    String p1();
+                    String p2();
+                }
+            }
+            """);
+
+        var moduleClass = compileResult.loadClass("EnumMapConfigAotModule");
+        var factoryMethod = moduleClass.getMethod("enumMapConfig", io.koraframework.config.common.mapper.ConfigValueMapper.class);
+
+        var moduleInstance = Proxy.newProxyInstance(
+            moduleClass.getClassLoader(),
+            new Class<?>[] {moduleClass},
+            (proxy, method, args) -> method.isDefault() ? InvocationHandler.invokeDefault(proxy, method, args) : null
+        );
+
+        var capturedValueRef = new AtomicReference<ConfigValue.ObjectValue>();
+        var mapperMock = (ConfigValueMapper<?>) Proxy.newProxyInstance(
+            ConfigValueMapper.class.getClassLoader(),
+            new Class<?>[] {ConfigValueMapper.class},
+            (_, method, args) -> {
+                if (method.getName().equals("map") && args != null && args.length > 0 && args[0] instanceof ConfigValue.ObjectValue) {
+                    capturedValueRef.set((ConfigValue.ObjectValue) args[0]);
+                }
+                return null;
+            }
+        );
+
+        factoryMethod.invoke(moduleInstance, mapperMock);
+        var appConfig = capturedValueRef.get();
+        assertThat(appConfig).isNotNull();
+
+        var featuresMapValue = appConfig.get(PathElement.get("featuresMap")).asObject();
+        assertThat(featuresMapValue).isNotNull();
+
+        var firstObj = featuresMapValue.get(PathElement.get("SOME_VALUE")).asObject();
+        assertThat(firstObj.get(PathElement.get("p1")).asString()).isEqualTo("data1");
+
+        var secondObj = featuresMapValue.get(PathElement.get("another-value")).asObject();
+        assertThat(secondObj.get(PathElement.get("p1")).asString()).isEqualTo("data3");
+    }
 }

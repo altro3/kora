@@ -26,10 +26,10 @@ public final class AotConfigResolvers {
         return current;
     }
 
-    public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault) {
+    public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault, @Nullable List<String> preCalculatedRelaxedNames) {
         var fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
 
-        var value = resolveValue(rootMap, fullSysKey, baseValue, fallbackValue, hasInterfaceDefault);
+        var value = resolveValue(rootMap, fullSysKey, baseValue, fallbackValue, hasInterfaceDefault, preCalculatedRelaxedNames);
         if (value == null) {
             return;
         }
@@ -59,6 +59,44 @@ public final class AotConfigResolvers {
                 putIntoTree(rootMap, subPath, subFieldName, resolvedVal);
             }
         }
+    }
+
+    public static @Nullable ConfigValue<?> resolveValue(Map<String, ConfigValue<?>> rootMap, String sysKey, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault, @Nullable List<String> preCalculatedRelaxedNames) {
+        String lastPart = sysKey.contains(".") ? sysKey.substring(sysKey.lastIndexOf('.') + 1) : sysKey;
+        String prefix = sysKey.contains(".") ? sysKey.substring(0, sysKey.lastIndexOf('.') + 1) : "";
+
+        List<String> relaxedVariants = preCalculatedRelaxedNames != null
+            ? preCalculatedRelaxedNames
+            : PathElement.get(lastPart).relaxedNames();
+
+        for (String variant : relaxedVariants) {
+            String fullKey = (prefix + variant).replace('.', '_').replace('-', '_').toUpperCase();
+            var env = System.getenv(fullKey);
+            if (env != null) return toKoraValue(rootMap, sysKey, env, fallbackValue);
+
+            var sysEnvFallback = System.getProperty(fullKey);
+            if (sysEnvFallback != null) return toKoraValue(rootMap, sysKey, sysEnvFallback, fallbackValue);
+        }
+
+        for (String variant : relaxedVariants) {
+            String fullSysKey = prefix + variant;
+            var sys = System.getProperty(fullSysKey);
+            if (sys != null) return toKoraValue(rootMap, sysKey, sys, fallbackValue);
+        }
+
+        if (baseValue != null) {
+            return toKoraValue(rootMap, sysKey, baseValue, fallbackValue);
+        }
+
+        if (hasInterfaceDefault) return null;
+
+        if (fallbackValue != null) {
+            return toKoraValue(rootMap, sysKey, fallbackValue, null);
+        }
+
+        ResolverState currentState = getState();
+        var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, ConfigValuePath.root().child(sysKey));
+        return new ConfigValue.ObjectValue(origin, new LinkedHashMap<>());
     }
 
     private static void putIntoTree(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, ConfigValue<?> value) {
@@ -148,42 +186,6 @@ public final class AotConfigResolvers {
             }
             list.set(index, value);
         }
-    }
-
-    public static @Nullable ConfigValue<?> resolveValue(Map<String, ConfigValue<?>> rootMap, String sysKey, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault) {
-        String lastPart = sysKey.contains(".") ? sysKey.substring(sysKey.lastIndexOf('.') + 1) : sysKey;
-        String prefix = sysKey.contains(".") ? sysKey.substring(0, sysKey.lastIndexOf('.') + 1) : "";
-
-        List<String> relaxedVariants = PathElement.get(lastPart).relaxedNames();
-
-        for (String variant : relaxedVariants) {
-            String fullKey = (prefix + variant).replace('.', '_').replace('-', '_').toUpperCase();
-            var env = System.getenv(fullKey);
-            if (env != null) return toKoraValue(rootMap, sysKey, env, fallbackValue);
-
-            var sysEnvFallback = System.getProperty(fullKey);
-            if (sysEnvFallback != null) return toKoraValue(rootMap, sysKey, sysEnvFallback, fallbackValue);
-        }
-
-        for (String variant : relaxedVariants) {
-            String fullSysKey = prefix + variant;
-            var sys = System.getProperty(fullSysKey);
-            if (sys != null) return toKoraValue(rootMap, sysKey, sys, fallbackValue);
-        }
-
-        if (baseValue != null) {
-            return toKoraValue(rootMap, sysKey, baseValue, fallbackValue);
-        }
-
-        if (hasInterfaceDefault) return null;
-
-        if (fallbackValue != null) {
-            return toKoraValue(rootMap, sysKey, fallbackValue, null);
-        }
-
-        ResolverState currentState = getState();
-        var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, ConfigValuePath.root().child(sysKey));
-        return new ConfigValue.ObjectValue(origin, new LinkedHashMap<>());
     }
 
     private static ConfigValue<?> toKoraValue(Map<String, ConfigValue<?>> rootMap, String path, Object value, Object fallbackValue) {

@@ -13,7 +13,7 @@ import java.util.function.*;
 
 public class AotConfigProcessor extends AbstractKoraProcessor {
 
-    private static final int MAX_FIELDS_PER_CHUNK = 400;
+    private static final int MAX_FIELDS_PER_CHUNK = 350;
 
     private AotConfigParser configParser = null;
     private boolean isConfigLoaded = false;
@@ -94,10 +94,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     @Override
     protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
-        if (roundEnv.processingOver()) {
-            generateGlobalAotConfigModule();
-            return;
-        }
 
         var resolversClass = ClassName.get("io.koraframework.config.common.aot", "AotConfigResolvers");
         var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
@@ -127,6 +123,11 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 .addAnnotation(AnnotationUtils.generated(AotConfigProcessor.class))
                 .addAnnotation(CommonClassNames.module)
                 .addModifiers(Modifier.PUBLIC);
+
+            typeBuilder.addType(TypeSpec.classBuilder("Impl")
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+                .addSuperinterface(ClassName.get(packageName, moduleName))
+                .build());
 
             var path = AnnotationUtils.<String>parseAnnotationValueWithoutDefault(
                 AnnotationUtils.findAnnotation(config, ConfigClassNames.configSourceAnnotation), "value"
@@ -237,6 +238,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
             var javaFile = JavaFile.builder(packageName, typeBuilder.build())
                 .addStaticImport(resolversClass, "*")
+                .addStaticImport(ClassName.get(Map.class), "*")
                 .build();
 
             CommonUtils.safeWriteTo(processingEnv, javaFile);
@@ -272,7 +274,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 }
 
                 if (isNestedInterface) {
-                    chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false);\n", currentPath, field.name()));
+                    chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false, null);\n", currentPath, field.name()));
                     generateFieldResolvers(chunkAppender, targetElement, fullKey, parser, visited);
                     continue;
                 }
@@ -289,14 +291,23 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     baseValBlock = convertToCodeBlock(baseVal);
                 }
 
-                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L);\n",
-                    currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault
+                var relaxedVariants = io.koraframework.config.common.PathElement.get(field.name()).relaxedNames();
+                var listLiteral = CodeBlock.builder().add("$T.of(", List.class);
+                for (int i = 0; i < relaxedVariants.size(); i++) {
+                    listLiteral.add("$S", relaxedVariants.get(i));
+                    if (i < relaxedVariants.size() - 1) listLiteral.add(", ");
+                }
+                listLiteral.add(")");
+
+                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L, $L);\n",
+                    currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault, listLiteral.build()
                 ));
             }
         } finally {
             visited.remove(configElement);
         }
     }
+
 
     private CodeBlock convertToCodeBlock(Object koraValue) {
         if (koraValue == null) return CodeBlock.of("null");
