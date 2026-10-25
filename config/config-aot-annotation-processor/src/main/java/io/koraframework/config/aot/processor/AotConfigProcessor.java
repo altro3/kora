@@ -7,10 +7,11 @@ import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
-import javax.tools.*;
+import javax.tools.Diagnostic.*;
+import javax.tools.StandardLocation;
 import java.io.*;
 import java.net.*;
-import java.nio.charset.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
@@ -48,7 +49,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
         ClassLoader processorClassLoader = getClass().getClassLoader();
         try {
-            List<String> filesToSearch = List.of("reference.conf", "application.yaml", "application.yml");
+            List<String> filesToSearch = List.of("reference.conf", "application.conf", "reference.yaml", "reference.yml", "application.yaml", "application.yml");
             for (String fileName : filesToSearch) {
                 Enumeration<URL> resources = processorClassLoader.getResources(fileName);
                 while (resources.hasMoreElements()) {
@@ -59,13 +60,16 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         } catch (Exception ignored) {}
 
         try {
-            var runDir = Path.of(System.getProperty("user.dir", "."));
-            String packagePath = packageName.replace('.', '/');
+            var dummyResource = processingEnv.getFiler().getResource(StandardLocation.CLASS_OUTPUT, "", "META-INF");
+            var classOutputPath = Path.of(dummyResource.toUri()).getParent();
+
+            var projectBuildDir = classOutputPath.getParent().getParent().getParent();
+            var moduleDir = projectBuildDir.getParent();
 
             var searchPaths = List.of(
-                runDir.resolve("build/in-test-generated/classes").resolve(packagePath),
-                runDir.resolve("build/in-test-generated/sources").resolve(packagePath),
-                runDir.resolve("src/main/resources")
+                classOutputPath,
+                moduleDir.resolve("src/main/resources"),
+                projectBuildDir.resolve("resources/main")
             );
 
             for (var path : searchPaths) {
@@ -76,8 +80,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     }
                 }
             }
-        } catch (Exception ignored) {}
-
+        } catch (Exception e) {
+            try {
+                var runDir = Path.of(System.getProperty("user.dir", "."));
+                var fallbackPaths = List.of(
+                    runDir.resolve("src/main/resources"),
+                    runDir.resolve("service-kora-benchmark-java/src/main/resources")
+                );
+                for (var path : fallbackPaths) {
+                    if (Files.exists(path)) {
+                        var fileUrl = path.toUri().toURL();
+                        if (!urls.contains(fileUrl)) urls.add(fileUrl);
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
         ClassLoader finalClassLoader = urls.isEmpty()
             ? processorClassLoader
             : new URLClassLoader(urls.toArray(new URL[0]), processorClassLoader);
@@ -85,7 +102,9 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         boolean isYaml = false;
         try {
             isYaml = finalClassLoader.getResource("application.yaml") != null
-                || finalClassLoader.getResource("application.yml") != null;
+                || finalClassLoader.getResource("application.yml") != null
+                || finalClassLoader.getResource("reference.yml") != null
+                || finalClassLoader.getResource("reference.yaml") != null;
         } catch (Exception ignored) {}
 
         if (isYaml) {
@@ -99,11 +118,17 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     @Override
     protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
+        var messager = processingEnv.getMessager();
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Processor invoked. Over: " + roundEnv.processingOver());
+
         var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
         var localConfigs = new ArrayList<TypeElement>();
 
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Found target annotated elements size: " + targetElements.size());
+
         for (var annotated : targetElements) {
             if (annotated.element() instanceof TypeElement te) {
+                messager.printMessage(Kind.NOTE, "[AOT-Config] Processing local class: " + te.getQualifiedName());
                 localConfigs.add(te);
                 processedConfigClasses.add(te.getQualifiedName().toString());
             }
@@ -115,22 +140,30 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 loadAllConfigsAtCompileTime(firstPackageElement.getQualifiedName().toString());
             }
             for (var config : localConfigs) {
+                messager.printMessage(Kind.NOTE, "[AOT-Config] Generating AOT module for: " + config.getSimpleName());
                 generateAotModuleForConfig(config);
             }
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Writing meta-inf for local configs...");
             writeMetaInfConfigSources(localConfigs);
         }
 
         if (roundEnv.processingOver()) {
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Reached processingOver round. Reading external config sources...");
             var externalConfigClassNames = readExternalConfigSources();
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Found external config sources in classpath size: " + externalConfigClassNames.size());
+
             if (!externalConfigClassNames.isEmpty()) {
                 if (!isConfigLoaded) {
                     loadAllConfigsAtCompileTime("io.koraframework.config.aot");
                 }
                 for (String className : externalConfigClassNames) {
                     if (processedConfigClasses.add(className)) {
+                        messager.printMessage(Kind.NOTE, "[AOT-Config] Processing external class from SPI: " + className);
                         TypeElement te = processingEnv.getElementUtils().getTypeElement(className);
                         if (te != null) {
                             generateAotModuleForConfig(te);
+                        } else {
+                            messager.printMessage(Kind.WARNING, "[AOT-Config] Could not resolve TypeElement for external class: " + className);
                         }
                     }
                 }
@@ -248,7 +281,15 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             if (path.isBlank()) {
                 initCode.add("var targetValue = finalObjectValue;\n");
             } else {
-                initCode.add("var targetValue = finalObjectValue.get($T.get($S));\n", pathElement, path);
+                String[] pathParts = path.split("\\.");
+                initCode.add("var targetValue = finalObjectValue");
+                for (int i = 0; i < pathParts.length; i++) {
+                    initCode.add(".get($T.get($S))", pathElement, pathParts[i]);
+                    if (i < pathParts.length - 1) {
+                        initCode.add(".asObject()");
+                    }
+                }
+                initCode.add(";\n");
             }
 
             initCode.add("return mapper.map(targetValue);\n");
@@ -271,23 +312,25 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     private void writeMetaInfConfigSources(List<TypeElement> elements) {
         if (elements.isEmpty()) return;
+        var messager = processingEnv.getMessager();
         try {
             var resource = processingEnv.getFiler().createResource(
                 StandardLocation.CLASS_OUTPUT,
                 "",
-                "META-INF/kora/config-sources",
-                elements.toArray(new TypeElement[0])
+                META_INF_PATH
             );
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Resource created at: " + resource.toUri());
             try (var writer = new BufferedWriter(new OutputStreamWriter(resource.openOutputStream(), StandardCharsets.UTF_8))) {
                 for (var element : elements) {
                     writer.write(element.getQualifiedName().toString());
                     writer.newLine();
                 }
             }
+            messager.printMessage(Kind.NOTE, "[AOT-Config] META-INF successfully written.");
         } catch (Exception e) {
-            processingEnv.getMessager().printMessage(
-                Diagnostic.Kind.WARNING,
-                "Kora AOT Processor failed to write META-INF: " + e.getMessage()
+            messager.printMessage(
+                Kind.ERROR,
+                "[AOT-Config] CRITICAL ERROR writing META-INF: " + e.getMessage() + " | Type: " + e.getClass().getName()
             );
         }
     }
