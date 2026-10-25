@@ -19,11 +19,11 @@ dependencies {
 
 gradlePlugin {
     plugins {
-        koraConfigAot {
-            id = 'io.koraframework.config-aot'
-            implementationClass = 'io.koraframework.config.aot.gradle.KoraAotConfigPlugin'
-            displayName = 'Kora Framework AOT Configuration Compiler Plugin'
-            description = 'Gradle Plugin for Kora Framework to merge and compile HOCON/YAML configs to static AOT Java source code.'
+        register("koraConfigAot") {
+            id = "io.koraframework.config-aot"
+            implementationClass = "io.koraframework.config.aot.gradle.KoraAotConfigPlugin"
+            displayName = "Kora Framework AOT Configuration Compiler Plugin"
+            description = "Gradle Plugin for Kora Framework to merge and compile HOCON/YAML configs to static AOT Java source code."
         }
     }
 }
@@ -37,13 +37,12 @@ java {
     withSourcesJar()
 }
 
-
 tasks.withType(JavaCompile).configureEach {
     options.encoding("UTF-8")
     options.debug = true
-    options.compilerArgs << '-parameters' << '-XprintRounds'
+    options.compilerArgs << "-parameters" << "-XprintRounds"
     if (name == "compileJava" && !project.name.contains("internal")) {
-        options.compilerArgs << '-Xlint:all' << '-Xlint:-serial,-processing,-missing-explicit-ctor'
+        options.compilerArgs << "-Xlint:all" << "-Xlint:-serial,-processing,-missing-explicit-ctor"
     }
 }
 
@@ -51,32 +50,32 @@ publishing {
     publications {
         pluginMaven(MavenPublication) {
             pom {
-                name = 'config-aot-gradle'
+                name = "config-aot-gradle"
                 description = "Kora config-aot-gradle plugin module"
                 licenses {
                     license {
-                        name = 'The Apache Software License, Version 2.0'
-                        url = 'https://github.com'
+                        name = "The Apache Software License, Version 2.0"
+                        url = "https://github.com"
                     }
                 }
                 scm {
-                    url = 'https://github.com'
-                    connection = 'scm:git:git@://github.com'
-                    developerConnection = 'scm:git:git@://github.com'
+                    url = "https://github.com"
+                    connection = "scm:git:git@://github.com"
+                    developerConnection = "scm:git:git@://github.com"
                 }
-                url = 'https://github.com'
+                url = "https://github.com"
                 developers {
-                    developer { id = 'a.otts'; name = 'Aleksei Otts'; email = 'eld0727@mail.ru' }
-                    developer { id = 'a.duyun'; name = 'Anton Duyun'; email = 'anton.duyun@gmail.com' }
-                    developer { id = 'a.kurako'; name = 'Anton Kurako'; email = 'goodforgood.dev@gmail.com' }
-                    developer { id = 'a.yakovlev'; name = 'Artem Yakovlev'; email = 'jakart89@gmail.com' }
+                    developer { id = "a.otts"; name = "Aleksei Otts"; email = "eld0727@mail.ru" }
+                    developer { id = "a.duyun"; name = "Anton Duyun"; email = "anton.duyun@gmail.com" }
+                    developer { id = "a.kurako"; name = "Anton Kurako"; email = "goodforgood.dev@gmail.com" }
+                    developer { id = "a.yakovlev"; name = "Artem Yakovlev"; email = "jakart89@gmail.com" }
                 }
             }
         }
     }
     repositories {
         maven {
-            name = 'build'
+            name = "build"
             url = project.rootProject.layout.buildDirectory.dir("publishing-repository")
         }
     }
@@ -93,4 +92,3 @@ signing {
         sign publishing.publications.pluginMaven
     }
 }
-

@@ -18,9 +18,17 @@ public interface AotConfigModule extends ConfigModule, ConfigValueMapperModule {
 
     @ApplicationConfig
     default Config applicationConfig(@ApplicationConfig ConfigOrigin origin) {
-        var valueOrigin = new SimpleConfigValueOrigin(origin, ConfigValuePath.root());
-        var emptyObject = new ObjectValue(valueOrigin, new LinkedHashMap<>());
+        // Динамически будим статический блок сгенерированного Impl без прямой связи типов
+        AotConfigEvaluator.loadAotOverrides();
 
-        return new SimpleConfig(origin, emptyObject);
+        var valueOrigin = new SimpleConfigValueOrigin(origin, ConfigValuePath.root());
+        var globalRootMap = new LinkedHashMap<String, ConfigValue<?>>();
+
+        for (var entry : AotConfigEvaluator.getRuntimeOverrides().entrySet()) {
+            AotConfigEvaluator.buildTreeFromFlatMap(globalRootMap, entry.getKey(), entry.getValue());
+        }
+
+        var globalObject = new ObjectValue(valueOrigin, globalRootMap);
+        return new SimpleConfig(origin, globalObject);
     }
 }
