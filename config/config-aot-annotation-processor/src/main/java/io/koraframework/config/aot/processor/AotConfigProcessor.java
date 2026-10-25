@@ -294,6 +294,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
     private CodeBlock convertToCodeBlock(Object koraValue) {
         if (koraValue == null) return CodeBlock.of("null");
         if (koraValue instanceof String str) return CodeBlock.of("$S", str);
+        if (koraValue instanceof Long lon) return CodeBlock.of("$LL", lon);
         if (koraValue instanceof Number num) return CodeBlock.of("$L", num);
         if (koraValue instanceof Boolean bool) return CodeBlock.of("$L", bool);
         if (koraValue instanceof List<?> list) {
