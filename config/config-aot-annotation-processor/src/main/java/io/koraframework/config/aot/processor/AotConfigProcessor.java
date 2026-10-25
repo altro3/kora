@@ -10,6 +10,7 @@ import javax.lang.model.element.*;
 import javax.tools.*;
 import java.io.*;
 import java.net.*;
+import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
@@ -98,7 +99,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     @Override
     protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
-        // Фаза 1: Собираем локальные интерфейсы конфигурации текущего модуля
         var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
         var localConfigs = new ArrayList<TypeElement>();
 
@@ -109,25 +109,21 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             }
         }
 
-        // Запускаем генерацию для локальных элементов текущего раунда
         if (!localConfigs.isEmpty()) {
             if (!isConfigLoaded) {
                 var firstPackageElement = elements.getPackageOf(localConfigs.getFirst());
                 loadAllConfigsAtCompileTime(firstPackageElement.getQualifiedName().toString());
             }
             for (var config : localConfigs) {
-                generateAotModuleForConfig(config); // Наш метод генерации (бывший кусок process)
+                generateAotModuleForConfig(config);
             }
-            // Записываем локальные конфиги в META-INF, чтобы их увидели зависимые модули
             writeMetaInfConfigSources(localConfigs);
         }
 
-        // Фаза 2: Финальный раунд. Сканируем classpath на наличие конфигов из сторонних JAR-ников
         if (roundEnv.processingOver()) {
             var externalConfigClassNames = readExternalConfigSources();
             if (!externalConfigClassNames.isEmpty()) {
                 if (!isConfigLoaded) {
-                    // Если локальных конфигов не было, инициализируем парсер по дефолтному пакету
                     loadAllConfigsAtCompileTime("io.koraframework.config.aot");
                 }
                 for (String className : externalConfigClassNames) {
@@ -274,15 +270,26 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
     }
 
     private void writeMetaInfConfigSources(List<TypeElement> elements) {
+        if (elements.isEmpty()) return;
         try {
-            var resource = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT, "", META_INF_PATH);
-            try (var writer = new BufferedWriter(new OutputStreamWriter(resource.openOutputStream()))) {
+            var resource = processingEnv.getFiler().createResource(
+                StandardLocation.CLASS_OUTPUT,
+                "",
+                "META-INF/kora/config-sources",
+                elements.toArray(new TypeElement[0])
+            );
+            try (var writer = new BufferedWriter(new OutputStreamWriter(resource.openOutputStream(), StandardCharsets.UTF_8))) {
                 for (var element : elements) {
                     writer.write(element.getQualifiedName().toString());
                     writer.newLine();
                 }
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            processingEnv.getMessager().printMessage(
+                Diagnostic.Kind.WARNING,
+                "Kora AOT Processor failed to write META-INF: " + e.getMessage()
+            );
+        }
     }
 
     private Set<String> readExternalConfigSources() {
