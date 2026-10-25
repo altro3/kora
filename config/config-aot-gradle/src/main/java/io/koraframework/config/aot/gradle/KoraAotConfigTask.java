@@ -14,18 +14,19 @@ import javax.lang.model.element.Modifier;
 import java.io.*;
 import java.lang.reflect.*;
 import java.net.*;
+import java.nio.file.*;
 import java.util.*;
 import java.util.function.*;
+import java.util.regex.*;
 
 @CacheableTask
 public abstract class KoraAotConfigTask extends DefaultTask {
     private static final int MAX_FIELDS_PER_CHUNK = 350;
-
     private static final String ANNOTATION_NAME = "io.koraframework.config.common.annotation.ConfigSource";
 
     @InputFiles
     @PathSensitive(PathSensitivity.RELATIVE)
-    public abstract ConfigurableFileCollection getCompileClassesDirs();
+    public abstract ConfigurableFileCollection getJavaSourceDirs();
 
     @InputFiles
     @PathSensitive(PathSensitivity.RELATIVE)
@@ -55,17 +56,42 @@ public abstract class KoraAotConfigTask extends DefaultTask {
 
         var targetClasses = new LinkedHashSet<String>();
 
-        List<File> targetDirs = new ArrayList<>();
-        for (File dir : getCompileClassesDirs().getFiles()) {
-            if (dir.exists()) targetDirs.add(dir);
+        var packagePattern = Pattern.compile("^\\s*package\\s+([a-zA-Z0-9._]+);");
+        var interfacePattern = Pattern.compile("public\\s+interface\\s+([a-zA-Z0-9_]+)");
+
+        for (var srcDir : getJavaSourceDirs().getFiles()) {
+            if (!srcDir.exists()) continue;
+
+            try (var stream = Files.walk(srcDir.toPath())) {
+                stream.filter(p -> p.toString().endsWith(".java")).forEach(path -> {
+                    try {
+                        String content = Files.readString(path);
+                        if (content.contains("@ConfigSource")) {
+                            Matcher pkgMatcher = packagePattern.matcher(content);
+                            String packageName = pkgMatcher.find() ? pkgMatcher.group(1) : "";
+
+                            Matcher intMatcher = interfacePattern.matcher(content);
+                            if (intMatcher.find()) {
+                                String interfaceName = intMatcher.group(1);
+                                String fullClassName = packageName.isEmpty() ? interfaceName : packageName + "." + interfaceName;
+                                targetClasses.add(fullClassName);
+                            }
+                        }
+                    } catch (IOException ignored) {}
+                });
+            }
         }
 
-        if (!targetDirs.isEmpty()) {
-            try (var scanResult = new ClassGraph()
-                .overrideClasspath(targetDirs)
+        var classpathFiles = new ArrayList<File>();
+        for (var file : getClasspathResources().getFiles()) {
+            if (file.exists()) classpathFiles.add(file);
+        }
+
+        if (!classpathFiles.isEmpty()) {
+            try (ScanResult scanResult = new ClassGraph()
+                .overrideClasspath(classpathFiles)
                 .enableAnnotationInfo()
                 .scan()) {
-
                 targetClasses.addAll(scanResult.getClassesWithAnnotation(ANNOTATION_NAME).getNames());
             }
         }
@@ -74,16 +100,13 @@ public abstract class KoraAotConfigTask extends DefaultTask {
             getLogger().lifecycle("[Kora-Aot] No classes with @ConfigSource found. Skipping AOT generation.");
             return;
         }
-        getLogger().lifecycle("[Kora-Aot] Found {} configuration classes via ClassGraph.", targetClasses.size());
+        getLogger().lifecycle("[Kora-Aot] Found {} configuration classes to compile.", targetClasses.size());
 
         List<URL> urls = new ArrayList<>();
-        for (File file : getClasspathResources().getFiles()) {
-            if (file.exists()) urls.add(file.toURI().toURL());
+        for (File file : classpathFiles) {
+            urls.add(file.toURI().toURL());
         }
-        for (File dir : targetDirs) {
-            urls.add(dir.toURI().toURL());
-        }
-        var projectClassLoader = new URLClassLoader(urls.toArray(new URL[0]), getClass().getClassLoader());
+        URLClassLoader projectClassLoader = new URLClassLoader(urls.toArray(new URL[0]), getClass().getClassLoader());
 
         String format = getConfigFormat().getOrElse("HOCON");
         AotConfigParser configParser = "YAML".equalsIgnoreCase(format) ? new YamlAotParser() : new HoconAotParser();
