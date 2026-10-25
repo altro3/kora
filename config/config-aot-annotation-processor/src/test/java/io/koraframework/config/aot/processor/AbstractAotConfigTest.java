@@ -2,6 +2,7 @@ package io.koraframework.config.aot.processor;
 
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.processor.*;
+import io.koraframework.config.aot.AotConfigResolver;
 import io.koraframework.validation.annotation.processor.*;
 import org.intellij.lang.annotations.*;
 import org.junit.jupiter.api.*;
@@ -51,11 +52,15 @@ public abstract class AbstractAotConfigTest extends AbstractAnnotationProcessorT
             Files.deleteIfExists(targetClassesDir.resolve("application.conf"));
             Files.deleteIfExists(targetClassesDir.resolve("application.yaml"));
             Files.deleteIfExists(targetClassesDir.resolve("application.yml"));
+            Files.deleteIfExists(targetClassesDir.resolve("META-INF/kora/config-sources"));
 
             var targetSourcesDir = Paths.get("build", "in-test-generated", "sources");
             Files.deleteIfExists(targetSourcesDir.resolve("application.conf"));
             Files.deleteIfExists(targetSourcesDir.resolve("application.yaml"));
             Files.deleteIfExists(targetSourcesDir.resolve("application.yml"));
+            Files.deleteIfExists(targetSourcesDir.resolve("META-INF/kora/config-sources"));
+
+            AotConfigResolver.clear();
         } catch (IOException ignored) {}
     }
 }
