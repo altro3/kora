@@ -3,7 +3,6 @@ package io.koraframework.config.aot.processor;
 import com.palantir.javapoet.*;
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.*;
-import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
@@ -198,7 +197,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     }
                 };
 
-                generateFieldResolvers(chunkAppender, config, path, configParser);
+                generateFieldResolvers(chunkAppender, config, path, configParser, new HashSet<>());
 
                 if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
                     String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
@@ -244,50 +243,58 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         }
     }
 
-    private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, AotConfigParser parser) {
-        var configFields = ConfigUtils.parseFields(types, configElement).left();
-        if (configFields == null) return;
+    private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, AotConfigParser parser, Set<TypeElement> visited) {
+        if (configElement == null || !visited.add(configElement)) {
+            return;
+        }
 
-        for (var field : configFields) {
-            var fullKey = currentPath.isBlank() ? field.name() : currentPath + "." + field.name();
-            var hasInterfaceDefault = field.hasDefault();
-            var typeName = field.typeName();
+        try {
+            var configFields = ConfigUtils.parseFields(types, configElement).left();
+            if (configFields == null) return;
 
-            boolean isNestedInterface = false;
-            TypeElement targetElement = null;
+            for (var field : configFields) {
+                var fullKey = currentPath.isBlank() ? field.name() : currentPath + "." + field.name();
+                var hasInterfaceDefault = field.hasDefault();
+                var typeName = field.typeName();
 
-            if (typeName instanceof ClassName className && !isStandardType(className.toString())) {
-                targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
-                if (targetElement == null) {
-                    String binaryName = className.packageName() + "." + String.join("$", className.simpleNames());
-                    targetElement = processingEnv.getElementUtils().getTypeElement(binaryName);
+                boolean isNestedInterface = false;
+                TypeElement targetElement = null;
+
+                if (typeName instanceof ClassName className && !isStandardType(className.toString())) {
+                    targetElement = processingEnv.getElementUtils().getTypeElement(className.toString());
+                    if (targetElement == null) {
+                        String binaryName = className.packageName() + "." + String.join("$", className.simpleNames());
+                        targetElement = processingEnv.getElementUtils().getTypeElement(binaryName);
+                    }
+                    if (targetElement != null && targetElement.getKind() == ElementKind.INTERFACE) {
+                        isNestedInterface = true;
+                    }
                 }
-                if (targetElement != null && targetElement.getKind() == ElementKind.INTERFACE) {
-                    isNestedInterface = true;
+
+                if (isNestedInterface) {
+                    chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false);\n", currentPath, field.name()));
+                    generateFieldResolvers(chunkAppender, targetElement, fullKey, parser, visited);
+                    continue;
                 }
+
+                var baseVal = parser.getConfigValue(fullKey);
+
+                CodeBlock baseValBlock;
+                CodeBlock fallbackBlock = CodeBlock.of("null");
+
+                if (baseVal instanceof HoconAotParser.FallbackHolder holder) {
+                    baseValBlock = CodeBlock.of("$S", holder.rawExpression);
+                    fallbackBlock = convertToCodeBlock(holder.fallbackValue);
+                } else {
+                    baseValBlock = convertToCodeBlock(baseVal);
+                }
+
+                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L);\n",
+                    currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault
+                ));
             }
-
-            if (isNestedInterface) {
-                chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false);\n", currentPath, field.name()));
-                generateFieldResolvers(chunkAppender, targetElement, fullKey, parser);
-                continue;
-            }
-
-            var baseVal = parser.getConfigValue(fullKey);
-
-            CodeBlock baseValBlock;
-            CodeBlock fallbackBlock = CodeBlock.of("null");
-
-            if (baseVal instanceof HoconAotParser.FallbackHolder holder) {
-                baseValBlock = CodeBlock.of("$S", holder.rawExpression);
-                fallbackBlock = convertToCodeBlock(holder.fallbackValue);
-            } else {
-                baseValBlock = convertToCodeBlock(baseVal);
-            }
-
-            chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L);\n",
-                currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault
-            ));
+        } finally {
+            visited.remove(configElement);
         }
     }
 

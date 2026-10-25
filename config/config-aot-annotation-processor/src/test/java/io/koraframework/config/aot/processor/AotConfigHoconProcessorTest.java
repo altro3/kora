@@ -536,9 +536,6 @@ public class AotConfigHoconProcessorTest extends AbstractAotConfigTest {
             }
         );
 
-        // ==========================================
-        // КЕЙС 1: Считывание исходного чистого конфига
-        // ==========================================
         factoryMethod.invoke(moduleInstance, mapperMock);
         var appConfig1 = capturedValueRef.get();
         assertThat(appConfig1).isNotNull();
@@ -551,9 +548,6 @@ public class AotConfigHoconProcessorTest extends AbstractAotConfigTest {
         assertThat(propObjects1.get(1).asObject().get(PathElement.get("p2")).asString()).isEqualTo("v4");
 
 
-        // ==========================================
-        // КЕЙС 2: Замена существующих и добавление нового по индексу
-        // ==========================================
         capturedValueRef.set(null);
         System.setProperty("app.propObjects.0.p1", "v1-overridden");
         System.setProperty("app.propObjects.2.p1", "v5-new");

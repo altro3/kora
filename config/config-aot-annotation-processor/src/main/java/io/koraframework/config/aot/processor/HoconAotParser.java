@@ -7,6 +7,7 @@ import io.koraframework.config.common.*;
 
 import java.io.*;
 import java.util.*;
+import java.util.regex.*;
 
 public final class HoconAotParser implements AotConfigParser {
 
@@ -81,39 +82,66 @@ public final class HoconAotParser implements AotConfigParser {
         }
 
         if (rendered != null && rendered.contains("${")) {
-            Object fallback = null;
-
             if (rendered.contains(",")) {
                 String[] tokens = rendered.split(",");
-                String firstToken = tokens[0].trim().replaceAll("^\"|\"$", "");
-
-                if (firstToken.matches("-?\\d+")) {
-                    fallback = Long.parseLong(firstToken);
-                } else if (firstToken.matches("-?\\d+\\.\\d+")) {
-                    fallback = Double.parseDouble(firstToken);
-                } else if ("true".equalsIgnoreCase(firstToken) || "false".equalsIgnoreCase(firstToken)) {
-                    fallback = Boolean.parseBoolean(firstToken);
-                } else {
-                    fallback = firstToken;
-                }
+                String cleanExpr = null;
+                Object fallback = null;
 
                 for (String token : tokens) {
-                    if (token.contains("${")) {
-                        rendered = token.trim();
-                        break;
+                    String trimmedToken = token.trim();
+                    if (trimmedToken.contains("${")) {
+                        cleanExpr = trimmedToken;
+                    } else {
+                        String rawFallback = trimmedToken.replaceAll("^\"|\"$", "");
+                        if (rawFallback.matches("-?\\d+")) {
+                            fallback = Long.parseLong(rawFallback);
+                        } else if (rawFallback.matches("-?\\d+\\.\\d+")) {
+                            fallback = Double.parseDouble(rawFallback);
+                        } else if ("true".equalsIgnoreCase(rawFallback) || "false".equalsIgnoreCase(rawFallback)) {
+                            fallback = Boolean.parseBoolean(rawFallback);
+                        } else {
+                            fallback = rawFallback;
+                        }
                     }
                 }
-            } else {
-                try {
-                    Config tempConfig = ConfigFactory.parseString("temp = " + hoconValue.render(ConfigRenderOptions.concise()))
-                        .withFallback(baseConfig);
-                    Config resolvedTemp = tempConfig.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
-                    ConfigValue resolvedValue = resolvedTemp.getValue("temp");
 
+                if (cleanExpr != null) {
+                    return new FallbackHolder(cleanExpr, fallback);
+                }
+            }
+
+            Object fallback = null;
+            try {
+                Config tempConfig = ConfigFactory.parseString("temp = " + hoconValue.render(ConfigRenderOptions.concise()))
+                    .withFallback(baseConfig);
+                Config resolvedTemp = tempConfig.resolve(ConfigResolveOptions.defaults().setAllowUnresolved(true));
+
+                if (resolvedTemp.hasPath("temp")) {
+                    ConfigValue resolvedValue = resolvedTemp.getValue("temp");
                     if (!resolvedValue.render().contains("${")) {
                         fallback = resolvedValue.unwrapped();
                     }
-                } catch (Exception ignored) {}
+                }
+            } catch (Exception ignored) {}
+
+            if (fallback == null) {
+                var placeholderPattern = Pattern.compile("\\$\\{\\??([^:}]+)(?::([^}]+))?}");
+                var matcher = placeholderPattern.matcher(rendered);
+                if (matcher.find()) {
+                    String fallbackStr = matcher.group(2);
+                    if (fallbackStr != null) {
+                        fallbackStr = fallbackStr.trim().replaceAll("^\"|\"$", "");
+                        if (fallbackStr.matches("-?\\d+")) {
+                            fallback = Long.parseLong(fallbackStr);
+                        } else if (fallbackStr.matches("-?\\d+\\.\\d+")) {
+                            fallback = Double.parseDouble(fallbackStr);
+                        } else if ("true".equalsIgnoreCase(fallbackStr) || "false".equalsIgnoreCase(fallbackStr)) {
+                            fallback = Boolean.parseBoolean(fallbackStr);
+                        } else {
+                            fallback = fallbackStr;
+                        }
+                    }
+                }
             }
 
             return new FallbackHolder(rendered, fallback);
