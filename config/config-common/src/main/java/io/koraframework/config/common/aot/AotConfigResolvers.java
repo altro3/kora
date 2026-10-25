@@ -27,57 +27,155 @@ public final class AotConfigResolvers {
     }
 
     public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault) {
-        String fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
+        var fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
 
         var value = resolveValue(rootMap, fullSysKey, baseValue, fallbackValue, hasInterfaceDefault);
         if (value == null) {
             return;
         }
 
+        putIntoTree(rootMap, configPath, fieldName, value);
+
+        var prefixWithDot = fullSysKey + ".";
+        var sysProps = System.getProperties();
+        var matchedKeys = new ArrayList<String>();
+
+        for (var propKey : sysProps.keySet()) {
+            if (propKey instanceof String sk && sk.startsWith(prefixWithDot)) {
+                matchedKeys.add(sk);
+            }
+        }
+
+        Collections.sort(matchedKeys);
+
+        for (var matchedKey : matchedKeys) {
+            var propVal = System.getProperty(matchedKey);
+            if (propVal != null) {
+                var lastDot = matchedKey.lastIndexOf('.');
+                var subPath = matchedKey.substring(0, lastDot);
+                var subFieldName = matchedKey.substring(lastDot + 1);
+
+                var resolvedVal = toKoraValue(rootMap, matchedKey, propVal, null);
+                putIntoTree(rootMap, subPath, subFieldName, resolvedVal);
+            }
+        }
+    }
+
+    private static void putIntoTree(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, ConfigValue<?> value) {
         if (configPath.isBlank()) {
             rootMap.put(fieldName, value);
             return;
         }
 
-        ResolverState currentState = getState();
-        String[] pathParts = currentState.pathSplit.split(configPath);
+        var currentState = getState();
+        var pathParts = currentState.pathSplit.split(configPath);
 
-        var mapsChain = new ArrayList<Map<String, ConfigValue<?>>>();
+        var containersChain = new ArrayList<>();
         var partsChain = new ArrayList<String>();
         var originsChain = new ArrayList<SimpleConfigValueOrigin>();
 
-        Map<String, ConfigValue<?>> currentMap = rootMap;
-        ConfigValuePath currentPath = ConfigValuePath.root();
+        var currentContainer = (Object) rootMap;
+        var currentPath = ConfigValuePath.root();
 
         for (var i = 0; i < pathParts.length; i++) {
-            String part = pathParts[i];
+            var part = pathParts[i];
             currentPath = currentPath.child(part);
             var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, currentPath);
 
-            ConfigValue<?> existing = currentMap.get(part);
-            Map<String, ConfigValue<?>> targetMap;
-            if (existing instanceof ConfigValue.ObjectValue oldObj) {
-                targetMap = new LinkedHashMap<>(oldObj.value());
-            } else {
-                targetMap = new LinkedHashMap<>();
-            }
+            var isNextPartInteger = (i + 1 < pathParts.length) && pathParts[i + 1].matches("\\d+");
 
-            mapsChain.add(currentMap);
+            containersChain.add(currentContainer);
             partsChain.add(part);
             originsChain.add(origin);
 
-            currentMap = targetMap;
+            if (currentContainer instanceof Map) {
+                @SuppressWarnings("unchecked")
+                var map = (Map<String, ConfigValue<?>>) currentContainer;
+                var existing = map.get(part);
+
+                if (isNextPartInteger) {
+                    var listData = new ArrayList<ConfigValue<?>>();
+                    if (existing instanceof ConfigValue.ArrayValue arrayVal) {
+                        listData.addAll(arrayVal.value());
+                    }
+                    currentContainer = listData;
+                } else {
+                    var targetMap = new LinkedHashMap<String, ConfigValue<?>>();
+                    if (existing instanceof ConfigValue.ObjectValue oldObj) {
+                        targetMap.putAll(oldObj.value());
+                    }
+                    currentContainer = targetMap;
+                }
+            } else {
+                @SuppressWarnings("unchecked")
+                var list = (List<ConfigValue<?>>) currentContainer;
+                var index = Integer.parseInt(part);
+
+                while (list.size() <= index) {
+                    list.add(new ConfigValue.NullValue(origin));
+                }
+
+                var existing = list.get(index);
+                if (isNextPartInteger) {
+                    var listData = new ArrayList<ConfigValue<?>>();
+                    if (existing instanceof ConfigValue.ArrayValue arrayVal) {
+                        listData.addAll(arrayVal.value());
+                    }
+                    currentContainer = listData;
+                } else {
+                    var targetMap = new LinkedHashMap<String, ConfigValue<?>>();
+                    if (existing instanceof ConfigValue.ObjectValue oldObj) {
+                        targetMap.putAll(oldObj.value());
+                    }
+                    currentContainer = targetMap;
+                }
+            }
         }
 
-        currentMap.put(fieldName, value);
+        if (currentContainer instanceof Map) {
+            @SuppressWarnings("unchecked")
+            var map = (Map<String, ConfigValue<?>>) currentContainer;
+            map.put(fieldName, value);
+        } else {
+            @SuppressWarnings("unchecked")
+            var list = (List<ConfigValue<?>>) currentContainer;
+            var index = Integer.parseInt(fieldName);
+            var finalPath = currentPath.child(fieldName);
+            var finalOrigin = new SimpleConfigValueOrigin(currentState.aotOrigin, finalPath);
+            while (list.size() <= index) {
+                list.add(new ConfigValue.NullValue(finalOrigin));
+            }
+            list.set(index, value);
+        }
 
-        for (int i = pathParts.length - 1; i >= 0; i--) {
-            Map<String, ConfigValue<?>> parentMap = mapsChain.get(i);
-            String part = partsChain.get(i);
-            SimpleConfigValueOrigin origin = originsChain.get(i);
+        for (var i = pathParts.length - 1; i >= 0; i--) {
+            var parentContainer = containersChain.get(i);
+            var part = partsChain.get(i);
+            var origin = originsChain.get(i);
 
-            parentMap.put(part, new ConfigValue.ObjectValue(origin, currentMap));
-            currentMap = parentMap;
+            ConfigValue<?> wrappedValue;
+            if (currentContainer instanceof Map) {
+                @SuppressWarnings("unchecked")
+                var finishedMap = (Map<String, ConfigValue<?>>) currentContainer;
+                wrappedValue = new ConfigValue.ObjectValue(origin, finishedMap);
+            } else {
+                @SuppressWarnings("unchecked")
+                var finishedList = (List<ConfigValue<?>>) currentContainer;
+                wrappedValue = new ConfigValue.ArrayValue(origin, List.copyOf(finishedList));
+            }
+
+            if (parentContainer instanceof Map) {
+                @SuppressWarnings("unchecked")
+                var pMap = (Map<String, ConfigValue<?>>) parentContainer;
+                pMap.put(part, wrappedValue);
+            } else {
+                @SuppressWarnings("unchecked")
+                var pList = (List<ConfigValue<?>>) parentContainer;
+                var index = Integer.parseInt(part);
+                pList.set(index, wrappedValue);
+            }
+
+            currentContainer = parentContainer;
         }
     }
 
