@@ -23,7 +23,7 @@ allprojects {
 
 // config libraries
 subprojects {
-    if (!project.childProjects.isEmpty() || project.name == 'kora-bom') {
+    if (!project.childProjects.isEmpty() || project.name == 'kora-bom' || project.name == 'config-aot-gradle') {
         return
     }
     apply plugin: 'java-library'
@@ -70,6 +70,7 @@ subprojects {
 }
 
 subprojects {
+    if (project.name == 'config-aot-gradle') return
     if (childProjects.isEmpty()) {
         if (!file('src/main/java/module-info.java').exists()) {
             tasks.withType(Jar).configureEach {
@@ -88,7 +89,7 @@ def isPublishedLibrary = { Project p ->
     if (p.parent.name == "internal") {
         return false
     }
-    if (p.name == "kora-bom") {
+    if (p.name == "kora-bom" || p.name == 'config-aot-gradle') {
         return false
     }
     return true
