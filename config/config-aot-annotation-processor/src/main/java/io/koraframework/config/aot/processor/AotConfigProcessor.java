@@ -98,9 +98,11 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         String customFile = processingEnv.getOptions().get("config.file");
         if (customFile == null) customFile = System.getProperty("config.file");
 
-        var urls = new ArrayList<URL>();
+        boolean isTestMode = "true".equalsIgnoreCase(processingEnv.getOptions().get("kora.config.aot.test.mode"));
 
+        var urls = new ArrayList<URL>();
         ClassLoader processorClassLoader = getClass().getClassLoader();
+
         try {
             List<String> filesToSearch = List.of("reference.conf", "application.conf", "reference.yaml", "reference.yml", "application.yaml", "application.yml");
             for (String fileName : filesToSearch) {
@@ -113,14 +115,28 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         } catch (Exception ignored) {}
 
         try {
-            var runDir = Path.of(System.getProperty("user.dir", "."));
+            var runDir = Path.of(System.getProperty("user.dir", ".")).toAbsolutePath();
             String packagePath = packageName.replace('.', '/');
+            var searchPaths = new ArrayList<Path>();
 
-            var searchPaths = List.of(
-                runDir.resolve("build/in-test-generated/classes").resolve(packagePath),
-                runDir.resolve("build/in-test-generated/sources").resolve(packagePath),
-                runDir.resolve("src/main/resources")
-            );
+            if (isTestMode) {
+                searchPaths.add(runDir.resolve("build/in-test-generated/classes").resolve(packagePath));
+                searchPaths.add(runDir.resolve("build/in-test-generated/sources").resolve(packagePath));
+            } else {
+                var dummyResource = processingEnv.getFiler().getResource(StandardLocation.CLASS_OUTPUT, "", "META-INF");
+                var classOutputPath = Path.of(dummyResource.toUri()).toAbsolutePath();
+
+                Path currentModuleDir = classOutputPath;
+                while (currentModuleDir != null && !currentModuleDir.getFileName().toString().equals("build") && currentModuleDir.getParent() != null) {
+                    currentModuleDir = currentModuleDir.getParent();
+                }
+                if (currentModuleDir != null && currentModuleDir.getParent() != null) {
+                    Path realResourcesDir = currentModuleDir.getParent().resolve("src/main/resources");
+                    if (Files.exists(realResourcesDir)) {
+                        searchPaths.add(realResourcesDir);
+                    }
+                }
+            }
 
             for (var path : searchPaths) {
                 if (Files.exists(path)) {

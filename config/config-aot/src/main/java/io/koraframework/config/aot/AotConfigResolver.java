@@ -18,7 +18,6 @@ public final class AotConfigResolver {
 
     public static void putRuntimeOverrides(Map<String, String> overrides) {
         if (overrides == null) return;
-
         for (var entry : overrides.entrySet()) {
             String originalKey = entry.getKey();
             String value = entry.getValue();
@@ -35,18 +34,13 @@ public final class AotConfigResolver {
             }
             return;
         }
-
         String part = parts[index];
-        List<String> variants = part.matches("\\d+")
-            ? List.of(part)
-            : PathElement.get(part).relaxedNames();
-
+        List<String> variants = part.matches("\\d+") ? List.of(part) : PathElement.get(part).relaxedNames();
         for (String variant : variants) {
             String nextPrefix = currentPrefix.isBlank() ? variant : currentPrefix + "." + variant;
             generateRelaxedCombinations(parts, index + 1, nextPrefix, value);
         }
     }
-
 
     public static void clear() {
         state = null;
@@ -63,35 +57,26 @@ public final class AotConfigResolver {
 
     public static void resolveAndPut(Map<String, ConfigValue<?>> rootMap, String configPath, String fieldName, @Nullable Object baseValue, @Nullable Object fallbackValue, boolean hasInterfaceDefault, @Nullable List<String> preCalculatedRelaxedNames) {
         var fullSysKey = configPath.isBlank() ? fieldName : configPath + "." + fieldName;
-
         var value = resolveValue(rootMap, fullSysKey, baseValue, fallbackValue, hasInterfaceDefault, preCalculatedRelaxedNames);
-        if (value == null) {
-            return;
-        }
+        if (value == null) return;
 
         putIntoTree(rootMap, configPath, fieldName, value);
 
-        if (value instanceof ConfigValue.StringValue
-            || value instanceof ConfigValue.NumberValue
-            || value instanceof ConfigValue.BooleanValue) {
+        if (value instanceof ConfigValue.StringValue || value instanceof ConfigValue.NumberValue || value instanceof ConfigValue.BooleanValue) {
             Object rawValue = unwrap(value);
-            if (rawValue != null) {
-                if (System.getProperty(fullSysKey) == null) {
-                    System.setProperty(fullSysKey, rawValue.toString());
-                }
+            if (rawValue != null && System.getProperty(fullSysKey) == null) {
+                System.setProperty(fullSysKey, rawValue.toString());
             }
         }
 
         var prefixWithDot = fullSysKey + ".";
         var sysProps = System.getProperties();
         var matchedKeys = new ArrayList<String>();
-
         for (var propKey : sysProps.keySet()) {
             if (propKey instanceof String sk && sk.startsWith(prefixWithDot)) {
                 matchedKeys.add(sk);
             }
         }
-
         Collections.sort(matchedKeys);
 
         for (var matchedKey : matchedKeys) {
@@ -100,7 +85,6 @@ public final class AotConfigResolver {
                 var lastDot = matchedKey.lastIndexOf('.');
                 var subPath = matchedKey.substring(0, lastDot);
                 var subFieldName = matchedKey.substring(lastDot + 1);
-
                 var resolvedVal = toKoraValue(rootMap, matchedKey, propVal, null);
                 putIntoTree(rootMap, subPath, subFieldName, resolvedVal);
             }
@@ -111,15 +95,12 @@ public final class AotConfigResolver {
         String lastPart = sysKey.contains(".") ? sysKey.substring(sysKey.lastIndexOf('.') + 1) : sysKey;
         String prefix = sysKey.contains(".") ? sysKey.substring(0, sysKey.lastIndexOf('.') + 1) : "";
 
-        List<String> relaxedVariants = preCalculatedRelaxedNames != null
-            ? preCalculatedRelaxedNames
-            : PathElement.get(lastPart).relaxedNames();
+        List<String> relaxedVariants = preCalculatedRelaxedNames != null ? preCalculatedRelaxedNames : PathElement.get(lastPart).relaxedNames();
 
         for (String variant : relaxedVariants) {
             String fullKey = (prefix + variant).replace('.', '_').replace('-', '_').toUpperCase();
             var env = System.getenv(fullKey);
             if (env != null) return toKoraValue(rootMap, sysKey, env, fallbackValue);
-
             var sysEnvFallback = System.getProperty(fullKey);
             if (sysEnvFallback != null) return toKoraValue(rootMap, sysKey, sysEnvFallback, fallbackValue);
         }
@@ -133,15 +114,10 @@ public final class AotConfigResolver {
         for (String variant : relaxedVariants) {
             String fullRuntimeKey = prefix + variant;
             String overrideVal = runtimeOverrides.get(fullRuntimeKey);
-            if (overrideVal != null) {
-                return toKoraValue(rootMap, sysKey, overrideVal, fallbackValue);
-            }
+            if (overrideVal != null) return toKoraValue(rootMap, sysKey, overrideVal, fallbackValue);
         }
 
-        if (baseValue != null) {
-            return toKoraValue(rootMap, sysKey, baseValue, fallbackValue);
-        }
-
+        if (baseValue != null) return toKoraValue(rootMap, sysKey, baseValue, fallbackValue);
         if (hasInterfaceDefault) return null;
         if (fallbackValue != null) return toKoraValue(rootMap, sysKey, fallbackValue, null);
 
@@ -155,10 +131,8 @@ public final class AotConfigResolver {
             rootMap.put(fieldName, value);
             return;
         }
-
         var currentState = getState();
         String[] pathParts = currentState.pathSplit.split(configPath);
-
         Object currentContainer = rootMap;
         var currentPath = ConfigValuePath.root();
 
@@ -167,32 +141,18 @@ public final class AotConfigResolver {
             if (part.isBlank()) continue;
             currentPath = currentPath.child(part);
             var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, currentPath);
-
-            boolean isNextPartInteger = (i + 1 < pathParts.length)
-                ? pathParts[i + 1].matches("\\d+")
-                : fieldName.matches("\\d+");
+            boolean isNextPartInteger = (i + 1 < pathParts.length) ? pathParts[i + 1].matches("\\d+") : fieldName.matches("\\d+");
 
             if (currentContainer instanceof Map) {
                 @SuppressWarnings("unchecked")
                 var map = (Map<String, ConfigValue<?>>) currentContainer;
                 ConfigValue<?> existing = map.get(part);
-
                 if (isNextPartInteger) {
-                    List<ConfigValue<?>> listData;
-                    if (existing instanceof ConfigValue.ArrayValue arrayVal) {
-                        listData = new ArrayList<>(arrayVal.value());
-                    } else {
-                        listData = new ArrayList<>();
-                    }
+                    List<ConfigValue<?>> listData = (existing instanceof ConfigValue.ArrayValue av) ? new ArrayList<>(av.value()) : new ArrayList<>();
                     map.put(part, new ConfigValue.ArrayValue(origin, listData));
                     currentContainer = listData;
                 } else {
-                    Map<String, ConfigValue<?>> targetMap;
-                    if (existing instanceof ConfigValue.ObjectValue oldObj) {
-                        targetMap = new LinkedHashMap<>(oldObj.value());
-                    } else {
-                        targetMap = new LinkedHashMap<>();
-                    }
+                    Map<String, ConfigValue<?>> targetMap = (existing instanceof ConfigValue.ObjectValue ov) ? new LinkedHashMap<>(ov.value()) : new LinkedHashMap<>();
                     map.put(part, new ConfigValue.ObjectValue(origin, targetMap));
                     currentContainer = targetMap;
                 }
@@ -200,29 +160,17 @@ public final class AotConfigResolver {
                 @SuppressWarnings("unchecked")
                 var list = (List<ConfigValue<?>>) currentContainer;
                 int index = Integer.parseInt(part);
-
                 while (list.size() <= index) {
                     var nullPath = currentPath.prev().child(String.valueOf(list.size()));
                     list.add(new ConfigValue.NullValue(new SimpleConfigValueOrigin(currentState.aotOrigin, nullPath)));
                 }
-
                 ConfigValue<?> existing = list.get(index);
                 if (isNextPartInteger) {
-                    List<ConfigValue<?>> listData;
-                    if (existing instanceof ConfigValue.ArrayValue arrayVal) {
-                        listData = new ArrayList<>(arrayVal.value());
-                    } else {
-                        listData = new ArrayList<>();
-                    }
+                    List<ConfigValue<?>> listData = (existing instanceof ConfigValue.ArrayValue av) ? new ArrayList<>(av.value()) : new ArrayList<>();
                     list.set(index, new ConfigValue.ArrayValue(origin, listData));
                     currentContainer = listData;
                 } else {
-                    Map<String, ConfigValue<?>> targetMap;
-                    if (existing instanceof ConfigValue.ObjectValue oldObj) {
-                        targetMap = new LinkedHashMap<>(oldObj.value());
-                    } else {
-                        targetMap = new LinkedHashMap<>();
-                    }
+                    Map<String, ConfigValue<?>> targetMap = (existing instanceof ConfigValue.ObjectValue ov) ? new LinkedHashMap<>(ov.value()) : new LinkedHashMap<>();
                     list.set(index, new ConfigValue.ObjectValue(origin, targetMap));
                     currentContainer = targetMap;
                 }
