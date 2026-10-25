@@ -32,7 +32,11 @@ public final class HoconAotParser implements AotConfigParser {
 
     @Override
     public Object getConfigValue(String path) {
-        if (baseConfig == null || path.isBlank()) return null;
+        if (baseConfig == null) return null;
+
+        if (path.isBlank()) {
+            return extractUnresolvedValue(baseConfig.root());
+        }
 
         String[] parts = path.split("\\.");
         ConfigObject currentObject = baseConfig.root();

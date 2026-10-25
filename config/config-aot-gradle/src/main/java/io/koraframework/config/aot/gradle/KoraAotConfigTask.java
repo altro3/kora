@@ -32,6 +32,10 @@ public abstract class KoraAotConfigTask extends DefaultTask {
     @PathSensitive(PathSensitivity.RELATIVE)
     public abstract ConfigurableFileCollection getClasspathResources();
 
+    @InputFiles
+    @PathSensitive(PathSensitivity.RELATIVE)
+    public abstract ConfigurableFileCollection getExternalDependencies();
+
     @Input
     @Optional
     public abstract Property<String> getConfigResource();
@@ -50,18 +54,16 @@ public abstract class KoraAotConfigTask extends DefaultTask {
     public void generate() throws Exception {
         File outputDir = getOutputSourceDirectory().get().getAsFile();
         if (outputDir.exists()) {
-            getProject().delete(outputDir);
+            delete(outputDir);
         }
         outputDir.mkdirs();
 
         var targetClasses = new LinkedHashSet<String>();
-
         var packagePattern = Pattern.compile("^\\s*package\\s+([a-zA-Z0-9._]+);");
         var interfacePattern = Pattern.compile("public\\s+interface\\s+([a-zA-Z0-9_]+)");
 
         for (var srcDir : getJavaSourceDirs().getFiles()) {
             if (!srcDir.exists()) continue;
-
             try (var stream = Files.walk(srcDir.toPath())) {
                 stream.filter(p -> p.toString().endsWith(".java")).forEach(path -> {
                     try {
@@ -69,7 +71,6 @@ public abstract class KoraAotConfigTask extends DefaultTask {
                         if (content.contains("@ConfigSource")) {
                             Matcher pkgMatcher = packagePattern.matcher(content);
                             String packageName = pkgMatcher.find() ? pkgMatcher.group(1) : "";
-
                             Matcher intMatcher = interfacePattern.matcher(content);
                             if (intMatcher.find()) {
                                 String interfaceName = intMatcher.group(1);
@@ -84,6 +85,9 @@ public abstract class KoraAotConfigTask extends DefaultTask {
 
         var classpathFiles = new ArrayList<File>();
         for (var file : getClasspathResources().getFiles()) {
+            if (file.exists()) classpathFiles.add(file);
+        }
+        for (var file : getExternalDependencies().getFiles()) {
             if (file.exists()) classpathFiles.add(file);
         }
 
@@ -112,17 +116,12 @@ public abstract class KoraAotConfigTask extends DefaultTask {
         AotConfigParser configParser = "YAML".equalsIgnoreCase(format) ? new YamlAotParser() : new HoconAotParser();
         configParser.loadAndMerge(projectClassLoader, getConfigResource().getOrNull(), getConfigFile().getOrNull());
 
-        for (String fullClassName : targetClasses) {
-            generateAotModuleFile(fullClassName, configParser, outputDir, projectClassLoader);
-        }
+        generateMonolithicAotModule(targetClasses, configParser, outputDir, projectClassLoader);
     }
 
-    private void generateAotModuleFile(String fullClassName, AotConfigParser parser, File outputDir, ClassLoader classLoader) throws Exception {
-        Class<?> configClass = Class.forName(fullClassName, false, classLoader);
-        int lastDot = fullClassName.lastIndexOf('.');
-        String packageName = lastDot > 0 ? fullClassName.substring(0, lastDot) : "";
-        String simpleClassName = lastDot > 0 ? fullClassName.substring(lastDot + 1) : fullClassName;
-        String moduleName = simpleClassName + "AotModule";
+    private void generateMonolithicAotModule(Set<String> targetClasses, AotConfigParser parser, File outputDir, ClassLoader classLoader) throws Exception {
+        String packageName = "io.koraframework.config.aot.generated";
+        String moduleName = "KoraAotConfigApplicationModule";
 
         var resolversClass = ClassName.get("io.koraframework.config.aot", "AotConfigResolver");
         var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
@@ -132,46 +131,23 @@ public abstract class KoraAotConfigTask extends DefaultTask {
             .addAnnotation(moduleAnno)
             .addModifiers(Modifier.PUBLIC);
 
+        var globalFlattenedValues = new LinkedHashMap<String, String>();
+        collectFlattenedProperties(parser, "", globalFlattenedValues);
+
+        var staticInitBlock = CodeBlock.builder();
+        if (!globalFlattenedValues.isEmpty()) {
+            staticInitBlock.add("var overrides = new $T<$T, $T>();\n", LinkedHashMap.class, String.class, String.class);
+            for (var entry : globalFlattenedValues.entrySet()) {
+                staticInitBlock.add("overrides.put($S, $S);\n", entry.getKey(), entry.getValue());
+            }
+            staticInitBlock.add("$T.putRuntimeOverrides(overrides);\n", resolversClass);
+        }
+
         typeBuilder.addType(TypeSpec.classBuilder("Impl")
             .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
             .addSuperinterface(ClassName.get(packageName, moduleName))
+            .addStaticBlock(staticInitBlock.build())
             .build());
-
-        String path = "";
-        try {
-            var annotation = configClass.getAnnotation(io.koraframework.config.common.annotation.ConfigSource.class);
-            if (annotation != null) {
-                path = annotation.value();
-            }
-        } catch (Exception ignored) {}
-
-        String methodName = Character.toLowerCase(simpleClassName.charAt(0)) + simpleClassName.substring(1);
-        var method = MethodSpec.methodBuilder(methodName)
-            .returns(ClassName.get(packageName, simpleClassName))
-            .addAnnotation(defaultComponentAnno)
-            .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT);
-
-        var mapperInterface = ClassName.get("io.koraframework.config.common.mapper", "ConfigValueMapper");
-        method.addParameter(ParameterizedTypeName.get(mapperInterface, ClassName.get(packageName, simpleClassName)), "mapper");
-
-        var initCode = CodeBlock.builder();
-        if (!path.isBlank()) {
-            var allFlattenedValues = new LinkedHashMap<String, String>();
-            collectFlattenedProperties(parser, path, allFlattenedValues);
-            if (!allFlattenedValues.isEmpty()) {
-                initCode.add("var overrides = new $T<$T, $T>();\n", LinkedHashMap.class, String.class, String.class);
-                for (var entry : allFlattenedValues.entrySet()) {
-                    initCode.add("overrides.put($S, $S);\n", entry.getKey(), entry.getValue());
-                }
-                initCode.add("$T.putRuntimeOverrides(overrides);\n\n", resolversClass);
-            }
-        }
-
-        initCode.add("var origin = new $T(\n  new $T(\"aot-compiled\"),\n  $T.root()\n);\n\n",
-            ClassName.get("io.koraframework.config.common.impl", "SimpleConfigValueOrigin"),
-            ClassName.get("io.koraframework.config.common.origin", "SimpleConfigOrigin"),
-            ClassName.get("io.koraframework.config.common", "ConfigValuePath"));
-        initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, ConfigValue.class);
 
         class ChunkContext {
             int totalFields = 0;
@@ -181,42 +157,85 @@ public abstract class KoraAotConfigTask extends DefaultTask {
         }
         final ChunkContext ctx = new ChunkContext();
 
-        Consumer<CodeBlock> chunkAppender = (codeLine) -> {
-            ctx.currentChunkBuilder.add(codeLine);
-            ctx.totalFields++;
-            if (ctx.totalFields % MAX_FIELDS_PER_CHUNK == 0) {
-                addChunkMethod(ctx.chunkMethods, methodName, ctx.currentChunkMethodIndex, ctx.currentChunkBuilder);
-                initCode.add("$L_chunk$L(rootMap);\n", methodName, ctx.currentChunkMethodIndex);
-                ctx.currentChunkBuilder = CodeBlock.builder();
-                ctx.currentChunkMethodIndex++;
+        for (String fullClassName : targetClasses) {
+            Class<?> configClass = Class.forName(fullClassName, false, classLoader);
+            int lastDot = fullClassName.lastIndexOf('.');
+            String simpleClassName = lastDot > 0 ? fullClassName.substring(lastDot + 1) : fullClassName;
+
+            String path = "";
+            try {
+                var annotation = configClass.getAnnotation(io.koraframework.config.common.annotation.ConfigSource.class);
+                if (annotation != null) {
+                    path = annotation.value();
+                }
+            } catch (Exception ignored) {}
+
+            String factoryMethodName = Character.toLowerCase(simpleClassName.charAt(0)) + simpleClassName.substring(1);
+            var methodBuilder = MethodSpec.methodBuilder(factoryMethodName)
+                .returns(ClassName.get(configClass))
+                .addAnnotation(defaultComponentAnno)
+                .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT);
+
+            var mapperInterface = ClassName.get("io.koraframework.config.common.mapper", "ConfigValueMapper");
+            methodBuilder.addParameter(ParameterizedTypeName.get(mapperInterface, ClassName.get(configClass)), "mapper");
+
+            var initCode = CodeBlock.builder();
+            initCode.add("var origin = new $T(\n  new $T(\"aot-compiled\"),\n  $T.root()\n);\n\n",
+                ClassName.get("io.koraframework.config.common.impl", "SimpleConfigValueOrigin"),
+                ClassName.get("io.koraframework.config.common.origin", "SimpleConfigOrigin"),
+                ClassName.get("io.koraframework.config.common", "ConfigValuePath"));
+            initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, ConfigValue.class);
+
+            int chunkStartIndex = ctx.currentChunkMethodIndex;
+            int fieldsBeforeClass = ctx.totalFields;
+
+            Consumer<CodeBlock> chunkAppender = (codeLine) -> {
+                ctx.currentChunkBuilder.add(codeLine);
+                ctx.totalFields++;
+                if (ctx.totalFields % MAX_FIELDS_PER_CHUNK == 0) {
+                    addChunkMethod(ctx.chunkMethods, factoryMethodName, ctx.currentChunkMethodIndex, ctx.currentChunkBuilder);
+                    ctx.currentChunkBuilder = CodeBlock.builder();
+                    ctx.currentChunkMethodIndex++;
+                }
+            };
+
+            generateFieldResolversReflection(chunkAppender, configClass, path, parser, new HashSet<>());
+
+            if (ctx.totalFields > fieldsBeforeClass) {
+                if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || fieldsBeforeClass % MAX_FIELDS_PER_CHUNK == 0) {
+                    addChunkMethod(ctx.chunkMethods, factoryMethodName, ctx.currentChunkMethodIndex, ctx.currentChunkBuilder);
+                    ctx.currentChunkBuilder = CodeBlock.builder();
+                    ctx.currentChunkMethodIndex++;
+                }
             }
-        };
 
-        generateFieldResolversReflection(chunkAppender, configClass, path, parser, new HashSet<>());
+            int chunkEndIndex = ctx.currentChunkMethodIndex;
+            for (int i = chunkStartIndex; i < chunkEndIndex; i++) {
+                initCode.add("$L_chunk$L(rootMap);\n", factoryMethodName, i);
+            }
 
-        if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
-            addChunkMethod(ctx.chunkMethods, methodName, ctx.currentChunkMethodIndex, ctx.currentChunkBuilder);
-            initCode.add("$L_chunk$L(rootMap);\n", methodName, ctx.currentChunkMethodIndex);
+            initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", ClassName.get("io.koraframework.config.common.ConfigValue", "ObjectValue"));
+
+            if (path.isBlank()) {
+                initCode.add("var targetValue = finalObjectValue;\n");
+            } else {
+                String[] pathParts = path.split("\\.");
+                initCode.add("var targetValue = finalObjectValue");
+                for (int i = 0; i < pathParts.length; i++) {
+                    initCode.add(".get($T.get($S))", ClassName.get("io.koraframework.config.common", "PathElement"), pathParts[i]);
+                    if (i < pathParts.length - 1) initCode.add(".asObject()");
+                }
+                initCode.add(";\n");
+            }
+
+            initCode.add("return mapper.map(targetValue);\n");
+            methodBuilder.addCode(initCode.build());
+            typeBuilder.addMethod(methodBuilder.build());
         }
 
-        initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", ClassName.get("io.koraframework.config.common.ConfigValue", "ObjectValue"));
-
-        if (path.isBlank()) {
-            initCode.add("var targetValue = finalObjectValue;\n");
-        } else {
-            String[] pathParts = path.split("\\.");
-            initCode.add("var targetValue = finalObjectValue");
-            for (int i = 0; i < pathParts.length; i++) {
-                initCode.add(".get($T.get($S))", ClassName.get("io.koraframework.config.common", "PathElement"), pathParts[i]);
-                if (i < pathParts.length - 1) initCode.add(".asObject()");
-            }
-            initCode.add(";\n");
+        for (MethodSpec chunk : ctx.chunkMethods) {
+            typeBuilder.addMethod(chunk);
         }
-
-        initCode.add("return mapper.map(targetValue);\n");
-        method.addCode(initCode.build());
-        typeBuilder.addMethod(method.build());
-        for (MethodSpec chunk : ctx.chunkMethods) {typeBuilder.addMethod(chunk);}
 
         JavaFile javaFile = JavaFile.builder(packageName, typeBuilder.build())
             .addStaticImport(resolversClass, "*")
@@ -239,13 +258,18 @@ public abstract class KoraAotConfigTask extends DefaultTask {
             for (Method method : configClass.getMethods()) {
                 if (method.isDefault() || java.lang.reflect.Modifier.isStatic(method.getModifiers())) continue;
                 if (method.getParameterCount() > 0) continue;
+                if (method.getDeclaringClass() == Object.class) continue;
 
                 String fieldName = method.getName();
                 var fullKey = currentPath.isBlank() ? fieldName : currentPath + "." + fieldName;
-                boolean hasInterfaceDefault = false;
 
                 Class<?> returnType = method.getReturnType();
-                boolean isNestedInterface = returnType.isInterface() && !returnType.getName().startsWith("java.lang.") && !returnType.getName().startsWith("java.util.");
+
+                // Если это вложенный интерфейс конфигурации (вложенный объект)
+                boolean isNestedInterface = returnType.isInterface()
+                    && !returnType.getName().startsWith("java.lang.")
+                    && !returnType.getName().startsWith("java.util.")
+                    && !returnType.getName().startsWith("java.time.");
 
                 if (isNestedInterface) {
                     chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, null, null, false, null);\n", currentPath, fieldName));
@@ -271,6 +295,8 @@ public abstract class KoraAotConfigTask extends DefaultTask {
                     if (i < relaxedVariants.size() - 1) listLiteral.add(", ");
                 }
                 listLiteral.add(")");
+
+                boolean hasInterfaceDefault = false;
 
                 chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L, $L);\n",
                     currentPath, fieldName, baseValBlock, fallbackBlock, hasInterfaceDefault, listLiteral.build()
@@ -327,13 +353,14 @@ public abstract class KoraAotConfigTask extends DefaultTask {
             Map<?, ?> map = (Map<?, ?>) baseVal;
             for (var entry : map.entrySet()) {
                 String key = String.valueOf(entry.getKey());
-                for (String variant : PathElement.get(key).relaxedNames()) {
-                    collectFlattenedProperties(parser, currentPath.isBlank() ? variant : currentPath + "." + variant, result);
-                }
+                String nextPath = currentPath.isBlank() ? key : currentPath + "." + key;
+                collectFlattenedProperties(parser, nextPath, result);
             }
         } else if (baseVal instanceof List) {
             List<?> list = (List<?>) baseVal;
-            for (int i = 0; i < list.size(); i++) {collectFlattenedProperties(parser, currentPath + "." + i, result);}
+            for (int i = 0; i < list.size(); i++) {
+                collectFlattenedProperties(parser, currentPath + "." + i, result);
+            }
         } else if (baseVal instanceof HoconAotParser.FallbackHolder holder) {
             if (holder.fallbackValue != null) result.put(currentPath, String.valueOf(holder.fallbackValue));
         } else {
