@@ -36,36 +36,48 @@ public final class AotConfigResolvers {
 
         if (configPath.isBlank()) {
             rootMap.put(fieldName, value);
-        } else {
-            ResolverState currentState = getState();
-            String[] pathParts = currentState.pathSplit.split(configPath);
-            var currentMap = rootMap;
-            ConfigValuePath currentPath = ConfigValuePath.root();
+            return;
+        }
 
-            for (int i = 0; i < pathParts.length; i++) {
-                String part = pathParts[i];
-                final boolean isLast = (i == pathParts.length - 1);
-                currentPath = currentPath.child(part);
-                var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, currentPath);
+        ResolverState currentState = getState();
+        String[] pathParts = currentState.pathSplit.split(configPath);
 
-                ConfigValue<?> existing = currentMap.get(part);
-                Map<String, ConfigValue<?>> targetMap;
+        var mapsChain = new ArrayList<Map<String, ConfigValue<?>>>();
+        var partsChain = new ArrayList<String>();
+        var originsChain = new ArrayList<SimpleConfigValueOrigin>();
 
-                if (existing instanceof ConfigValue.ObjectValue oldObj) {
-                    targetMap = new LinkedHashMap<>(oldObj.value());
-                } else {
-                    targetMap = new LinkedHashMap<>();
-                }
+        Map<String, ConfigValue<?>> currentMap = rootMap;
+        ConfigValuePath currentPath = ConfigValuePath.root();
 
-                if (isLast) {
-                    targetMap.put(fieldName, value);
-                    currentMap.put(part, new ConfigValue.ObjectValue(origin, targetMap));
-                } else {
-                    ConfigValue.ObjectValue nextObj = new ConfigValue.ObjectValue(origin, targetMap);
-                    currentMap.put(part, nextObj);
-                    currentMap = targetMap;
-                }
+        for (var i = 0; i < pathParts.length; i++) {
+            String part = pathParts[i];
+            currentPath = currentPath.child(part);
+            var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, currentPath);
+
+            ConfigValue<?> existing = currentMap.get(part);
+            Map<String, ConfigValue<?>> targetMap;
+            if (existing instanceof ConfigValue.ObjectValue oldObj) {
+                targetMap = new LinkedHashMap<>(oldObj.value());
+            } else {
+                targetMap = new LinkedHashMap<>();
             }
+
+            mapsChain.add(currentMap);
+            partsChain.add(part);
+            originsChain.add(origin);
+
+            currentMap = targetMap;
+        }
+
+        currentMap.put(fieldName, value);
+
+        for (int i = pathParts.length - 1; i >= 0; i--) {
+            Map<String, ConfigValue<?>> parentMap = mapsChain.get(i);
+            String part = partsChain.get(i);
+            SimpleConfigValueOrigin origin = originsChain.get(i);
+
+            parentMap.put(part, new ConfigValue.ObjectValue(origin, currentMap));
+            currentMap = parentMap;
         }
     }
 
@@ -96,6 +108,10 @@ public final class AotConfigResolvers {
 
         if (hasInterfaceDefault) return null;
 
+        if (fallbackValue != null) {
+            return toKoraValue(rootMap, sysKey, fallbackValue, null);
+        }
+
         ResolverState currentState = getState();
         var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, ConfigValuePath.root().child(sysKey));
         return new ConfigValue.ObjectValue(origin, new LinkedHashMap<>());
@@ -105,6 +121,9 @@ public final class AotConfigResolvers {
         ResolverState currentState = getState();
         var origin = new SimpleConfigValueOrigin(currentState.aotOrigin, ConfigValuePath.root().child(path));
 
+        if (value instanceof ConfigValue<?>) {
+            return (ConfigValue<?>) value;
+        }
         if (value instanceof String str) {
             if (str.contains("${")) {
                 String resolved = tryResolveInterpolatedPlaceholders(rootMap, str);
@@ -169,6 +188,13 @@ public final class AotConfigResolvers {
             }
             return new ConfigValue.ArrayValue(origin, List.copyOf(res));
         }
+        if (value instanceof List<?> list) {
+            var res = new ArrayList<ConfigValue<?>>(list.size());
+            for (int i = 0; i < list.size(); i++) {
+                res.add(toKoraValue(rootMap, path + "[" + i + "]", list.get(i), null));
+            }
+            return new ConfigValue.ArrayValue(origin, List.copyOf(res));
+        }
         return new ConfigValue.StringValue(origin, String.valueOf(value));
     }
 
@@ -196,7 +222,7 @@ public final class AotConfigResolvers {
             }
         }
 
-        StringBuilder sb = new StringBuilder();
+        var sb = new StringBuilder();
         Matcher matcher = currentState.placeholder.matcher(value);
         int lastAppendPosition = 0;
         boolean hasUnresolvedRequired = false;
@@ -250,7 +276,6 @@ public final class AotConfigResolvers {
     private static @Nullable String findInRootMap(Map<String, ConfigValue<?>> rootMap, String path) {
         ResolverState currentState = getState();
         String[] parts = currentState.pathSplit.split(path);
-
         Map<String, ConfigValue<?>> currentMap = rootMap;
 
         for (int i = 0; i < parts.length; i++) {
@@ -260,20 +285,18 @@ public final class AotConfigResolvers {
             }
 
             if (i == parts.length - 1) {
-                return val.value() != null ? String.valueOf(val.value()) : null;
+                if (val instanceof ConfigValue.StringValue
+                    || val instanceof ConfigValue.NumberValue
+                    || val instanceof ConfigValue.BooleanValue) {
+                    return val.value() != null ? String.valueOf(val.value()) : null;
+                }
+                return null;
             }
 
             if (val instanceof ConfigValue.ObjectValue obj) {
-                Map<?, ?> rawMap = obj.value();
-                if (rawMap == null) {
+                var nextMap = obj.value();
+                if (nextMap == null) {
                     return null;
-                }
-
-                var nextMap = new LinkedHashMap<String, ConfigValue<?>>(rawMap.size());
-                for (var entry : rawMap.entrySet()) {
-                    if (entry.getKey() instanceof String && entry.getValue() instanceof ConfigValue) {
-                        nextMap.put((String) entry.getKey(), (ConfigValue<?>) entry.getValue());
-                    }
                 }
                 currentMap = nextMap;
             } else {
@@ -282,7 +305,6 @@ public final class AotConfigResolvers {
         }
         return null;
     }
-
 
     private static class ResolverState {
         final SimpleConfigOrigin aotOrigin = new SimpleConfigOrigin("aot-compiled");

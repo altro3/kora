@@ -18,7 +18,7 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
                 environment = "production"
                 globalTimeout = "5s"
             }
-            
+        
             app {
                 withFallback = ${?NON_EXISTENT_VAR}"default-fallback"
                 envName = ${shared.environment}
@@ -67,12 +67,10 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
             """;
 
         compileAotConfig("application.conf", baseConf, """
-            import java.time.LocalDate;
-            import java.time.LocalDateTime;
-            import java.time.Duration;
-            import java.util.List;
-            import java.util.Map;
-            import io.koraframework.config.common.annotation.ConfigMapper;
+            import io.koraframework.config.common.annotation.*;
+            
+            import java.time.*;
+            import java.util.*;
             
             @ConfigSource("app")
             public interface RichConfig {
@@ -105,10 +103,22 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
                 NestedObj propObject();
                 List<NestedObj> propObjects();
             
+                default String defaultRootString() {
+                    return "root-default-value";
+                }
+            
+                default int defaultRootInt() {
+                    return 42;
+                }
+            
                 @ConfigMapper
                 interface Level1Config {
                     String targetEnv();
                     Level2Config deeplyNested();
+            
+                    default String defaultNestedString() {
+                        return "nested-default-value";
+                    }
                 }
             
                 @ConfigMapper
@@ -205,6 +215,10 @@ public class AotConfigRichTypesAndPlaceholdersTest extends AbstractAotConfigTest
             assertThat(propObjects).hasSize(2);
             assertThat(propObjects.get(0).asObject().get(PathElement.get("p1")).asString()).isEqualTo("v1");
             assertThat(propObjects.get(1).asObject().get(PathElement.get("p1")).asString()).isEqualTo("v3");
+
+            assertThat(appConfig.get(PathElement.get("defaultRootString")).isNull()).isTrue();
+            assertThat(appConfig.get(PathElement.get("defaultRootInt")).isNull()).isTrue();
+            assertThat(nested1.get(PathElement.get("defaultNestedString")).isNull()).isTrue();
 
         } finally {
             System.clearProperty("MY_ENV_VAR");
