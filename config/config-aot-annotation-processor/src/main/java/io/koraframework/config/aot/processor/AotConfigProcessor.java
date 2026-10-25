@@ -285,7 +285,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                 baseValBlock = convertToCodeBlock(baseVal);
             }
 
-            // Передаем и базовое выражение, и вычисленный при компиляции дефолт
             chunkAppender.accept(CodeBlock.of("resolveAndPut(rootMap, $S, $S, $L, $L, $L);\n",
                 currentPath, field.name(), baseValBlock, fallbackBlock, hasInterfaceDefault
             ));

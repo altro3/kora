@@ -12,16 +12,6 @@ public final class HoconAotParser implements AotConfigParser {
 
     private Config baseConfig;
 
-    public static final class FallbackHolder {
-        public final String rawExpression;
-        public final Object fallbackValue;
-
-        public FallbackHolder(String rawExpression, Object fallbackValue) {
-            this.rawExpression = rawExpression;
-            this.fallbackValue = fallbackValue;
-        }
-    }
-
     @Override
     public void loadAndMerge(ClassLoader classLoader, String customResource, String customFile) {
         ConfigParseOptions parseOptions = ConfigParseOptions.defaults().setClassLoader(classLoader);
@@ -36,7 +26,6 @@ public final class HoconAotParser implements AotConfigParser {
             appConfig = ConfigFactory.parseResources("application.conf", parseOptions);
         }
 
-        // Чистое слияние БЕЗ вызова .resolve()
         baseConfig = appConfig.withFallback(referenceConfig);
     }
 
@@ -134,6 +123,16 @@ public final class HoconAotParser implements AotConfigParser {
             return hoconValue.unwrapped();
         } catch (ConfigException.NotResolved notResolved) {
             return new FallbackHolder(rendered, null);
+        }
+    }
+
+    public static final class FallbackHolder {
+        public final String rawExpression;
+        public final Object fallbackValue;
+
+        public FallbackHolder(String rawExpression, Object fallbackValue) {
+            this.rawExpression = rawExpression;
+            this.fallbackValue = fallbackValue;
         }
     }
 }
