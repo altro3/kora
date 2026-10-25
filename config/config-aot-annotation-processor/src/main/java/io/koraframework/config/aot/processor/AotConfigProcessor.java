@@ -35,6 +35,61 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         return Set.of(ConfigClassNames.configSourceAnnotation);
     }
 
+    @Override
+    protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
+        var messager = processingEnv.getMessager();
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Processor invoked. Over: " + roundEnv.processingOver());
+
+        var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
+        var localConfigs = new ArrayList<TypeElement>();
+
+        messager.printMessage(Kind.NOTE, "[AOT-Config] Found target annotated elements size: " + targetElements.size());
+
+        for (var annotated : targetElements) {
+            if (annotated.element() instanceof TypeElement te) {
+                messager.printMessage(Kind.NOTE, "[AOT-Config] Processing local class: " + te.getQualifiedName());
+                localConfigs.add(te);
+                processedConfigClasses.add(te.getQualifiedName().toString());
+            }
+        }
+
+        if (!localConfigs.isEmpty()) {
+            if (!isConfigLoaded) {
+                var firstPackageElement = elements.getPackageOf(localConfigs.getFirst());
+                loadAllConfigsAtCompileTime(firstPackageElement.getQualifiedName().toString());
+            }
+            for (var config : localConfigs) {
+                messager.printMessage(Kind.NOTE, "[AOT-Config] Generating AOT module for: " + config.getSimpleName());
+                generateAotModuleForConfig(config);
+            }
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Writing meta-inf for local configs...");
+            writeMetaInfConfigSources(localConfigs);
+        }
+
+        if (roundEnv.processingOver()) {
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Reached processingOver round. Reading external config sources...");
+            var externalConfigClassNames = readExternalConfigSources();
+            messager.printMessage(Kind.NOTE, "[AOT-Config] Found external config sources in classpath size: " + externalConfigClassNames.size());
+
+            if (!externalConfigClassNames.isEmpty()) {
+                if (!isConfigLoaded) {
+                    loadAllConfigsAtCompileTime("io.koraframework.config.aot");
+                }
+                for (String className : externalConfigClassNames) {
+                    if (processedConfigClasses.add(className)) {
+                        messager.printMessage(Kind.NOTE, "[AOT-Config] Processing external class from SPI: " + className);
+                        TypeElement te = processingEnv.getElementUtils().getTypeElement(className);
+                        if (te != null) {
+                            generateAotModuleForConfig(te);
+                        } else {
+                            messager.printMessage(Kind.WARNING, "[AOT-Config] Could not resolve TypeElement for external class: " + className);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private void loadAllConfigsAtCompileTime(String packageName) {
         if (isConfigLoaded) return;
         isConfigLoaded = true;
@@ -116,63 +171,8 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         configParser.loadAndMerge(finalClassLoader, customResource, customFile);
     }
 
-    @Override
-    protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
-        var messager = processingEnv.getMessager();
-        messager.printMessage(Kind.NOTE, "[AOT-Config] Processor invoked. Over: " + roundEnv.processingOver());
-
-        var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
-        var localConfigs = new ArrayList<TypeElement>();
-
-        messager.printMessage(Kind.NOTE, "[AOT-Config] Found target annotated elements size: " + targetElements.size());
-
-        for (var annotated : targetElements) {
-            if (annotated.element() instanceof TypeElement te) {
-                messager.printMessage(Kind.NOTE, "[AOT-Config] Processing local class: " + te.getQualifiedName());
-                localConfigs.add(te);
-                processedConfigClasses.add(te.getQualifiedName().toString());
-            }
-        }
-
-        if (!localConfigs.isEmpty()) {
-            if (!isConfigLoaded) {
-                var firstPackageElement = elements.getPackageOf(localConfigs.getFirst());
-                loadAllConfigsAtCompileTime(firstPackageElement.getQualifiedName().toString());
-            }
-            for (var config : localConfigs) {
-                messager.printMessage(Kind.NOTE, "[AOT-Config] Generating AOT module for: " + config.getSimpleName());
-                generateAotModuleForConfig(config);
-            }
-            messager.printMessage(Kind.NOTE, "[AOT-Config] Writing meta-inf for local configs...");
-            writeMetaInfConfigSources(localConfigs);
-        }
-
-        if (roundEnv.processingOver()) {
-            messager.printMessage(Kind.NOTE, "[AOT-Config] Reached processingOver round. Reading external config sources...");
-            var externalConfigClassNames = readExternalConfigSources();
-            messager.printMessage(Kind.NOTE, "[AOT-Config] Found external config sources in classpath size: " + externalConfigClassNames.size());
-
-            if (!externalConfigClassNames.isEmpty()) {
-                if (!isConfigLoaded) {
-                    loadAllConfigsAtCompileTime("io.koraframework.config.aot");
-                }
-                for (String className : externalConfigClassNames) {
-                    if (processedConfigClasses.add(className)) {
-                        messager.printMessage(Kind.NOTE, "[AOT-Config] Processing external class from SPI: " + className);
-                        TypeElement te = processingEnv.getElementUtils().getTypeElement(className);
-                        if (te != null) {
-                            generateAotModuleForConfig(te);
-                        } else {
-                            messager.printMessage(Kind.WARNING, "[AOT-Config] Could not resolve TypeElement for external class: " + className);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     private void generateAotModuleForConfig(TypeElement config) {
-        var resolversClass = ClassName.get("io.koraframework.config.common.aot", "AotConfigResolvers");
+        var resolversClass = ClassName.get("io.koraframework.config.aot", "AotConfigResolvers");
         var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
 
         var moduleName = config.getSimpleName() + "AotModule";

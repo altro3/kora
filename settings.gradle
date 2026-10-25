@@ -23,6 +23,7 @@ include(
     'config:config-common',
     'config:config-hocon',
     'config:config-yaml',
+    'config:config-aot',
     'config:config-aot-annotation-processor',
     'config:config-annotation-processor',
     'config:config-symbol-processor',

@@ -1,4 +1,4 @@
-package io.koraframework.config.common.aot;
+package io.koraframework.config.aot;
 
 import io.koraframework.config.common.*;
 import io.koraframework.config.common.impl.*;
@@ -8,11 +8,11 @@ import org.jspecify.annotations.*;
 import java.util.*;
 import java.util.regex.*;
 
-public final class AotConfigResolvers {
+public final class AotConfigResolver {
 
     private static volatile ResolverState state = new ResolverState();
 
-    private AotConfigResolvers() {}
+    private AotConfigResolver() {}
 
     public static void clear() {
         state = null;
@@ -35,6 +35,13 @@ public final class AotConfigResolvers {
         }
 
         putIntoTree(rootMap, configPath, fieldName, value);
+
+        Object rawValue = unwrap(value);
+        if (rawValue != null) {
+            if (System.getProperty(fullSysKey) == null) {
+                System.setProperty(fullSysKey, rawValue.toString());
+            }
+        }
 
         var prefixWithDot = fullSysKey + ".";
         var sysProps = System.getProperties();
@@ -370,6 +377,31 @@ public final class AotConfigResolvers {
         sb.append(value, lastAppendPosition, value.length());
 
         return hasUnresolvedRequired ? null : sb.toString();
+    }
+
+    private static @Nullable Object unwrap(ConfigValue<?> configValue) {
+        if (configValue == null || configValue instanceof ConfigValue.NullValue) {
+            return null;
+        }
+        if (configValue instanceof ConfigValue.StringValue sv) return sv.value();
+        if (configValue instanceof ConfigValue.NumberValue nv) return nv.value();
+        if (configValue instanceof ConfigValue.BooleanValue bv) return bv.value();
+
+        if (configValue instanceof ConfigValue.ArrayValue av) {
+            var list = new ArrayList<>();
+            for (var item : av.value()) {
+                list.add(unwrap(item));
+            }
+            return list;
+        }
+        if (configValue instanceof ConfigValue.ObjectValue ov) {
+            var map = new LinkedHashMap<String, Object>();
+            for (var entry : ov.value().entrySet()) {
+                map.put(entry.getKey(), unwrap(entry.getValue()));
+            }
+            return map;
+        }
+        return null;
     }
 
     private static @Nullable String findInRootMap(Map<String, ConfigValue<?>> rootMap, String path) {
