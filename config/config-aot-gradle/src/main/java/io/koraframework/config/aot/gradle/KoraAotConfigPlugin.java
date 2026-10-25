@@ -49,31 +49,31 @@ public class KoraAotConfigPlugin implements Plugin<Project> {
             });
 
             project.getPluginManager().withPlugin("com.github.johnrengelman.shadow", _ -> {
-                try {
-                    @SuppressWarnings("unchecked")
-                    Class<? extends Jar> shadowJarClass = (Class<? extends Jar>) Class.forName("com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar");
+                project.getTasks().register("optimizedShadowJar", Jar.class, task -> {
+                    task.setGroup("build");
+                    task.setDescription("Assemble a shadow jar containing Kora AOT compiled configurations.");
 
-                    project.getTasks().register("optimizedShadowJar", shadowJarClass, task -> {
-                        task.setGroup("build");
-                        task.setDescription("Assemble a shadow jar containing Kora AOT compiled configurations.");
+                    Jar originalShadow = (Jar) project.getTasks().getByName("shadowJar");
 
-                        Jar originalShadow = (Jar) project.getTasks().getByName("shadowJar");
+                    task.getArchiveBaseName().set("service-kora-aot");
+                    task.getArchiveClassifier().set("");
+                    task.setDuplicatesStrategy(originalShadow.getDuplicatesStrategy());
 
-                        task.getArchiveBaseName().set("service-kora-aot");
-                        task.getArchiveClassifier().set("");
-                        task.setDuplicatesStrategy(originalShadow.getDuplicatesStrategy());
+                    task.from(originalShadow.getSource());
+                    task.from(compileAotJava.flatMap(JavaCompile::getDestinationDirectory));
 
-                        task.from(mainSourceSet.getOutput());
-                        task.from(compileAotJava.flatMap(JavaCompile::getDestinationDirectory));
-
-                        try {
-                            java.lang.reflect.Method mergeMethod = task.getClass().getMethod("mergeServiceFiles");
-                            mergeMethod.invoke(task);
-                        } catch (Exception ignored) {}
-
-                        task.dependsOn(compileAotJava);
+                    project.getTasks().matching(t -> t.getName().equals("shadowJar")).configureEach(_ -> {
+                        if (originalShadow.getActions() != null) {
+                            originalShadow.getActions().forEach(action -> {
+                                try {
+                                    task.doFirst(action);
+                                } catch (Exception ignored) {}
+                            });
+                        }
                     });
-                } catch (Exception ignored) {}
+
+                    task.dependsOn(compileAotJava);
+                });
             });
 
             project.getPluginManager().withPlugin("com.google.cloud.tools.jib", _ -> {
