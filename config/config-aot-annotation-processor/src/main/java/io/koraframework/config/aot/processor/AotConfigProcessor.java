@@ -187,6 +187,18 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         if (configFields != null && !configFields.isEmpty()) {
             var initCode = CodeBlock.builder();
 
+            if (!path.isBlank()) {
+                var allFlattenedValues = new LinkedHashMap<String, String>();
+                collectFlattenedProperties(configParser, path, allFlattenedValues);
+
+                if (!allFlattenedValues.isEmpty()) {
+                    initCode.add("var overrides = new $T<$T, $T>();\n", LinkedHashMap.class, String.class, String.class);
+                    for (var entry : allFlattenedValues.entrySet()) {
+                        initCode.add("overrides.put($S, $S);\n", entry.getKey(), entry.getValue());
+                    }
+                    initCode.add("$T.putRuntimeOverrides(overrides);\n\n", resolversClass);
+                }
+            }
             var mapperInterface = ClassName.get("io.koraframework.config.common.mapper", "ConfigValueMapper");
             var simpleOrigin = ClassName.get("io.koraframework.config.common.impl", "SimpleConfigValueOrigin");
             var configOrigin = ClassName.get("io.koraframework.config.common.origin", "SimpleConfigOrigin");
@@ -289,6 +301,33 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             .build();
 
         CommonUtils.safeWriteTo(processingEnv, javaFile);
+    }
+
+    private void collectFlattenedProperties(AotConfigParser parser, String currentPath, Map<String, String> result) {
+        var baseVal = parser.getConfigValue(currentPath);
+        if (baseVal == null) return;
+
+        if (baseVal instanceof Map<?, ?> map) {
+            for (var entry : map.entrySet()) {
+                String key = String.valueOf(entry.getKey());
+                List<String> variants = PathElement.get(key).relaxedNames();
+
+                for (String variant : variants) {
+                    String nextPath = currentPath.isBlank() ? variant : currentPath + "." + variant;
+                    collectFlattenedProperties(parser, nextPath, result);
+                }
+            }
+        } else if (baseVal instanceof List<?> list) {
+            for (int i = 0; i < list.size(); i++) {
+                collectFlattenedProperties(parser, currentPath + "." + i, result);
+            }
+        } else if (baseVal instanceof HoconAotParser.FallbackHolder holder) {
+            if (holder.fallbackValue != null) {
+                result.put(currentPath, String.valueOf(holder.fallbackValue));
+            }
+        } else {
+            result.put(currentPath, String.valueOf(baseVal));
+        }
     }
 
     private void writeMetaInfConfigSources(List<TypeElement> elements) {

@@ -17,10 +17,36 @@ public final class AotConfigResolver {
     private AotConfigResolver() {}
 
     public static void putRuntimeOverrides(Map<String, String> overrides) {
-        if (overrides != null) {
-            runtimeOverrides.putAll(overrides);
+        if (overrides == null) return;
+
+        for (var entry : overrides.entrySet()) {
+            String originalKey = entry.getKey();
+            String value = entry.getValue();
+            runtimeOverrides.put(originalKey, value);
+            String[] parts = originalKey.split("\\.");
+            generateRelaxedCombinations(parts, 0, "", value);
         }
     }
+
+    private static void generateRelaxedCombinations(String[] parts, int index, String currentPrefix, String value) {
+        if (index == parts.length) {
+            if (!currentPrefix.isBlank()) {
+                runtimeOverrides.put(currentPrefix, value);
+            }
+            return;
+        }
+
+        String part = parts[index];
+        List<String> variants = part.matches("\\d+")
+            ? List.of(part)
+            : PathElement.get(part).relaxedNames();
+
+        for (String variant : variants) {
+            String nextPrefix = currentPrefix.isBlank() ? variant : currentPrefix + "." + variant;
+            generateRelaxedCombinations(parts, index + 1, nextPrefix, value);
+        }
+    }
+
 
     public static void clear() {
         state = null;
