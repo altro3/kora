@@ -3,9 +3,12 @@ package io.koraframework.config.aot.processor;
 import com.palantir.javapoet.*;
 import io.koraframework.annotation.processor.common.*;
 import io.koraframework.config.annotation.processor.*;
+import io.koraframework.config.common.*;
 
 import javax.annotation.processing.*;
 import javax.lang.model.element.*;
+import javax.tools.*;
+import java.io.*;
 import java.net.*;
 import java.nio.file.*;
 import java.util.*;
@@ -14,10 +17,11 @@ import java.util.function.*;
 public class AotConfigProcessor extends AbstractKoraProcessor {
 
     private static final int MAX_FIELDS_PER_CHUNK = 350;
+    private static final String META_INF_PATH = "META-INF/kora/config-sources";
 
     private AotConfigParser configParser = null;
     private boolean isConfigLoaded = false;
-    private final Set<ClassName> generatedModules = new LinkedHashSet<>();
+    private final Set<String> processedConfigClasses = new HashSet<>();
 
     @Override
     public Set<String> getSupportedOptions() {
@@ -94,113 +98,115 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
 
     @Override
     protected void process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv, Map<ClassName, List<AnnotatedElement>> annotatedElements) {
+        // Фаза 1: Собираем локальные интерфейсы конфигурации текущего модуля
+        var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
+        var localConfigs = new ArrayList<TypeElement>();
 
+        for (var annotated : targetElements) {
+            if (annotated.element() instanceof TypeElement te) {
+                localConfigs.add(te);
+                processedConfigClasses.add(te.getQualifiedName().toString());
+            }
+        }
+
+        // Запускаем генерацию для локальных элементов текущего раунда
+        if (!localConfigs.isEmpty()) {
+            if (!isConfigLoaded) {
+                var firstPackageElement = elements.getPackageOf(localConfigs.getFirst());
+                loadAllConfigsAtCompileTime(firstPackageElement.getQualifiedName().toString());
+            }
+            for (var config : localConfigs) {
+                generateAotModuleForConfig(config); // Наш метод генерации (бывший кусок process)
+            }
+            // Записываем локальные конфиги в META-INF, чтобы их увидели зависимые модули
+            writeMetaInfConfigSources(localConfigs);
+        }
+
+        // Фаза 2: Финальный раунд. Сканируем classpath на наличие конфигов из сторонних JAR-ников
+        if (roundEnv.processingOver()) {
+            var externalConfigClassNames = readExternalConfigSources();
+            if (!externalConfigClassNames.isEmpty()) {
+                if (!isConfigLoaded) {
+                    // Если локальных конфигов не было, инициализируем парсер по дефолтному пакету
+                    loadAllConfigsAtCompileTime("io.koraframework.config.aot");
+                }
+                for (String className : externalConfigClassNames) {
+                    if (processedConfigClasses.add(className)) {
+                        TypeElement te = processingEnv.getElementUtils().getTypeElement(className);
+                        if (te != null) {
+                            generateAotModuleForConfig(te);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void generateAotModuleForConfig(TypeElement config) {
         var resolversClass = ClassName.get("io.koraframework.config.common.aot", "AotConfigResolvers");
         var defaultComponentAnno = ClassName.get("io.koraframework.common.annotation", "DefaultComponent");
 
-        var targetElements = annotatedElements.getOrDefault(ConfigClassNames.configSourceAnnotation, List.of());
-        if (targetElements.isEmpty()) {
-            return;
-        }
+        var moduleName = config.getSimpleName() + "AotModule";
+        var packageElement = elements.getPackageOf(config);
+        var packageName = packageElement.getQualifiedName().toString();
 
-        if (!isConfigLoaded) {
-            var firstConfig = (TypeElement) targetElements.getFirst().element();
-            var firstPackageElement = elements.getPackageOf(firstConfig);
-            var firstPackageName = firstPackageElement.getQualifiedName().toString();
-            loadAllConfigsAtCompileTime(firstPackageName);
-        }
+        var typeBuilder = TypeSpec.interfaceBuilder(moduleName)
+            .addOriginatingElement(config)
+            .addAnnotation(AnnotationUtils.generated(AotConfigProcessor.class))
+            .addAnnotation(CommonClassNames.module)
+            .addModifiers(Modifier.PUBLIC);
 
-        for (var annotated : targetElements) {
-            var config = (TypeElement) annotated.element();
-            var moduleName = config.getSimpleName() + "AotModule";
-            var packageElement = elements.getPackageOf(config);
-            var packageName = packageElement.getQualifiedName().toString();
+        typeBuilder.addType(TypeSpec.classBuilder("Impl")
+            .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
+            .addSuperinterface(ClassName.get(packageName, moduleName))
+            .build());
 
-            generatedModules.add(ClassName.get(packageName, moduleName));
+        var path = AnnotationUtils.<String>parseAnnotationValueWithoutDefault(
+            AnnotationUtils.findAnnotation(config, ConfigClassNames.configSourceAnnotation), "value"
+        );
+        if (path == null) path = "";
 
-            var typeBuilder = TypeSpec.interfaceBuilder(moduleName)
-                .addOriginatingElement(config)
-                .addAnnotation(AnnotationUtils.generated(AotConfigProcessor.class))
-                .addAnnotation(CommonClassNames.module)
-                .addModifiers(Modifier.PUBLIC);
+        var configNameStr = config.getSimpleName().toString();
+        var methodName = Character.toLowerCase(configNameStr.charAt(0)) + configNameStr.substring(1);
+        var method = MethodSpec.methodBuilder(methodName)
+            .returns(TypeName.get(config.asType()))
+            .addAnnotation(defaultComponentAnno)
+            .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT);
 
-            typeBuilder.addType(TypeSpec.classBuilder("Impl")
-                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
-                .addSuperinterface(ClassName.get(packageName, moduleName))
-                .build());
+        var configFields = ConfigUtils.parseFields(types, config).left();
+        if (configFields != null && !configFields.isEmpty()) {
+            var initCode = CodeBlock.builder();
 
-            var path = AnnotationUtils.<String>parseAnnotationValueWithoutDefault(
-                AnnotationUtils.findAnnotation(config, ConfigClassNames.configSourceAnnotation), "value"
-            );
-            if (path == null) path = "";
+            var mapperInterface = ClassName.get("io.koraframework.config.common.mapper", "ConfigValueMapper");
+            var simpleOrigin = ClassName.get("io.koraframework.config.common.impl", "SimpleConfigValueOrigin");
+            var configOrigin = ClassName.get("io.koraframework.config.common.origin", "SimpleConfigOrigin");
+            var valuePath = ClassName.get("io.koraframework.config.common", "ConfigValuePath");
+            var objectValue = ClassName.get("io.koraframework.config.common.ConfigValue", "ObjectValue");
+            var pathElement = ClassName.get("io.koraframework.config.common", "PathElement");
 
-            var configNameStr = config.getSimpleName().toString();
-            var methodName = Character.toLowerCase(configNameStr.charAt(0)) + configNameStr.substring(1);
-            var method = MethodSpec.methodBuilder(methodName)
-                .returns(TypeName.get(config.asType()))
-                .addAnnotation(defaultComponentAnno)
-                .addModifiers(Modifier.PUBLIC, Modifier.DEFAULT);
+            var configMapperType = ParameterizedTypeName.get(mapperInterface, TypeName.get(config.asType()));
+            method.addParameter(configMapperType, "mapper");
 
-            var configFields = ConfigUtils.parseFields(types, config).left();
-            if (configFields != null && !configFields.isEmpty()) {
-                var initCode = CodeBlock.builder();
+            initCode.add("var origin = new $T(\n", simpleOrigin);
+            initCode.add("  new $T(\"aot-compiled\"),\n", configOrigin);
+            initCode.add("  $T.root()\n", valuePath);
+            initCode.add(");\n\n");
+            initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, ConfigValue.class);
 
-                var mapperInterface = ClassName.get("io.koraframework.config.common.mapper", "ConfigValueMapper");
-                var simpleOrigin = ClassName.get("io.koraframework.config.common.impl", "SimpleConfigValueOrigin");
-                var configOrigin = ClassName.get("io.koraframework.config.common.origin", "SimpleConfigOrigin");
-                var valuePath = ClassName.get("io.koraframework.config.common", "ConfigValuePath");
-                var objectValue = ClassName.get("io.koraframework.config.common.ConfigValue", "ObjectValue");
-                var configValue = ClassName.get("io.koraframework.config.common", "ConfigValue");
-                var pathElement = ClassName.get("io.koraframework.config.common", "PathElement");
+            class ChunkContext {
+                int totalFields = 0;
+                int currentChunkMethodIndex = 0;
+                CodeBlock.Builder currentChunkBuilder = CodeBlock.builder();
+                final List<MethodSpec> chunkMethods = new ArrayList<>();
+            }
+            final ChunkContext ctx = new ChunkContext();
 
-                var configMapperType = ParameterizedTypeName.get(mapperInterface, TypeName.get(config.asType()));
-                method.addParameter(configMapperType, "mapper");
+            final String currentMethodName = methodName;
+            Consumer<CodeBlock> chunkAppender = (codeLine) -> {
+                ctx.currentChunkBuilder.add(codeLine);
+                ctx.totalFields++;
 
-                initCode.add("var origin = new $T(\n", simpleOrigin);
-                initCode.add("  new $T(\"aot-compiled\"),\n", configOrigin);
-                initCode.add("  $T.root()\n", valuePath);
-                initCode.add(");\n\n");
-                initCode.add("var rootMap = new $T<String, $T<?>>();\n", LinkedHashMap.class, configValue);
-
-                class ChunkContext {
-                    int totalFields = 0;
-                    int currentChunkMethodIndex = 0;
-                    CodeBlock.Builder currentChunkBuilder = CodeBlock.builder();
-                    final List<MethodSpec> chunkMethods = new ArrayList<>();
-                }
-                final ChunkContext ctx = new ChunkContext();
-
-                final String currentMethodName = methodName;
-                Consumer<CodeBlock> chunkAppender = (codeLine) -> {
-                    ctx.currentChunkBuilder.add(codeLine);
-                    ctx.totalFields++;
-
-                    if (ctx.totalFields % MAX_FIELDS_PER_CHUNK == 0) {
-                        String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
-                        var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
-                            .addModifiers(Modifier.PRIVATE)
-                            .addParameter(
-                                ParameterizedTypeName.get(
-                                    ClassName.get(Map.class),
-                                    ClassName.get(String.class),
-                                    ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
-                                ),
-                                "rootMap"
-                            )
-                            .addCode(ctx.currentChunkBuilder.build())
-                            .build();
-                        ctx.chunkMethods.add(chunkMethod);
-
-                        initCode.add("$L(rootMap);\n", chunkMethodName);
-
-                        ctx.currentChunkBuilder = CodeBlock.builder();
-                        ctx.currentChunkMethodIndex++;
-                    }
-                };
-
-                generateFieldResolvers(chunkAppender, config, path, configParser, new HashSet<>());
-
-                if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
+                if (ctx.totalFields % MAX_FIELDS_PER_CHUNK == 0) {
                     String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
                     var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
                         .addModifiers(Modifier.PRIVATE)
@@ -208,7 +214,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                             ParameterizedTypeName.get(
                                 ClassName.get(Map.class),
                                 ClassName.get(String.class),
-                                ParameterizedTypeName.get(configValue, WildcardTypeName.subtypeOf(Object.class))
+                                ParameterizedTypeName.get(ClassName.get(ConfigValue.class), WildcardTypeName.subtypeOf(Object.class))
                             ),
                             "rootMap"
                         )
@@ -216,33 +222,86 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                         .build();
                     ctx.chunkMethods.add(chunkMethod);
                     initCode.add("$L(rootMap);\n", chunkMethodName);
+                    ctx.currentChunkBuilder = CodeBlock.builder();
+                    ctx.currentChunkMethodIndex++;
                 }
+            };
 
-                initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", objectValue);
+            generateFieldResolvers(chunkAppender, config, path, configParser, new HashSet<>());
 
-                if (path.isBlank()) {
-                    initCode.add("var targetValue = finalObjectValue;\n");
-                } else {
-                    initCode.add("var targetValue = finalObjectValue.get($T.get($S));\n", pathElement, path);
-                }
-
-                initCode.add("return mapper.map(targetValue);\n");
-                method.addCode(initCode.build());
-                typeBuilder.addMethod(method.build());
-                for (MethodSpec chunk : ctx.chunkMethods) {
-                    typeBuilder.addMethod(chunk);
-                }
-            } else {
-                typeBuilder.addMethod(method.build());
+            if (ctx.totalFields % MAX_FIELDS_PER_CHUNK != 0 || ctx.totalFields == 0) {
+                String chunkMethodName = currentMethodName + "_chunk" + ctx.currentChunkMethodIndex;
+                var chunkMethod = MethodSpec.methodBuilder(chunkMethodName)
+                    .addModifiers(Modifier.PRIVATE)
+                    .addParameter(
+                        ParameterizedTypeName.get(
+                            ClassName.get(Map.class),
+                            ClassName.get(String.class),
+                            ParameterizedTypeName.get(ClassName.get(ConfigValue.class), WildcardTypeName.subtypeOf(Object.class))
+                        ),
+                        "rootMap"
+                    )
+                    .addCode(ctx.currentChunkBuilder.build())
+                    .build();
+                ctx.chunkMethods.add(chunkMethod);
+                initCode.add("$L(rootMap);\n", chunkMethodName);
             }
 
-            var javaFile = JavaFile.builder(packageName, typeBuilder.build())
-                .addStaticImport(resolversClass, "*")
-                .addStaticImport(ClassName.get(Map.class), "*")
-                .build();
+            initCode.add("\nvar finalObjectValue = new $T(origin, rootMap);\n", objectValue);
 
-            CommonUtils.safeWriteTo(processingEnv, javaFile);
+            if (path.isBlank()) {
+                initCode.add("var targetValue = finalObjectValue;\n");
+            } else {
+                initCode.add("var targetValue = finalObjectValue.get($T.get($S));\n", pathElement, path);
+            }
+
+            initCode.add("return mapper.map(targetValue);\n");
+            method.addCode(initCode.build());
+            typeBuilder.addMethod(method.build());
+            for (MethodSpec chunk : ctx.chunkMethods) {
+                typeBuilder.addMethod(chunk);
+            }
+        } else {
+            typeBuilder.addMethod(method.build());
         }
+
+        var javaFile = JavaFile.builder(packageName, typeBuilder.build())
+            .addStaticImport(resolversClass, "*")
+            .addStaticImport(ClassName.get(Map.class), "*")
+            .build();
+
+        CommonUtils.safeWriteTo(processingEnv, javaFile);
+    }
+
+    private void writeMetaInfConfigSources(List<TypeElement> elements) {
+        try {
+            var resource = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT, "", META_INF_PATH);
+            try (var writer = new BufferedWriter(new OutputStreamWriter(resource.openOutputStream()))) {
+                for (var element : elements) {
+                    writer.write(element.getQualifiedName().toString());
+                    writer.newLine();
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private Set<String> readExternalConfigSources() {
+        var result = new LinkedHashSet<String>();
+        try {
+            var resources = getClass().getClassLoader().getResources(META_INF_PATH);
+            while (resources.hasMoreElements()) {
+                var url = resources.nextElement();
+                try (var reader = new BufferedReader(new InputStreamReader(url.openStream()))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        if (!line.isBlank()) {
+                            result.add(line.trim());
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return result;
     }
 
     private void generateFieldResolvers(Consumer<CodeBlock> chunkAppender, TypeElement configElement, String currentPath, AotConfigParser parser, Set<TypeElement> visited) {
@@ -291,7 +350,7 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
                     baseValBlock = convertToCodeBlock(baseVal);
                 }
 
-                var relaxedVariants = io.koraframework.config.common.PathElement.get(field.name()).relaxedNames();
+                var relaxedVariants = PathElement.get(field.name()).relaxedNames();
                 var listLiteral = CodeBlock.builder().add("$T.of(", List.class);
                 for (int i = 0; i < relaxedVariants.size(); i++) {
                     listLiteral.add("$S", relaxedVariants.get(i));
@@ -307,7 +366,6 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
             visited.remove(configElement);
         }
     }
-
 
     private CodeBlock convertToCodeBlock(Object koraValue) {
         if (koraValue == null) return CodeBlock.of("null");
@@ -340,22 +398,5 @@ public class AotConfigProcessor extends AbstractKoraProcessor {
         return className.startsWith("java.lang.")
             || className.startsWith("java.time.")
             || className.startsWith("java.util.");
-    }
-
-    private void generateGlobalAotConfigModule() {
-        if (generatedModules.isEmpty()) return;
-        var targetPackage = generatedModules.iterator().next().packageName();
-        var globalModuleName = "AotConfigModule";
-        var globalModuleBuilder = TypeSpec.interfaceBuilder(globalModuleName)
-            .addAnnotation(AnnotationUtils.generated(AotConfigProcessor.class))
-            .addAnnotation(CommonClassNames.module)
-            .addModifiers(Modifier.PUBLIC);
-
-        for (var moduleClassName : generatedModules) {
-            globalModuleBuilder.addSuperinterface(moduleClassName);
-        }
-
-        var javaFile = JavaFile.builder(targetPackage, globalModuleBuilder.build()).build();
-        CommonUtils.safeWriteTo(processingEnv, javaFile);
     }
 }
