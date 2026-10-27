@@ -95,7 +95,7 @@ public class ControllerModuleGenerator {
             .toList();
 
         for (var method : methods) {
-            var generatedMethod = this.requestHandlerGenerator.generate(controller, method);
+            var generatedMethod = this.requestHandlerGenerator.generate(classBuilder, controller, method);
             if (generatedMethod != null) {
                 classBuilder.addMethod(generatedMethod);
             } else {
