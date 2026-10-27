@@ -105,7 +105,7 @@ public class JsonDelegatingCodecGenerator {
                 "Type " + typeElement.getSimpleName() + " has multiple @JsonReader factory methods, only one is allowed",
                 factories.get(1));
         }
-        var factory = factories.get(0);
+        var factory = factories.getFirst();
         if (!factory.getModifiers().contains(Modifier.PUBLIC) || !factory.getModifiers().contains(Modifier.STATIC)) {
             throw new ProcessingErrorException("@JsonReader factory method must be public static", factory);
         }
@@ -126,8 +126,8 @@ public class JsonDelegatingCodecGenerator {
                 "Type " + typeName + " has both a @JsonReader factory method and a @JsonReader/@Json constructor — only one is allowed",
                 factory);
         }
-        var valueNullable = CommonUtils.isNullable(factory.getParameters().get(0));
-        return new DelegatingRead(TypeName.get(factory.getParameters().get(0).asType()), factory.getSimpleName().toString(), valueNullable);
+        var valueNullable = CommonUtils.isNullable(factory.getParameters().getFirst());
+        return new DelegatingRead(TypeName.get(factory.getParameters().getFirst().asType()), factory.getSimpleName().toString(), valueNullable);
     }
 
     @Nullable
@@ -145,7 +145,7 @@ public class JsonDelegatingCodecGenerator {
                 "Type " + typeElement.getSimpleName() + " has multiple @JsonWriter methods, only one is allowed",
                 methods.get(1));
         }
-        var method = methods.get(0);
+        var method = methods.getFirst();
         if (!method.getModifiers().contains(Modifier.PUBLIC)) {
             throw new ProcessingErrorException("@JsonWriter method must be public", method);
         }
@@ -160,7 +160,7 @@ public class JsonDelegatingCodecGenerator {
                     "@JsonWriter static method must have exactly one parameter (the value type), got " + method.getParameters().size(),
                     method);
             }
-            if (!TypeName.get(method.getParameters().get(0).asType()).equals(typeName)) {
+            if (!TypeName.get(method.getParameters().getFirst().asType()).equals(typeName)) {
                 throw new ProcessingErrorException("@JsonWriter static method parameter must be of type " + typeName, method);
             }
         } else {

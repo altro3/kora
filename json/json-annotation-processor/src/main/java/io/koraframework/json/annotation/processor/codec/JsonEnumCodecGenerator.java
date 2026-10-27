@@ -27,6 +27,20 @@ public class JsonEnumCodecGenerator {
         typeBuilder.addField(readerDelegateType, "readerDelegate", Modifier.PRIVATE, Modifier.FINAL);
         typeBuilder.addField(writerDelegateType, "writerDelegate", Modifier.PRIVATE, Modifier.FINAL);
 
+        var extractorClassName = "_EnumExtractor";
+        var extractorTypeSpec = TypeSpec.classBuilder(extractorClassName)
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+            .addSuperinterface(ParameterizedTypeName.get(ClassName.get("java.util.function", "Function"), typeName, enumValue.type.box()))
+            .addMethod(MethodSpec.methodBuilder("apply")
+                .addModifiers(Modifier.PUBLIC)
+                .addAnnotation(Override.class)
+                .returns(enumValue.type.box())
+                .addParameter(typeName, "_enum")
+                .addStatement("return _enum.$N()", enumValue.accessor)
+                .build())
+            .build();
+        typeBuilder.addType(extractorTypeSpec);
+
         this.addCombinedConstructor(typeBuilder, typeName, enumValue);
         this.addReadMethod(typeBuilder, typeName);
         this.addWriteMethod(typeBuilder, typeName);
@@ -39,8 +53,8 @@ public class JsonEnumCodecGenerator {
             .addModifiers(Modifier.PUBLIC)
             .addParameter(ParameterizedTypeName.get(JsonTypes.jsonReader, enumValue.type.box()), "valueReader")
             .addParameter(ParameterizedTypeName.get(JsonTypes.jsonWriter, enumValue.type.box()), "valueWriter")
-            .addCode("this.readerDelegate = new $T<>($T.values(), $T::$N, valueReader);\n", JsonTypes.enumJsonReader, typeName, typeName, enumValue.accessor)
-            .addCode("this.writerDelegate = new $T<>($T.values(), $T::$N, valueWriter);\n", JsonTypes.enumJsonWriter, typeName, typeName, enumValue.accessor)
+            .addCode("this.readerDelegate = new $T<>($T.values(), new _EnumExtractor(), valueReader);\n", JsonTypes.enumJsonReader, typeName)
+            .addCode("this.writerDelegate = new $T<>($T.values(), new _EnumExtractor(), valueWriter);\n", JsonTypes.enumJsonWriter, typeName)
             .build());
     }
 

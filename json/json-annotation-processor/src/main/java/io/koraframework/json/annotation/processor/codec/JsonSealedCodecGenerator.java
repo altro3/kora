@@ -108,23 +108,35 @@ public class JsonSealedCodecGenerator {
 
         method.addStatement("var bufferedParser = $T.createFlattened(false, bufferingParser.reset(), __parser)", JsonTypes.jsonParserSequence);
         method.addStatement("bufferedParser.nextToken()");
-        method.beginControlFlow("return switch(discriminator)");
 
+        boolean first = true;
         for (var elem : permittedSubclasses) {
             var readerName = decapitalize(elem.getSimpleName() + "Reader");
             var discriminatorValues = JsonUtils.discriminatorValue(elem);
             for (var discriminatorValue : discriminatorValues) {
-                method.addCode("case $S -> $L.read(bufferedParser);\n", discriminatorValue, readerName);
+                if (first) {
+                    method.beginControlFlow("if ($S.equals(discriminator))", discriminatorValue);
+                    first = false;
+                } else {
+                    method.nextControlFlow("else if ($S.equals(discriminator))", discriminatorValue);
+                }
+                method.addStatement("return $L.read(bufferedParser)", readerName);
             }
         }
 
-        method.addCode("default -> throw new $T(__parser, $S + discriminator + $S + __jsonPath(__parser) + $S);\n",
+        if (!first) {
+            method.nextControlFlow("else");
+        } else {
+            method.beginControlFlow("if (true)");
+        }
+
+        method.addCode("throw new $T(__parser, $S + discriminator + $S + __jsonPath(__parser) + $S);\n",
             JsonTypes.jsonParseException,
             "Failed to read json " + typeSimpleName + ": unknown discriminator value \"",
             "\" for field \"" + discriminatorField + "\", expected one of " + allValues + " (at ",
             ")");
+        method.endControlFlow();
 
-        method.endControlFlow().addCode(";");
         typeBuilder.addMethod(method.build());
     }
 
