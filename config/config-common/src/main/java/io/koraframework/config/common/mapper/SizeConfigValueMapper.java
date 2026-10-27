@@ -14,10 +14,12 @@ public final class SizeConfigValueMapper implements ConfigValueMapper<Size> {
             return null;
         }
 
-        return switch (value) {
-            case ConfigValue.NumberValue number -> Size.ofBytesBinary(number.value().longValue());
-            case ConfigValue.StringValue string -> Size.parse(string.value());
-            default -> throw ConfigValueException.unexpectedValueType(value, ConfigValue.StringValue.class);
-        };
+        if (value instanceof ConfigValue.NumberValue number) {
+            return Size.ofBytesBinary(number.value().longValue());
+        } else if (value instanceof ConfigValue.StringValue string) {
+            return Size.parse(string.value());
+        } else {
+            throw ConfigValueException.unexpectedValueType(value, ConfigValue.StringValue.class);
+        }
     }
 }

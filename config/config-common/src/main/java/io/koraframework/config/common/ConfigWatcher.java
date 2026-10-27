@@ -20,7 +20,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Function;
 
 public class ConfigWatcher implements Lifecycle {
 
@@ -45,6 +44,19 @@ public class ConfigWatcher implements Lifecycle {
         this.checkTime = ((int) checkTime.toMillis());
     }
 
+    private static final class WatchJobRunnable implements Runnable {
+        private final ConfigWatcher watcher;
+
+        public WatchJobRunnable(ConfigWatcher watcher) {
+            this.watcher = watcher;
+        }
+
+        @Override
+        public void run() {
+            this.watcher.watchJob();
+        }
+    }
+
     @Override
     public void init() {
         if (this.applicationConfigNode == null) {
@@ -61,7 +73,7 @@ public class ConfigWatcher implements Lifecycle {
         } else if (this.isStarted.compareAndSet(false, true)) {
             this.thread = Thread.ofVirtual()
                 .name("config-reload")
-                .start(this::watchJob);
+                .start(new WatchJobRunnable(this));
         }
     }
 
@@ -76,28 +88,29 @@ public class ConfigWatcher implements Lifecycle {
         }
     }
 
+    record State(Path configPath, Instant lastModifiedTime) {}
+
+    private State extractState(Path configuredPath) {
+        try {
+            var configPath = configuredPath.toAbsolutePath().toRealPath();
+            var lastModifiedTime = Files.getLastModifiedTime(configPath).toInstant();
+            return new State(configPath, lastModifiedTime);
+        } catch (IOException e) {
+            logger.warn("Can't locate config file or ", e);
+            return null;
+        }
+    }
+
     private void watchJob() {
         if (this.applicationConfigNode == null || this.applicationConfig == null) {
             return;
         }
-        // the value comes in as a dependency, so the graph has already initialized the config node
-        // by the time this thread starts and reading it here cannot race with initialization
         ConfigOrigin config = this.applicationConfig.get();
         var origins = this.parseOrigin(config);
-        record State(Path configPath, Instant lastModifiedTime) {}
-        Function<Path, State> stateExtractor = configuredPath -> {
-            try {
-                var configPath = configuredPath.toAbsolutePath().toRealPath();
-                var lastModifiedTime = Files.getLastModifiedTime(configPath).toInstant();
-                return new State(configPath, lastModifiedTime);
-            } catch (IOException e) {
-                logger.warn("Can't locate config file or ", e);
-                return null;
-            }
-        };
+
         var state = new HashMap<Path, State>();
         for (var origin : origins) {
-            var originalState = stateExtractor.apply(origin.path());
+            var originalState = this.extractState(origin.path());
             state.put(origin.path(), originalState);
         }
         while (this.isStarted.get()) {
@@ -107,8 +120,6 @@ public class ConfigWatcher implements Lifecycle {
                 var changed = false;
                 origins = this.parseOrigin(config);
 
-                // a refresh recreates the origin object even when its files are the same, so already tracked
-                // files keep their state: dropping it made every refresh look like a changed origin and refresh again
                 var newStates = new HashMap<Path, State>();
                 for (var origin : origins) {
                     var path = origin.path();
@@ -117,7 +128,7 @@ public class ConfigWatcher implements Lifecycle {
                     } else {
                         logger.debug("New config origin {}", origin);
                         changed = true;
-                        newStates.put(path, stateExtractor.apply(path));
+                        newStates.put(path, this.extractState(path));
                     }
                 }
                 for (var oldPath : state.keySet()) {
@@ -147,7 +158,7 @@ public class ConfigWatcher implements Lifecycle {
             var changed = new HashMap<Path, State>();
             for (var entry : state.entrySet()) {
                 var path = entry.getKey();
-                var newState = stateExtractor.apply(path);
+                var newState = this.extractState(path);
                 if (newState == null) {
                     continue;
                 }
@@ -158,12 +169,12 @@ public class ConfigWatcher implements Lifecycle {
                 }
                 var configPath = entry.getValue().configPath();
                 var lastModifiedTime = entry.getValue().lastModifiedTime();
-                var currentConfigPath = newState.configPath;
-                var currentLastModifiedTime = newState.lastModifiedTime;
-                if (!currentConfigPath.equals(configPath)) {
+                var configPath1 = newState.configPath;
+                var lastModifiedTime1 = newState.lastModifiedTime;
+                if (!configPath1.equals(configPath)) {
                     logger.debug("New config symlink target");
                     changed.put(entry.getKey(), newState);
-                } else if (currentLastModifiedTime.isAfter(lastModifiedTime)) {
+                } else if (lastModifiedTime1.isAfter(lastModifiedTime)) {
                     logger.debug("Config modified");
                     changed.put(entry.getKey(), newState);
                 }
@@ -185,7 +196,6 @@ public class ConfigWatcher implements Lifecycle {
             }
         }
     }
-
 
     private List<FileConfigOrigin> parseOrigin(ConfigOrigin origin) {
         if (origin instanceof FileConfigOrigin o) {

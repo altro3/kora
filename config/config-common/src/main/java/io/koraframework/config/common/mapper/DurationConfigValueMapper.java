@@ -63,20 +63,28 @@ public class DurationConfigValueMapper implements ConfigValueMapper<Duration> {
             unitString = unitString + "s";
 
         // note that this is deliberately case-sensitive
-        var units = switch (unitString) {
-            case "", "ms", "millis", "milliseconds" -> TimeUnit.MILLISECONDS;
-            case "us", "micros", "microseconds" -> TimeUnit.MICROSECONDS;
-            case "ns", "nanos", "nanoseconds" -> TimeUnit.NANOSECONDS;
-            case "d", "days" -> TimeUnit.DAYS;
-            case "h", "hours" -> TimeUnit.HOURS;
-            case "s", "seconds" -> TimeUnit.SECONDS;
-            case "m", "minutes" -> TimeUnit.MINUTES;
-            default -> throw new ConfigValueException(
+        TimeUnit units;
+        if (unitString.equals("") || unitString.equals("ms") || unitString.equals("millis") || unitString.equals("milliseconds")) {
+            units = TimeUnit.MILLISECONDS;
+        } else if (unitString.equals("us") || unitString.equals("micros") || unitString.equals("microseconds")) {
+            units = TimeUnit.MICROSECONDS;
+        } else if (unitString.equals("ns") || unitString.equals("nanos") || unitString.equals("nanoseconds")) {
+            units = TimeUnit.NANOSECONDS;
+        } else if (unitString.equals("d") || unitString.equals("days")) {
+            units = TimeUnit.DAYS;
+        } else if (unitString.equals("h") || unitString.equals("hours")) {
+            units = TimeUnit.HOURS;
+        } else if (unitString.equals("s") || unitString.equals("seconds")) {
+            units = TimeUnit.SECONDS;
+        } else if (unitString.equals("m") || unitString.equals("minutes")) {
+            units = TimeUnit.MINUTES;
+        } else {
+            throw new ConfigValueException(
                 configValue.origin().config(),
                 "Could not parse time unit '%s' (try ns, us, ms, s, m, h, d) in %s".formatted(originalUnitString, configValue.origin().path()),
                 null
             );
-        };
+        }
 
         try {
             // if the string is purely digits, parse as an integer to avoid
