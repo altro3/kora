@@ -46,7 +46,7 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
         this.xnioWorker = xnioWorker;
         this.configurer = configurer;
 
-        this.gracefulShutdown = new GracefulShutdownHandler(this::handleRequest);
+        this.gracefulShutdown = new GracefulShutdownHandler(new UndertowHttpHandler(httpHandler));
     }
 
     private void handleRequest(HttpServerExchange exchange) throws Exception {
@@ -77,32 +77,32 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
     @Override
     public void release() {
         logger.debug("Public HTTP Server (Undertow) stopping...");
-        this.state.set(HttpServerState.SHUTDOWN);
+        state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
-        this.gracefulShutdown.shutdown();
-        final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
+        gracefulShutdown.shutdown();
+        final Duration shutdownAwait = httpServerConfig.get().shutdownWait();
         try {
-            logger.debug("HTTP Server {} (Undertow) awaiting graceful shutdown...", this.name);
-            if (!this.gracefulShutdown.awaitShutdown(shutdownAwait.toMillis())) {
-                logger.warn("HTTP Server {} (Undertow) failed completing graceful shutdown in {}", this.name, shutdownAwait);
+            logger.debug("HTTP Server {} (Undertow) awaiting graceful shutdown...", name);
+            if (!gracefulShutdown.awaitShutdown(shutdownAwait.toMillis())) {
+                logger.warn("HTTP Server {} (Undertow) failed completing graceful shutdown in {}", name, shutdownAwait);
             }
         } catch (InterruptedException e) {
-            logger.warn("HTTP Server {} (Undertow) failed completing graceful shutdown in {}", this.name, shutdownAwait, e);
+            logger.warn("HTTP Server {} (Undertow) failed completing graceful shutdown in {}", name, shutdownAwait, e);
         }
 
-        if (this.undertow != null) {
-            this.undertow.stop();
-            this.undertow = null;
+        if (undertow != null) {
+            undertow.stop();
+            undertow = null;
         }
         logger.info("HTTP Server {} (Undertow) stopped in {}", name, TimeUtils.tookForLogging(started));
     }
 
     private Undertow createServer() {
-        var config = this.httpServerConfig.get();
-        var undertow = Undertow.builder()
-            .setHandler(this.gracefulShutdown)
+        var config = httpServerConfig.get();
+        var builder = Undertow.builder()
+            .setHandler(gracefulShutdown)
             .addHttpListener(config.port(), "0.0.0.0")
-            .setWorker(this.xnioWorker)
+            .setWorker(xnioWorker)
             .setIoThreads(undertowConfig.get().ioThreads())
             .setSocketOption(Options.READ_TIMEOUT, ((int) config.socketReadTimeout().toMillis()))
             .setSocketOption(Options.WRITE_TIMEOUT, ((int) config.socketWriteTimeout().toMillis()))
@@ -113,32 +113,48 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
             .setServerOption(UndertowOptions.ALWAYS_SET_DATE, config.headerServerDateEnabled())
             .setServerOption(UndertowOptions.MAX_ENTITY_SIZE, config.maxRequestBodySize().toBytes());
 
-        if (this.configurer != null) {
-            undertow = this.configurer.configure(undertow);
+        if (configurer != null) {
+            builder = configurer.configure(builder);
         }
-        return undertow.build();
+        return builder.build();
     }
 
     @Override
     public int port() {
-        if (this.undertow == null) {
+        if (undertow == null) {
             return -1;
         }
-        var infos = this.undertow.getListenerInfo();
+        var infos = undertow.getListenerInfo();
         var address = (InetSocketAddress) infos.getFirst().getAddress();
         return address.getPort();
     }
 
     @Override
     public ReadinessProbeFailure probe() {
-        return switch (this.state.get()) {
-            case INIT -> new ReadinessProbeFailure("HTTP Server " + this.name + " (Undertow) init");
-            case RUN -> null;
-            case SHUTDOWN -> new ReadinessProbeFailure("HTTP Server " + this.name + " (Undertow) shutdown");
-        };
+        var currentState = state.get();
+        if (currentState == HttpServerState.INIT) {
+            return new ReadinessProbeFailure("HTTP Server " + name + " (Undertow) init");
+        } else if (currentState == HttpServerState.SHUTDOWN) {
+            return new ReadinessProbeFailure("HTTP Server " + name + " (Undertow) shutdown");
+        } else {
+            return null;
+        }
     }
 
     private enum HttpServerState {
         INIT, RUN, SHUTDOWN
+    }
+
+    private static final class UndertowHttpHandler implements HttpHandler {
+        private final ValueOf<HttpHandler> handlerValueOf;
+
+        public UndertowHttpHandler(ValueOf<HttpHandler> handlerValueOf) {
+            this.handlerValueOf = handlerValueOf;
+        }
+
+        @Override
+        public void handleRequest(HttpServerExchange exchange) throws Exception {
+            handlerValueOf.get().handleRequest(exchange);
+        }
     }
 }

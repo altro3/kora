@@ -47,7 +47,7 @@ import java.util.*;
 public class HttpServerRouter {
 
     private static final HttpServerResponse NOT_FOUND_RESPONSE = HttpServerResponse.of(404);
-    private static final HttpServerRequestHandler.HandlerFunction NOT_FOUND_HANDLER = (_) -> NOT_FOUND_RESPONSE;
+    private static final HttpServerRequestHandler.HandlerFunction NOT_FOUND_HANDLER = new NotFoundHandler();
 
     private final Map<String, HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction>> pathTemplateMatcher;
     private final HybridPathTemplateMatcher<MethodNotAllowedHandler> allMethodMatchers;
@@ -76,7 +76,11 @@ public class HttpServerRouter {
 
             var route = h.routeTemplate();
             var handlerFunction = new RouteHandlerFunction(h);
-            var methodMatcherBuilder = matcherBuilders.computeIfAbsent(h.method(), _ -> HybridPathTemplateMatcher.builder());
+            var methodMatcherBuilder = matcherBuilders.get(h.method());
+            if (methodMatcherBuilder == null) {
+                methodMatcherBuilder = HybridPathTemplateMatcher.builder();
+                matcherBuilders.put(h.method(), methodMatcherBuilder);
+            }
             var oldValue = methodMatcherBuilder.add(route, handlerFunction);
             if (oldValue != null) {
                 throw new IllegalStateException("Cannot add path template %s, matcher already contains an equivalent pattern %s".formatted(route, oldValue.getKey().templateString()));
@@ -112,7 +116,8 @@ public class HttpServerRouter {
         for (var interceptor : interceptors) {
             interceptorsList.add(interceptor);
         }
-        interceptorsList.sort(Comparator.comparing(i -> i.getClass().getSimpleName()));
+
+        interceptorsList.sort(InterceptorComparator.INSTANCE);
 
         if (interceptorsList.isEmpty()) {
             this.requestHandler = SimpleRequestHandler.INSTANCE;
@@ -161,6 +166,24 @@ public class HttpServerRouter {
         }
         var request = new RoutedHttpServerRequest(unroutedHttpRequest, templateParameters, pathTemplate);
         return new PublicApiInvocation(this.requestHandler, handlerFunction, request);
+    }
+
+    private static final class NotFoundHandler implements HttpServerRequestHandler.HandlerFunction {
+        private final HttpServerResponse response = HttpServerResponse.of(404);
+
+        @Override
+        public HttpServerResponse apply(HttpServerRequest request) {
+            return response;
+        }
+    }
+
+    private static final class InterceptorComparator implements Comparator<HttpServerInterceptor> {
+        public static final InterceptorComparator INSTANCE = new InterceptorComparator();
+
+        @Override
+        public int compare(HttpServerInterceptor o1, HttpServerInterceptor o2) {
+            return o1.getClass().getSimpleName().compareTo(o2.getClass().getSimpleName());
+        }
     }
 
     private record PublicApiInvocation(RequestHandler handler,
@@ -212,16 +235,54 @@ public class HttpServerRouter {
     }
 
     private static class AggregatedRequestHandler implements RequestHandler {
-        private static final RequestHandler FINAL_HANDLER = (request, lastHandlerInChain) -> lastHandlerInChain.apply(request);
+
+        private static final class FinalRequestHandler implements RequestHandler {
+            private static final FinalRequestHandler INSTANCE = new FinalRequestHandler();
+
+            @Override
+            public HttpServerResponse apply(HttpServerRequest request, HttpServerRequestHandler.HandlerFunction lastHandlerInChain) throws Exception {
+                return lastHandlerInChain.apply(request);
+            }
+        }
+
+        private static final class InterceptorNodeRequestHandler implements RequestHandler {
+            private final HttpServerInterceptor interceptor;
+            private final RequestHandler nextNode;
+
+            public InterceptorNodeRequestHandler(HttpServerInterceptor interceptor, RequestHandler nextNode) {
+                this.interceptor = interceptor;
+                this.nextNode = nextNode;
+            }
+
+            private static final class NextNodeHandlerFunction implements HttpServerInterceptor.InterceptChain {
+                private final RequestHandler nextNode;
+                private final HttpServerRequestHandler.HandlerFunction lastHandler;
+
+                public NextNodeHandlerFunction(RequestHandler nextNode, HttpServerRequestHandler.HandlerFunction lastHandler) {
+                    this.nextNode = nextNode;
+                    this.lastHandler = lastHandler;
+                }
+
+                @Override
+                public HttpServerResponse process(HttpServerRequest httpServerRequest) throws Exception {
+                    return nextNode.apply(httpServerRequest, lastHandler);
+                }
+            }
+
+            @Override
+            public HttpServerResponse apply(HttpServerRequest request, HttpServerRequestHandler.HandlerFunction lastHandlerInChain) throws Exception {
+                return this.interceptor.intercept(request, new NextNodeHandlerFunction(nextNode, lastHandlerInChain));
+            }
+        }
+
         private final RequestHandler chain;
 
         private AggregatedRequestHandler(List<HttpServerInterceptor> interceptors) {
-            var chain = FINAL_HANDLER;
+            RequestHandler currentChain = FinalRequestHandler.INSTANCE;
             for (var interceptor : interceptors) {
-                var remainingChain = chain;
-                chain = (r, lastHandler) -> interceptor.intercept(r, (httpServerRequest) -> remainingChain.apply(httpServerRequest, lastHandler));
+                currentChain = new InterceptorNodeRequestHandler(interceptor, currentChain);
             }
-            this.chain = chain;
+            this.chain = currentChain;
         }
 
         @Override
