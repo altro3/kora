@@ -69,11 +69,12 @@ public class HttpServerRouter {
     public HttpServerRouter(Iterable<HttpServerRequestHandler> handlers, Iterable<HttpServerInterceptor> interceptors, HttpServerConfig config) {
         var matcherBuilders = new HashMap<String, HybridPathTemplateMatcher.Builder<HttpServerRequestHandler.HandlerFunction>>();
         var allMethodMatcherBuilder = HybridPathTemplateMatcher.<MethodNotAllowedHandler>builder();
+        var routeToMethodsMap = new HashMap<String, List<String>>();
+
         for (var h : handlers) {
             if (!h.enabled()) {
                 continue;
             }
-
             var route = h.routeTemplate();
             var handlerFunction = new RouteHandlerFunction(h);
             var methodMatcherBuilder = matcherBuilders.get(h.method());
@@ -85,26 +86,38 @@ public class HttpServerRouter {
             if (oldValue != null) {
                 throw new IllegalStateException("Cannot add path template %s, matcher already contains an equivalent pattern %s".formatted(route, oldValue.getKey().templateString()));
             }
+
+            var mainMethods = routeToMethodsMap.get(route);
+            if (mainMethods == null) {
+                mainMethods = new ArrayList<>(4);
+                routeToMethodsMap.put(route, mainMethods);
+            }
+            mainMethods.add(h.method());
+
             if (config.ignoreTrailingSlash()) {
                 var lastRouteChar = route.charAt(route.length() - 1);
                 if (lastRouteChar != '*') {
-                    if (lastRouteChar == '/') {
-                        route = route.substring(0, route.length() - 1);
-                    } else {
-                        route = route + '/';
-                    }
-                    oldValue = methodMatcherBuilder.add(route, handlerFunction);
+                    var slashRoute = lastRouteChar == '/' ? route.substring(0, route.length() - 1) : route + '/';
+
+                    oldValue = methodMatcherBuilder.add(slashRoute, handlerFunction);
                     if (oldValue != null) {
-                        throw new IllegalStateException("Cannot add path template %s, matcher already contains an equivalent pattern %s".formatted(route, oldValue.getKey().templateString()));
+                        throw new IllegalStateException("Cannot add path template %s, matcher already contains an equivalent pattern %s".formatted(slashRoute, oldValue.getKey().templateString()));
                     }
+
+                    var slashMethods = routeToMethodsMap.get(slashRoute);
+                    if (slashMethods == null) {
+                        slashMethods = new ArrayList<>(4);
+                        routeToMethodsMap.put(slashRoute, slashMethods);
+                    }
+                    slashMethods.add(h.method());
                 }
             }
-            var otherMethods = new MethodNotAllowedHandler(h.method());
-            var oldAllMethodValue = allMethodMatcherBuilder.add(route, otherMethods);
-            if (oldAllMethodValue != null) {
-                oldAllMethodValue.getValue().add(h.method());
-            }
         }
+
+        for (var entry : routeToMethodsMap.entrySet()) {
+            allMethodMatcherBuilder.add(entry.getKey(), new MethodNotAllowedHandler(entry.getValue()));
+        }
+
         var pathTemplateMatchers = new HashMap<String, HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction>>(matcherBuilders.size());
         for (var entry : matcherBuilders.entrySet()) {
             pathTemplateMatchers.put(entry.getKey(), entry.getValue().build());
@@ -182,7 +195,7 @@ public class HttpServerRouter {
 
         @Override
         public int compare(HttpServerInterceptor o1, HttpServerInterceptor o2) {
-            return o1.getClass().getSimpleName().compareTo(o2.getClass().getSimpleName());
+            return o1.getClass().getName().compareTo(o2.getClass().getName());
         }
     }
 
@@ -216,15 +229,11 @@ public class HttpServerRouter {
     }
 
     private static final class MethodNotAllowedHandler implements HttpServerRequestHandler.HandlerFunction {
-        private final List<String> methods = new ArrayList<>(4);
-        private String allowed;
+        private final List<String> methods;
+        private final String allowed;
 
-        private MethodNotAllowedHandler(String method) {
-            this.add(method);
-        }
-
-        private void add(String method) {
-            this.methods.add(method);
+        private MethodNotAllowedHandler(List<String> methods) {
+            this.methods = methods;
             this.allowed = String.join(", ", this.methods);
         }
 

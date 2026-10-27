@@ -70,7 +70,8 @@ public class ConfigWatcher implements Lifecycle {
 
         if (enableConfigWatch != null && !Boolean.parseBoolean(enableConfigWatch)) {
             return;
-        } else if (this.isStarted.compareAndSet(false, true)) {
+        }
+        if (this.isStarted.compareAndSet(false, true)) {
             this.thread = Thread.ofVirtual()
                 .name("config-reload")
                 .start(new WatchJobRunnable(this));
@@ -113,10 +114,14 @@ public class ConfigWatcher implements Lifecycle {
             var originalState = this.extractState(origin.path());
             state.put(origin.path(), originalState);
         }
-        while (this.isStarted.get()) {
+        while (isStarted.get()) {
+            try {
+                Thread.sleep(checkTime);
+            } catch (InterruptedException ignore) {
+                break;
+            }
             var newConfig = this.graph.get(this.applicationConfigNode);
             if (config != newConfig) {
-                config = newConfig;
                 var changed = false;
                 origins = this.parseOrigin(config);
 
@@ -142,14 +147,8 @@ public class ConfigWatcher implements Lifecycle {
                     try {
                         this.graph.refresh(this.applicationConfigNode);
                         logger.info("Config refreshed");
-                        Thread.sleep(this.checkTime);
-                    } catch (InterruptedException ignore) {
                     } catch (Exception e) {
                         logger.warn("Error on checking config for changes", e);
-                        try {
-                            Thread.sleep(this.checkTime);
-                        } catch (InterruptedException ignore) {
-                        }
                     }
                 }
                 continue;
@@ -179,19 +178,14 @@ public class ConfigWatcher implements Lifecycle {
                     changed.put(entry.getKey(), newState);
                 }
             }
-            try {
-                if (!changed.isEmpty()) {
+
+            if (!changed.isEmpty()) {
+                try {
                     this.graph.refresh(this.applicationConfigNode);
                     logger.info("Config refreshed");
                     state.putAll(changed);
-                }
-                Thread.sleep(this.checkTime);
-            } catch (InterruptedException ignore) {
-            } catch (Exception e) {
-                logger.warn("Error on checking config for changes", e);
-                try {
-                    Thread.sleep(this.checkTime);
-                } catch (InterruptedException ignore) {
+                } catch (Exception e) {
+                    logger.warn("Error on checking config for changes", e);
                 }
             }
         }
