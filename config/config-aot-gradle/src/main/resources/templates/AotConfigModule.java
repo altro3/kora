@@ -27,7 +27,7 @@ public interface AotConfigModule extends ConfigModule {
             putRawIntoTree(nestedTree, entry.getKey(), (AotLeaf) entry.getValue());
         }
 
-        var globalObject = (ObjectValue) convertToConfigValue(new AotNode(nestedTree), valueOrigin);
+        var globalObject = (ObjectValue) convertToConfigValue(nestedTree, valueOrigin);
         return new SimpleConfig(origin, globalObject);
     }
 
@@ -35,47 +35,36 @@ public interface AotConfigModule extends ConfigModule {
         int start = 0;
         int dotIdx;
         var currentMap = rootMap;
+
         while ((dotIdx = fullKey.indexOf('.', start)) != -1) {
-            var currentMapRef = currentMap;
-            int finalStart = start;
-            int finalDotIdx = dotIdx;
-
-            String part = null;
-            for (String key : currentMapRef.keySet()) {
-                if (key.length() == (finalDotIdx - finalStart) && fullKey.regionMatches(finalStart, key, 0, key.length())) {
-                    part = key;
-                    break;
-                }
+            var part = fullKey.substring(start, dotIdx);
+            var nextMap = (Map<String, Object>) currentMap.get(part);
+            if (nextMap == null) {
+                nextMap = new LinkedHashMap<String, Object>();
+                currentMap.put(part, nextMap);
             }
-
-            if (part == null) {
-                part = fullKey.substring(finalStart, finalDotIdx);
-                var nextMap = new LinkedHashMap<String, Object>();
-                currentMapRef.put(part, nextMap);
-                currentMap = nextMap;
-            } else {
-                currentMap = (Map<String, Object>) currentMapRef.get(part);
-            }
-
+            currentMap = nextMap;
             start = dotIdx + 1;
         }
         currentMap.put(fullKey.substring(start), leaf);
     }
 
     private ConfigValue<?> convertToConfigValue(Object rawValue, ConfigValueOrigin baseOrigin) {
-        if (rawValue instanceof AotNode node) {
-            var map = node.children();
+        if (rawValue instanceof ConfigValue<?> cv) {
+            return cv;
+        }
+
+        if (rawValue instanceof Map<?, ?> map) {
             var resultMap = new LinkedHashMap<String, ConfigValue<?>>((int) (map.size() / 0.75f) + 1);
             for (var entry : map.entrySet()) {
-                var key = entry.getKey();
+                var key = (String) entry.getKey();
                 var childOrigin = new SimpleConfigValueOrigin(baseOrigin.config(), baseOrigin.path().child(key));
                 resultMap.put(key, convertToConfigValue(entry.getValue(), childOrigin));
             }
             return new ObjectValue(baseOrigin, resultMap);
         }
 
-        if (rawValue instanceof AotArray array) {
-            var list = array.items();
+        if (rawValue instanceof List<?> list) {
             var resultList = new ArrayList<ConfigValue<?>>(list.size());
             for (int i = 0; i < list.size(); i++) {
                 var childOrigin = new SimpleConfigValueOrigin(baseOrigin.config(), baseOrigin.path().child(i));
@@ -87,6 +76,7 @@ public interface AotConfigModule extends ConfigModule {
         if (rawValue instanceof AotLeaf leaf) {
             var leafOrigin = new SimpleConfigValueOrigin(baseOrigin.config(), leaf.path());
             var val = leaf.value();
+            if (val instanceof ConfigValue<?> cv) return cv;
             if (val instanceof String s) return new StringValue(leafOrigin, s);
             if (val instanceof Number n) return new NumberValue(leafOrigin, n);
             if (val instanceof Boolean b) return new BooleanValue(leafOrigin, b);
@@ -97,8 +87,6 @@ public interface AotConfigModule extends ConfigModule {
     }
 
     record AotLeaf(ConfigValuePath path, Object value) {}
-    record AotNode(Map<String, Object> children) {}
-    record AotArray(List<Object> items) {}
 
     final class Impl {
         static void fillData(Map<String, Object> root) {

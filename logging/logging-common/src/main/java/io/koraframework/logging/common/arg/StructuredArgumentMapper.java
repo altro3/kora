@@ -8,14 +8,14 @@ import tools.jackson.core.io.SegmentedStringWriter;
 
 public interface StructuredArgumentMapper<T> extends Mapping.MappingFunction {
 
-    void write(JsonGenerator gen, T value);
+void write(JsonGenerator gen, T value);
 
-    default String writeToString(T value) {
-        try (var sw = new SegmentedStringWriter(JsonModule.JSON_FACTORY._getBufferRecycler());
-             var gen = JsonModule.JSON_FACTORY.createGenerator(ObjectWriteContext.empty(), sw)) {
-            this.write(gen, value);
-            gen.flush();
-            return sw.getAndClear();
-        }
-    }
+default String writeToString(T value) {
+try (var sw = new SegmentedStringWriter(JsonModule.JSON_FACTORY._getBufferRecycler());
+ var gen = JsonModule.JSON_FACTORY.createGenerator(ObjectWriteContext.empty(), sw)) {
+this.write(gen, value);
+gen.flush();
+return sw.getAndClear();
+}
+}
 }

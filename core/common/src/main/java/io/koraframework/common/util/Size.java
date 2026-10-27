@@ -159,12 +159,17 @@ public final class Size {
         Long size = null;
         Type type = null;
 
-        for (var i = 0; i < value.length(); i++) {
+        int len = value.length();
+        for (var i = 0; i < len; i++) {
             var c = value.charAt(i);
             if (Character.isLetter(c)) {
                 try {
-                    var v = value.substring(0, i).strip();
-                    size = Long.parseLong(v);
+                    int numStart = 0;
+                    while (numStart < i && value.charAt(numStart) <= ' ') numStart++;
+                    int numEnd = i;
+                    while (numEnd > numStart && value.charAt(numEnd - 1) <= ' ') numEnd--;
+
+                    size = parseLongRaw(value, numStart, numEnd);
                     if (size < 0) {
                         throw new IllegalArgumentException("Malformed negative value, can't be size: " + value);
                     }
@@ -172,15 +177,16 @@ public final class Size {
                     throw new IllegalArgumentException("Can't extract size number part from: " + value);
                 }
 
-                var typeAsStr = value.substring(i).strip();
-                for (var sizeType : ALL) {
-                    if (sizeType == Type.BYTES && typeAsStr.equalsIgnoreCase("B")) {
-                        type = sizeType;
-                        break;
-                    } else if (sizeType.name().equalsIgnoreCase(typeAsStr)) {
-                        type = sizeType;
-                        break;
-                    }
+                int typeStart = i;
+                while (typeStart < len && value.charAt(typeStart) <= ' ') typeStart++;
+                int typeEnd = len;
+                while (typeEnd > typeStart && value.charAt(typeEnd - 1) <= ' ') typeEnd--;
+                int typeLen = typeEnd - typeStart;
+
+                if (typeLen == 1 && (value.charAt(typeStart) == 'b' || value.charAt(typeStart) == 'B')) {
+                    type = Type.BYTES;
+                } else {
+                    type = matchEnumRaw(value, typeStart, typeEnd);
                 }
 
                 if (type == null) {
@@ -192,7 +198,12 @@ public final class Size {
 
         if (size == null) {
             try {
-                var bytes = Long.parseLong(value);
+                int start = 0;
+                while (start < len && value.charAt(start) <= ' ') start++;
+                int end = len;
+                while (end > start && value.charAt(end - 1) <= ' ') end--;
+
+                var bytes = parseLongRaw(value, start, end);
                 if (bytes < 0) {
                     throw new IllegalArgumentException("Malformed negative value, can't be size: " + value);
                 }
@@ -203,6 +214,36 @@ public final class Size {
         } else {
             return of(size, type);
         }
+    }
+
+    private static long parseLongRaw(String s, int start, int end) {
+        if (start >= end) throw new NumberFormatException();
+        long result = 0;
+        boolean negative = false;
+        int i = start;
+        char firstChar = s.charAt(start);
+        if (firstChar < '0') {
+            if (firstChar == '-') { negative = true; i++; }
+            else if (firstChar == '+') { i++; }
+            if (i == end) throw new NumberFormatException();
+        }
+        while (i < end) {
+            char c = s.charAt(i++);
+            if (c < '0' || c > '9') throw new NumberFormatException();
+            result = result * 10 + (c - '0');
+        }
+        return negative ? -result : result;
+    }
+
+    private static Type matchEnumRaw(String s, int start, int end) {
+        int targetLen = end - start;
+        for (Type t : Type.values()) {
+            String name = t.name();
+            if (name.length() == targetLen && s.regionMatches(true, start, name, 0, targetLen)) {
+                return t;
+            }
+        }
+        return null;
     }
 
     @Override
