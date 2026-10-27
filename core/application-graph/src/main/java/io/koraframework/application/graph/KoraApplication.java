@@ -3,6 +3,7 @@ package io.koraframework.application.graph;
 import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
@@ -29,10 +30,14 @@ public final class KoraApplication {
             graph = graphDraw.init();
             var initEnd = System.nanoTime();
             var initTook = (initEnd - initStart) / 1_000_000;
-            try {
-                var uptimeTook = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
-                logger.info("Application initialized in {}ms (JVM running for {}s)", initTook, uptimeTook);
-            } catch (Throwable ex) {
+            if (Boolean.getBoolean("kora.jmx.uptime.enabled")) {
+                try {
+                    var uptimeTook = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
+                    logger.info("Application initialized in {}ms (JVM running for {}s)", initTook, uptimeTook);
+                } catch (Throwable ex) {
+                    logger.info("Application initialized in {}ms", initTook);
+                }
+            } else {
                 logger.info("Application initialized in {}ms", initTook);
             }
         } catch (Exception e) {
@@ -46,7 +51,39 @@ public final class KoraApplication {
         }
 
         var initializedGraph = graph;
-        var thread = new Thread(() -> {
+        var thread = new Thread(new ShutdownTask(initializedGraph, keepAlive, keepAliveLock, condition, logger));
+        thread.setName("kora-shutdown");
+        Runtime.getRuntime().addShutdownHook(thread);
+
+        if (keepAlive) {
+            keepAliveLock.lock();
+            try {
+                condition.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                keepAliveLock.unlock();
+            }
+        }
+    }
+
+    private static final class ShutdownTask implements Runnable {
+        private final InitializedGraph initializedGraph;
+        private final boolean keepAlive;
+        private final ReentrantLock keepAliveLock;
+        private final Condition condition;
+        private final org.slf4j.Logger logger;
+
+        public ShutdownTask(InitializedGraph initializedGraph, boolean keepAlive, ReentrantLock keepAliveLock, Condition condition, org.slf4j.Logger logger) {
+            this.initializedGraph = initializedGraph;
+            this.keepAlive = keepAlive;
+            this.keepAliveLock = keepAliveLock;
+            this.condition = condition;
+            this.logger = logger;
+        }
+
+        @Override
+        public void run() {
             // release runs inside the hook itself: the JVM only guarantees it waits for
             // registered shutdown hooks to finish, not for arbitrary other application threads,
             // so signalling the condition from here without releasing first would let the JVM
@@ -66,19 +103,6 @@ public final class KoraApplication {
                     condition.signalAll();
                     keepAliveLock.unlock();
                 }
-            }
-        });
-        thread.setName("kora-shutdown");
-        Runtime.getRuntime().addShutdownHook(thread);
-
-        if (keepAlive) {
-            keepAliveLock.lock();
-            try {
-                condition.await();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } finally {
-                keepAliveLock.unlock();
             }
         }
     }
