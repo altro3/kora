@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.*;
 import java.util.concurrent.locks.*;
 
 import static io.koraframework.application.graph.GraphCondition.*;
-import static java.lang.IO.println;
 
 public final class OptimizedGraphImpl implements InitializedGraph {
 
@@ -94,31 +93,31 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         var index = ((NodeImpl<?>) node).index;
         var cached = (int) CONDITION_VH.getVolatile(conditionResultsCache, index);
         if (cached != 0) {
-            return () -> cached == 1 ? new ConditionResult.Matched("Cached matched") : new ConditionResult.Failed("Cached failed");
+            return new CachedCondition(cached, null);
         }
         var computed = get(node).eval();
         var targetVal = computed instanceof ConditionResult.Matched ? 1 : 2;
         if (CONDITION_VH.compareAndSet(conditionResultsCache, index, 0, targetVal)) {
-            return () -> computed;
+            return new CachedCondition(0, computed);
         }
         var finalCached = (int) CONDITION_VH.getVolatile(conditionResultsCache, index);
-        return () -> finalCached == 1 ? new ConditionResult.Matched("Cached matched") : new ConditionResult.Failed("Cached failed");
+        return new CachedCondition(finalCached, null);
     }
 
     @Override
     public <T> ValueOf<T> valueOf(Node<? extends T> node) {
-        return () -> get(node);
+        return new NodeValueOf<>(this, node);
     }
 
     @Override
     public <T> PromiseOf<T> promiseOf(Node<? extends T> node) {
-        return () -> Optional.of(get(node));
+        return new NodePromiseOf<>(this, node);
     }
 
     @Override
     @SafeVarargs
     public final <N, V> PromiseOf<V> getOnePromiseOf(NodeWithMapper<N, V>... nodes) {
-        return () -> Optional.of(getOneOf(nodes));
+        return new OnePromiseOf<>(this, nodes);
     }
 
     @Override
@@ -371,7 +370,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             if (dependentNodes.get(i) && tasks[i] != null && tasks[i].remainingDeps.get() == 0) {
                 final var task = tasks[i];
                 // println(" Spawning starter Thread for Node " + task.index);
-                Thread.ofVirtual().start(() -> executeNodeTask(task, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks));
+                Thread.ofVirtual().start(new VirtualThreadTask(this, task, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks));
             }
         }
 
@@ -385,19 +384,22 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             if (error instanceof CompletionException ce) {
                 error = ce.getCause();
             }
-            switch (error) {
-                case RuntimeException re -> throw re;
-                case Error err -> throw err;
-                case null -> throw new IllegalStateException("Kora internal error: graph initialization failed with null error");
-                default -> throw new IllegalStateException("Application graph failed to initialize; see cause for failed component", error);
+            if (error == null) {
+                throw new IllegalStateException("Kora internal error: graph initialization failed with null error");
             }
+            if (error instanceof RuntimeException) {
+                throw (RuntimeException) error;
+            }
+            if (error instanceof Error) {
+                throw (Error) error;
+            }
+            throw new IllegalStateException("Application graph failed to initialize; see cause for failed component", error);
         }
 
         tmpGraph.commit(startFrom);
         fireRefreshListeners();
     }
 
-    @SuppressWarnings("unchecked")
     private void executeNodeTask(
         NodeTask task,
         short startFrom,
@@ -531,7 +533,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             if (remaining == 0 && !nextTask.isCancelled) {
                 // println("[" + threadName + "] Node " + nextIdx + " remainingDeps hit 0, spawning virtual thread");
-                Thread.ofVirtual().start(() -> executeNodeTask(nextTask, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks));
+                Thread.ofVirtual().start(new VirtualThreadTask(this, nextTask, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks));
             }
         }
         // println("[" + threadName + "] Node " + targetIndex + " notifyDownstreamConsumers exit");
@@ -584,11 +586,13 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
 
         if (error != null) {
-            switch (error) {
-                case RuntimeException re -> throw re;
-                case Error err -> throw err;
-                default -> throw new RuntimeException(error);
+            if (error instanceof RuntimeException) {
+                throw (RuntimeException) error;
             }
+            if (error instanceof Error) {
+                throw (Error) error;
+            }
+            throw new RuntimeException(error);
         }
     }
 
@@ -610,6 +614,107 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
         ConditionFailedValue(String reason) {
             this.reason = reason;
+        }
+    }
+
+    private static final class CachedCondition implements GraphCondition {
+        private final int cachedStatus;
+        private final GraphCondition.ConditionResult computedResult;
+
+        CachedCondition(int cachedStatus, GraphCondition.ConditionResult computedResult) {
+            this.cachedStatus = cachedStatus;
+            this.computedResult = computedResult;
+        }
+
+        @Override
+        public GraphCondition.ConditionResult eval() {
+            if (computedResult != null) {
+                return computedResult;
+            }
+            return cachedStatus == 1
+                ? new GraphCondition.ConditionResult.Matched("Cached matched")
+                : new GraphCondition.ConditionResult.Failed("Cached failed");
+        }
+    }
+
+    private static final class NodeValueOf<T> implements ValueOf<T> {
+        private final OptimizedGraphImpl graph;
+        private final Node<? extends T> node;
+
+        NodeValueOf(OptimizedGraphImpl graph, Node<? extends T> node) {
+            this.graph = graph;
+            this.node = node;
+        }
+
+        @Override
+        public T get() {
+            return graph.get(node);
+        }
+    }
+
+    private static final class NodePromiseOf<T> implements PromiseOf<T> {
+        private final OptimizedGraphImpl graph;
+        private final Node<? extends T> node;
+
+        NodePromiseOf(OptimizedGraphImpl graph, Node<? extends T> node) {
+            this.graph = graph;
+            this.node = node;
+        }
+
+        @Override
+        public Optional<T> get() {
+            return Optional.of(graph.get(node));
+        }
+    }
+
+    private static final class OnePromiseOf<N, V> implements PromiseOf<V> {
+        private final OptimizedGraphImpl graph;
+        private final NodeWithMapper<N, V>[] nodes;
+
+        OnePromiseOf(OptimizedGraphImpl graph, NodeWithMapper<N, V>[] nodes) {
+            this.graph = graph;
+            this.nodes = nodes;
+        }
+
+        @Override
+        public Optional<V> get() {
+            return Optional.of(graph.getOneOf(nodes));
+        }
+    }
+
+    private static final class VirtualThreadTask implements Runnable {
+        private final OptimizedGraphImpl graph;
+        private final NodeTask task;
+        private final short startFrom;
+        private final boolean isFullInit;
+        private final boolean isDebug;
+        private final boolean isTrace;
+        private final OptimizedTmpGraph tmpGraph;
+        private final NodeTask[] tasks;
+
+        VirtualThreadTask(
+            OptimizedGraphImpl graph,
+            NodeTask task,
+            short startFrom,
+            boolean isFullInit,
+            boolean isDebug,
+            boolean isTrace,
+            OptimizedTmpGraph tmpGraph,
+            NodeTask[] tasks
+        ) {
+            this.graph = graph;
+            this.task = task;
+            this.startFrom = startFrom;
+            this.isFullInit = isFullInit;
+            this.isDebug = isDebug;
+            this.isTrace = isTrace;
+            this.tmpGraph = tmpGraph;
+            this.tasks = tasks;
+        }
+
+        @Override
+        public void run() {
+            graph.executeNodeTask(task, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks);
         }
     }
 }

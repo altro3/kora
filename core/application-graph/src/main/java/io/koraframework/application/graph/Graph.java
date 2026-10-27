@@ -40,11 +40,7 @@ public interface Graph {
 
     @SuppressWarnings("unchecked")
     default <N, V> ValueOf<V> getOneValueOf(NodeWithMapper<N, V>... nodes) {
-        return () -> {
-            var node = getOneNodeMatchingCondition(this, nodes);
-            var value = this.get(node.node());
-            return node.mapper().apply(value);
-        };
+        return new OneValueOf<>(this, nodes);
     }
 
     @SuppressWarnings("unchecked")
@@ -62,6 +58,23 @@ public interface Graph {
         }
     }
 
+    final class OneValueOf<N, V> implements ValueOf<V> {
+        private final Graph graph;
+        private final NodeWithMapper<N, V>[] nodes;
+
+        public OneValueOf(Graph graph, NodeWithMapper<N, V>[] nodes) {
+            this.graph = graph;
+            this.nodes = nodes;
+        }
+
+        @Override
+        public V get() {
+            var node = getOneNodeMatchingCondition(graph, nodes);
+            var value = graph.get(node.node());
+            return node.mapper().apply(value);
+        }
+    }
+
     @SafeVarargs
     private static <T, V> NodeWithMapper<T, V> getOneNodeMatchingCondition(Graph graph, NodeWithMapper<T, V>... nodes) {
         var lastValue = (@Nullable NodeWithMapper<T, V>) null;
@@ -75,13 +88,13 @@ public interface Graph {
                 matchedNodes.add(node);
                 matchReasons.add(Map.entry(node.node(), new GraphCondition.ConditionResult.Matched("Node %s has no conditions".formatted(node.toString()))));
             } else {
-                switch (condition.apply(graph)) {
-                    case GraphCondition.ConditionResult.Failed failed -> errors.add(Map.entry(node.node(), failed));
-                    case GraphCondition.ConditionResult.Matched matched -> {
-                        lastValue = node;
-                        matchedNodes.add(node);
-                        matchReasons.add(Map.entry(node.node(), matched));
-                    }
+                var res = condition.apply(graph);
+                if (res instanceof GraphCondition.ConditionResult.Failed failed) {
+                    errors.add(Map.entry(node.node(), failed));
+                } else if (res instanceof GraphCondition.ConditionResult.Matched matched) {
+                    lastValue = node;
+                    matchedNodes.add(node);
+                    matchReasons.add(Map.entry(node.node(), matched));
                 }
             }
         }

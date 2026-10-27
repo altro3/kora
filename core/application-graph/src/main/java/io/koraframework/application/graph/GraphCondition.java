@@ -8,14 +8,30 @@ public interface GraphCondition {
 
     static GraphCondition or(GraphCondition... conditions) {
         assert conditions.length > 0;
-        return () -> {
+        return new OrCondition(conditions);
+    }
+
+    static GraphCondition and(GraphCondition... conditions) {
+        assert conditions.length > 0;
+        return new AndCondition(conditions);
+    }
+
+    final class OrCondition implements GraphCondition {
+        private final GraphCondition[] conditions;
+
+        public OrCondition(GraphCondition[] conditions) {
+            this.conditions = conditions;
+        }
+
+        @Override
+        public ConditionResult eval() {
             var failedReasons = new ArrayList<ConditionResult.Failed>();
             for (var condition : conditions) {
-                switch (condition.eval()) {
-                    case ConditionResult.Failed failed -> failedReasons.add(failed);
-                    case ConditionResult.Matched matched -> {
-                        return matched;
-                    }
+                var res = condition.eval();
+                if (res instanceof ConditionResult.Matched matched) {
+                    return matched;
+                } else if (res instanceof ConditionResult.Failed failed) {
+                    failedReasons.add(failed);
                 }
             }
             var sb = new StringBuilder("All of required conditions were failed: \n");
@@ -23,18 +39,26 @@ public interface GraphCondition {
                 sb.append(failedReason.reason().indent(2)).append("\n");
             }
             return new ConditionResult.Failed(sb.toString());
-        };
+        }
     }
 
-    static GraphCondition and(GraphCondition... conditions) {
-        assert conditions.length > 0;
-        return () -> {
+    final class AndCondition implements GraphCondition {
+        private final GraphCondition[] conditions;
+
+        public AndCondition(GraphCondition[] conditions) {
+            this.conditions = conditions;
+        }
+
+        @Override
+        public ConditionResult eval() {
             var failedReasons = new ArrayList<ConditionResult.Failed>();
             var matchedReasons = new ArrayList<ConditionResult.Matched>();
             for (var condition : conditions) {
-                switch (condition.eval()) {
-                    case ConditionResult.Failed failed -> failedReasons.add(failed);
-                    case ConditionResult.Matched matched -> matchedReasons.add(matched);
+                var res = condition.eval();
+                if (res instanceof ConditionResult.Matched matched) {
+                    matchedReasons.add(matched);
+                } else if (res instanceof ConditionResult.Failed failed) {
+                    failedReasons.add(failed);
                 }
             }
             if (failedReasons.isEmpty()) {
@@ -50,7 +74,7 @@ public interface GraphCondition {
                 }
                 return new ConditionResult.Failed(sb.toString());
             }
-        };
+        }
     }
 
     sealed interface ConditionResult {

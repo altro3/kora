@@ -19,17 +19,6 @@ public final class AllValuesImpl<T> implements All<ValueOf<T>> {
         }
     }
 
-    private record ValueWrapper<N, V>(ValueOf<? extends N> value, Function<N, V> mapper, Node<? extends N> node) {
-        public ValueWrapper(Graph graph, NodeWithMapper<N, V> element) {
-            var promise = graph.valueOf(element.node());
-            this(promise, element.mapper(), element.node());
-        }
-
-        public ValueOf<V> get() {
-            return value.map(mapper::apply);
-        }
-    }
-
     @Override
     public Iterator<ValueOf<T>> iterator() {
         var list = new ArrayList<ValueOf<T>>();
@@ -40,5 +29,40 @@ public final class AllValuesImpl<T> implements All<ValueOf<T>> {
             }
         }
         return list.iterator();
+    }
+
+    private static final class ValueWrapper<N, V> {
+        private final ValueOf<Object> value;
+        private final Function<Object, Object> mapper;
+        private final Node<? extends N> node;
+
+        @SuppressWarnings("unchecked")
+        public ValueWrapper(Graph graph, NodeWithMapper<N, V> element) {
+            this.value = graph.valueOf(element.node());
+            this.mapper = (Function<Object, Object>) element.mapper();
+            this.node = element.node();
+        }
+
+        public Node<? extends N> node() {
+            return node;
+        }
+
+        @SuppressWarnings("unchecked")
+        public ValueOf<V> get() {
+            return (ValueOf<V>) value.map(new WrapperMapper(mapper));
+        }
+    }
+
+    private static final class WrapperMapper implements Function<Object, Object> {
+        private final Function<Object, Object> mapper;
+
+        public WrapperMapper(Function<Object, Object> mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override
+        public Object apply(Object n) {
+            return mapper.apply(n);
+        }
     }
 }

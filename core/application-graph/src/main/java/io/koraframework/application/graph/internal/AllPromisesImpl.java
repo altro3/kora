@@ -19,17 +19,6 @@ public final class AllPromisesImpl<T> implements All<PromiseOf<T>> {
         }
     }
 
-    private record PromiseWrapper<N, V>(PromiseOf<? extends N> promise, Function<N, V> mapper, Node<? extends N> node) {
-        public PromiseWrapper(Graph graph, NodeWithMapper<N, V> element) {
-            var promise = graph.promiseOf(element.node());
-            this(promise, element.mapper(), element.node());
-        }
-
-        public PromiseOf<V> get() {
-            return promise.map(mapper::apply);
-        }
-    }
-
     @Override
     public Iterator<PromiseOf<T>> iterator() {
         var list = new ArrayList<PromiseOf<T>>();
@@ -42,4 +31,38 @@ public final class AllPromisesImpl<T> implements All<PromiseOf<T>> {
         return list.iterator();
     }
 
+    private static final class PromiseWrapper<N, V> {
+        private final PromiseOf<Object> promise;
+        private final Function<Object, Object> mapper;
+        private final Node<? extends N> node;
+
+        @SuppressWarnings("unchecked")
+        public PromiseWrapper(Graph graph, NodeWithMapper<N, V> element) {
+            this.promise = graph.promiseOf(element.node());
+            this.mapper = (Function<Object, Object>) element.mapper();
+            this.node = element.node();
+        }
+
+        public Node<? extends N> node() {
+            return node;
+        }
+
+        @SuppressWarnings("unchecked")
+        public PromiseOf<V> get() {
+            return (PromiseOf<V>) promise.map(new WrapperMapper(mapper));
+        }
+    }
+
+    private static final class WrapperMapper implements Function<Object, Object> {
+        private final Function<Object, Object> mapper;
+
+        public WrapperMapper(Function<Object, Object> mapper) {
+            this.mapper = mapper;
+        }
+
+        @Override
+        public Object apply(Object n) {
+            return mapper.apply(n);
+        }
+    }
 }

@@ -1,10 +1,28 @@
 package io.koraframework.application.graph;
 
-import java.util.function.Function;
+import java.util.*;
+import java.util.function.*;
 
-public record NodeWithMapper<N, V>(Node<? extends N> node, Function<N, V> mapper) {
-    private static final Function<?, ?> IDENTITY_MAPPER = v -> v;
-    private static final Function<?, ?> UNWRAP_MAPPER = v -> ((Wrapped<?>) v).value();
+public final class NodeWithMapper<N, V> {
+
+    private static final Function<?, ?> IDENTITY_MAPPER = new IdentityMapper<>();
+    private static final Function<?, ?> UNWRAP_MAPPER = new UnwrapMapper<>();
+
+    private final Node<? extends N> node;
+    private final Function<N, V> mapper;
+
+    public NodeWithMapper(Node<? extends N> node, Function<N, V> mapper) {
+        this.node = node;
+        this.mapper = mapper;
+    }
+
+    public Node<? extends N> node() {
+        return node;
+    }
+
+    public Function<N, V> mapper() {
+        return mapper;
+    }
 
     @SuppressWarnings("unchecked")
     public static <T> NodeWithMapper<T, T> node(Node<? extends T> node) {
@@ -17,7 +35,34 @@ public record NodeWithMapper<N, V>(Node<? extends N> node, Function<N, V> mapper
     }
 
     @Override
+    public boolean equals(Object obj) {
+        if (this == obj) return true;
+        if (obj == null || getClass() != obj.getClass()) return false;
+        NodeWithMapper<?, ?> other = (NodeWithMapper<?, ?>) obj;
+        return Objects.equals(node, other.node) && Objects.equals(mapper, other.mapper);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(node, mapper);
+    }
+
+    @Override
     public String toString() {
         return node.toString();
+    }
+
+    private static final class IdentityMapper<T> implements Function<T, T> {
+        @Override
+        public T apply(T t) {
+            return t;
+        }
+    }
+
+    private static final class UnwrapMapper<V, N extends Wrapped<V>> implements Function<N, V> {
+        @Override
+        public V apply(N v) {
+            return v.value();
+        }
     }
 }
