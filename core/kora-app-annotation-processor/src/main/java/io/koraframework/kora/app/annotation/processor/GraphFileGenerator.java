@@ -180,7 +180,7 @@ public class GraphFileGenerator {
                 }
             }
 
-            var createMethodSwitch = CodeBlock.builder().beginControlFlow("return switch (index)");
+            var createMethodSwitch = CodeBlock.builder().beginControlFlow("switch (index)");
 
             for (var i = startIdx; i < endIdx; i++) {
                 var component = components.get(i);
@@ -298,11 +298,11 @@ public class GraphFileGenerator {
                     default -> throw new IllegalStateException("Unsupported component declaration context");
                 }
 
-                createMethodSwitch.addStatement("case $L -> $L", i, innerCodeBlock.build());
+                createMethodSwitch.addStatement("case $L: return $L", i, innerCodeBlock.build());
             }
 
-            createMethodSwitch.addStatement("default -> throw new $T()", IllegalArgumentException.class);
-            createMethodSwitch.endControlFlow("");
+            createMethodSwitch.addStatement("default: throw new $T()", IllegalArgumentException.class);
+            createMethodSwitch.endControlFlow();
 
             var createMethodBuilder = MethodSpec.methodBuilder("create")
                 .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
