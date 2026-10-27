@@ -8,6 +8,9 @@ import tools.jackson.core.exc.StreamReadException;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
+import static io.koraframework.json.common.util.JsonModuleUtil.actualValue;
+import static io.koraframework.json.common.util.JsonModuleUtil.jsonPath;
+
 public class SetJsonReader<T> implements JsonReader<Set<T>> {
     private final JsonReader<T> reader;
 
@@ -37,31 +40,5 @@ public class SetJsonReader<T> implements JsonReader<Set<T>> {
         }
 
         return result;
-    }
-
-    private static String actualValue(JsonParser parser) {
-        var token = parser.currentToken();
-        if (token == null) {
-            return "nothing (end of input)";
-        }
-        var value = parser.getValueAsString();
-        if (value != null && value.length() > 128) {
-            value = value.substring(0, 128) + "...(truncated)";
-        }
-        return switch (token) {
-            case VALUE_NULL -> "null";
-            case START_OBJECT -> "an object";
-            case START_ARRAY -> "an array";
-            case VALUE_STRING -> "a string \"" + value + "\"";
-            case VALUE_NUMBER_INT -> "a number " + value;
-            case VALUE_NUMBER_FLOAT -> "a fractional number " + value;
-            case VALUE_TRUE, VALUE_FALSE -> "a boolean " + value;
-            default -> "token " + token;
-        };
-    }
-
-    private static String jsonPath(JsonParser parser) {
-        var pointer = parser.streamReadContext().pathAsPointer().toString();
-        return pointer.isEmpty() ? "<root>" : pointer;
     }
 }
