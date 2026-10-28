@@ -69,7 +69,7 @@ public class DefaultDatabaseMetricsFactory {
         protected Timer.Builder createMetricOperationDuration(DurationKey metricKey) {
             var extraTags = 0;
             if (metricKey.extraTags != null) {
-                for (Tag _ : metricKey.extraTags) {
+                for (var _ : metricKey.extraTags) {
                     extraTags++;
                 }
             }
@@ -88,13 +88,14 @@ public class DefaultDatabaseMetricsFactory {
             tags.add(Tag.of(DbAttributes.DB_QUERY_TEXT.getKey(), metricKey.queryId()));
             tags.add(Tag.of(DbAttributes.DB_OPERATION_NAME.getKey(), metricKey.operation()));
             tags.add(Tag.of(ErrorAttributes.ERROR_TYPE.getKey(), errorValue));
+
             for (int i = 0; i < this.staticMetricTags.length; i++) {
                 tags.add(this.staticMetricTags[i]);
             }
+
             if (metricKey.extraTags != null) {
-                var streamTags = metricKey.extraTags.stream().toArray(Tag[]::new);
-                for (int i = 0; i < streamTags.length; i++) {
-                    tags.add(streamTags[i]);
+                for (var tag : metricKey.extraTags) {
+                    tags.add(tag);
                 }
             }
 

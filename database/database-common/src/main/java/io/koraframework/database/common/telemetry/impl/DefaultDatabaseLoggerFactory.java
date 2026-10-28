@@ -5,6 +5,7 @@ import io.koraframework.logging.common.arg.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 import tools.jackson.core.*;
+import java.util.function.Supplier;
 
 public class DefaultDatabaseLoggerFactory {
 
@@ -19,8 +20,8 @@ public class DefaultDatabaseLoggerFactory {
 
         protected final Logger logger;
         protected final DefaultDatabaseTelemetry.TelemetryContext context;
-        private static final ThreadLocal<LogBeginContext> BEGIN_CTX = ThreadLocal.withInitial(LogBeginContext::new);
-        private static final ThreadLocal<LogEndContext> END_CTX = ThreadLocal.withInitial(LogEndContext::new);
+        private static final ThreadLocal<LogBeginContext> BEGIN_CTX = ThreadLocal.withInitial(new LogBeginContextSupplier());
+        private static final ThreadLocal<LogEndContext> END_CTX = ThreadLocal.withInitial(new LogEndContextSupplier());
         private static final StructuredArgumentWriter BEGIN_SERIALIZER = new BeginSerializer();
         private static final StructuredArgumentWriter END_SERIALIZER = new EndSerializer();
 
@@ -136,6 +137,20 @@ public class DefaultDatabaseLoggerFactory {
                     gen.writeStringProperty("sql", ctx.query.sql());
                 }
                 gen.writeEndObject();
+            }
+        }
+
+        private static final class LogBeginContextSupplier implements Supplier<LogBeginContext> {
+            @Override
+            public LogBeginContext get() {
+                return new LogBeginContext();
+            }
+        }
+
+        private static final class LogEndContextSupplier implements Supplier<LogEndContext> {
+            @Override
+            public LogEndContext get() {
+                return new LogEndContext();
             }
         }
     }
