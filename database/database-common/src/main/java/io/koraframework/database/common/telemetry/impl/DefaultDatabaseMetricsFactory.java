@@ -1,21 +1,15 @@
 package io.koraframework.database.common.telemetry.impl;
 
-import io.koraframework.database.common.QueryContext;
-import io.micrometer.core.instrument.Tag;
-import io.micrometer.core.instrument.Tags;
+import io.koraframework.database.common.*;
+import io.micrometer.core.instrument.*;
 import io.micrometer.core.instrument.Timer;
-import io.opentelemetry.semconv.DbAttributes;
-import io.opentelemetry.semconv.ErrorAttributes;
-import io.opentelemetry.semconv.incubating.DbIncubatingAttributes;
-import java.util.Objects;
-import org.jspecify.annotations.Nullable;
+import io.opentelemetry.semconv.*;
+import io.opentelemetry.semconv.incubating.*;
+import org.jspecify.annotations.*;
 
-import java.util.ArrayList;
-import java.util.Map;
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
 
 public class DefaultDatabaseMetricsFactory {
 
@@ -27,13 +21,12 @@ public class DefaultDatabaseMetricsFactory {
 
     public static class DefaultDatabaseMetrics {
 
-        private static final ThreadLocal<MutableDurationKey> LOOKUP_KEY = ThreadLocal.withInitial(MutableDurationKey::new);
+        private static final ThreadLocal<MutableDurationKey> LOOKUP_KEY = ThreadLocal.withInitial(new MutableDurationKeySupplier());
 
         protected final ConcurrentMap<Object, Timer> operationDurationCache = new ConcurrentHashMap<>();
         protected final DefaultDatabaseTelemetry.TelemetryContext context;
         protected final Tag[] staticMetricTags;
 
-        @SuppressWarnings("unchecked")
         public DefaultDatabaseMetrics(DefaultDatabaseTelemetry.TelemetryContext context) {
             this.context = context;
 
@@ -80,7 +73,15 @@ public class DefaultDatabaseMetricsFactory {
                     extraTags++;
                 }
             }
-            var errorValue = metricKey.errorType == null ? "" : Objects.requireNonNullElseGet(metricKey.errorType.getCanonicalName(), metricKey.errorType::getName);
+
+            String errorValue = "";
+            if (metricKey.errorType != null) {
+                errorValue = metricKey.errorType.getCanonicalName();
+                if (errorValue == null) {
+                    errorValue = metricKey.errorType.getName();
+                }
+            }
+
             var tags = new ArrayList<Tag>(5 + this.staticMetricTags.length + extraTags);
             tags.add(Tag.of(DbIncubatingAttributes.DB_CLIENT_CONNECTION_POOL_NAME.getKey(), this.context.poolName()));
             tags.add(Tag.of(DbAttributes.DB_SYSTEM_NAME.getKey(), this.context.dbSystem()));
@@ -91,8 +92,9 @@ public class DefaultDatabaseMetricsFactory {
                 tags.add(this.staticMetricTags[i]);
             }
             if (metricKey.extraTags != null) {
-                for (Tag extraTag : metricKey.extraTags) {
-                    tags.add(extraTag);
+                var streamTags = metricKey.extraTags.stream().toArray(Tag[]::new);
+                for (int i = 0; i < streamTags.length; i++) {
+                    tags.add(streamTags[i]);
                 }
             }
 
@@ -127,6 +129,13 @@ public class DefaultDatabaseMetricsFactory {
                 result = 31 * result + (operation != null ? operation.hashCode() : 0);
                 result = 31 * result + (errorType != null ? errorType.hashCode() : 0);
                 return result;
+            }
+        }
+
+        private static final class MutableDurationKeySupplier implements Supplier<MutableDurationKey> {
+            @Override
+            public MutableDurationKey get() {
+                return new MutableDurationKey();
             }
         }
     }
