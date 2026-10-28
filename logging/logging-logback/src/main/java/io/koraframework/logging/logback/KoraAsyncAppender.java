@@ -48,12 +48,13 @@ public final class KoraAsyncAppender extends AsyncAppenderBase<ILoggingEvent> {
     private final List<String> settingWarnings = new ArrayList<>();
 
     public KoraAsyncAppender() {
-        this.setNeverBlock(KoraLogbackProperties.getBoolean(NEVER_BLOCK_PROPERTY, DEFAULT_NEVER_BLOCK, this.settingWarnings::add));
-        this.setQueueSize(KoraLogbackProperties.getInt(QUEUE_SIZE_PROPERTY, DEFAULT_QUEUE_SIZE, 1, this.settingWarnings::add));
-        var maxFlushTime = KoraLogbackProperties.getDuration(MAX_FLUSH_TIME_PROPERTY, DEFAULT_MAX_FLUSH_TIME, this.settingWarnings::add);
+        var consumer = new WarningConsumer(this.settingWarnings);
+        this.setNeverBlock(KoraLogbackProperties.getBoolean(NEVER_BLOCK_PROPERTY, DEFAULT_NEVER_BLOCK, consumer));
+        this.setQueueSize(KoraLogbackProperties.getInt(QUEUE_SIZE_PROPERTY, DEFAULT_QUEUE_SIZE, 1, consumer));
+        var maxFlushTime = KoraLogbackProperties.getDuration(MAX_FLUSH_TIME_PROPERTY, DEFAULT_MAX_FLUSH_TIME, consumer);
         // Logback keeps this in milliseconds as an int
         this.setMaxFlushTime((int) Math.min(maxFlushTime.toMillis(), Integer.MAX_VALUE));
-        this.setDiscardingThreshold(KoraLogbackProperties.getInt(DISCARDING_THRESHOLD_PROPERTY, DEFAULT_DISCARDING_THRESHOLD, 0, this.settingWarnings::add));
+        this.setDiscardingThreshold(KoraLogbackProperties.getInt(DISCARDING_THRESHOLD_PROPERTY, DEFAULT_DISCARDING_THRESHOLD, 0, consumer));
     }
 
     @Override
@@ -97,5 +98,18 @@ public final class KoraAsyncAppender extends AsyncAppenderBase<ILoggingEvent> {
             Span.current().getSpanContext()
         );
         super.append(koraLoggingEvent);
+    }
+
+    private static final class WarningConsumer implements java.util.function.Consumer<String> {
+        private final List<String> warnings;
+
+        WarningConsumer(List<String> warnings) {
+            this.warnings = warnings;
+        }
+
+        @Override
+        public void accept(String warning) {
+            this.warnings.add(warning);
+        }
     }
 }
