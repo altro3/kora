@@ -111,6 +111,7 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
     }
 
     @Override
+    @SuppressWarnings("unchecked")
     public <T> T withContext(SqlFunction<ConnectionContext, T> callback) throws UncheckedSqlException {
         if (this.connectionContext.isBound()) {
             try {
@@ -122,10 +123,15 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
 
         try (var connection = this.acquireConnection()) {
             var context = new ConnectionContext(connection);
-            return ScopedValue.where(this.connectionContext, context)
-                .call(() -> callback.apply(context));
+            var action = new ScopedValueCallAction(callback, context);
+            return (T) ScopedValue.where(this.connectionContext, context).call(action);
         } catch (SQLException e) {
             throw new UncheckedSqlException(e);
+        } catch (Exception e) {
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException(e);
         }
     }
 
@@ -138,4 +144,21 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
         }
         return null;
     }
+
+    @SuppressWarnings("rawtypes")
+    private static final class ScopedValueCallAction implements ScopedValue.CallableOp<Object, Exception> {
+        private final SqlFunction callback;
+        private final ConnectionContext context;
+
+        private ScopedValueCallAction(SqlFunction callback, ConnectionContext context) {
+            this.callback = callback;
+            this.context = context;
+        }
+
+        @Override
+        public Object call() throws Exception {
+            return callback.apply(context);
+        }
+    }
+
 }
