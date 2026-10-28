@@ -2,31 +2,19 @@ package io.koraframework.database.annotation.processor.jdbc;
 
 import com.palantir.javapoet.*;
 import io.koraframework.annotation.processor.common.*;
-import io.koraframework.database.annotation.processor.DbUtils;
-import io.koraframework.database.annotation.processor.DbUtils.Mapper;
-import io.koraframework.database.annotation.processor.QueryWithParameters;
-import io.koraframework.database.annotation.processor.RepositoryGenerator;
-import io.koraframework.database.annotation.processor.model.QueryParameter;
-import io.koraframework.database.annotation.processor.model.QueryParameterParser;
-import org.jspecify.annotations.Nullable;
+import io.koraframework.database.annotation.processor.*;
+import io.koraframework.database.annotation.processor.DbUtils.*;
+import io.koraframework.database.annotation.processor.model.*;
+import org.jspecify.annotations.*;
 
-import javax.annotation.processing.Filer;
-import javax.annotation.processing.ProcessingEnvironment;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.Modifier;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.ExecutableType;
-import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.Elements;
+import javax.annotation.processing.*;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
+import javax.lang.model.util.*;
 import javax.lang.model.util.Types;
-import java.sql.Statement;
-import java.util.Comparator;
-import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.stream.LongStream;
+import java.sql.*;
+import java.util.*;
+import java.util.stream.*;
 
 public final class JdbcRepositoryGenerator implements RepositoryGenerator {
     private final Types types;
@@ -144,29 +132,37 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             FieldSpec.builder(DbUtils.QUERY_CONTEXT, queryContextFieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                 .initializer("""
                     new $T(
-                          $S,
-                          $S,
-                          $S
-                        )""", DbUtils.QUERY_CONTEXT, query.rawQuery(), sql, DbUtils.operationName(method))
+                        $S,
+                        $S,
+                        $S
+                    )""", DbUtils.QUERY_CONTEXT, query.rawQuery(), sql, DbUtils.operationName(method))
                 .build());
+
         mb.addStatement("var _query = $L", queryContextFieldName);
         mb.addStatement("var _observation = this._jdbcExecutor.telemetry().observe(_query)");
-        if (methodType.getReturnType().getKind() != TypeKind.VOID) {
-            mb.addCode("return ");
-        }
+
         boolean isVoid = methodType.getReturnType().getKind() == TypeKind.VOID;
         String invokerClassName = "_" + method.getSimpleName() + "_Invoker_" + methodNumber;
-        var implClassName = ClassName.bestGuess(repositoryElement.getQualifiedName().toString() + "_Impl");
+
+        String packageName = elements.getPackageOf(repositoryElement).getQualifiedName().toString();
+        String simpleName = repositoryElement.getSimpleName().toString();
+        ClassName implClassName = ClassName.get(packageName, "$" + simpleName + "_Impl");
 
         var observationClassName = ClassName.get("io.koraframework.common.telemetry", "Observation");
         var opentelemetryContextClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContext");
         var contextClassName = ClassName.get("io.opentelemetry.context", "Context");
 
+        var callableOpInterface = ParameterizedTypeName.get(
+            ClassName.get("java.lang.ScopedValue", "CallableOp"),
+            TypeName.get(returnType).box(),
+            ClassName.get(RuntimeException.class)
+        );
+
         var invokerTypeBuilder = TypeSpec.classBuilder(invokerClassName)
             .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
             .addSuperinterface(isVoid
                 ? ClassName.get(Runnable.class)
-                : ParameterizedTypeName.get(ClassName.get(java.util.concurrent.Callable.class), TypeName.get(returnType).box()));
+                : callableOpInterface);
 
         invokerTypeBuilder.addField(implClassName, "repo", Modifier.PRIVATE, Modifier.FINAL);
         invokerTypeBuilder.addField(DbUtils.QUERY_CONTEXT, "_query", Modifier.PRIVATE, Modifier.FINAL);
@@ -199,7 +195,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             .returns(isVoid ? TypeName.VOID : TypeName.get(returnType).box());
 
         if (!isVoid) {
-            execMethodBuilder.addException(Exception.class);
+            execMethodBuilder.addException(RuntimeException.class);
         }
 
         var eb = execMethodBuilder;
@@ -209,15 +205,15 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             : connection.toString();
 
         eb.addCode("""
-var _conToUse = $L;
-$T _conToClose;
-if (_conToUse == null) {
-    _conToUse = this.repo._jdbcExecutor.acquireConnection();
-    _conToClose = _conToUse;
-} else {
-    _conToClose = null;
-}
-""", repoConnection, JdbcTypes.CONNECTION);
+            var _conToUse = $L;
+            $T _conToClose;
+            if (_conToUse == null) {
+                _conToUse = this.repo._jdbcExecutor.acquireConnection();
+                _conToClose = _conToUse;
+            } else {
+                _conToClose = null;
+            }
+            """, repoConnection, JdbcTypes.CONNECTION);
 
         var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
         if (generatedKeys) {
@@ -296,7 +292,6 @@ if (_conToUse == null) {
             .endControlFlow();
 
         invokerTypeBuilder.addMethod(eb.build());
-
         type.addType(invokerTypeBuilder.build());
 
         StringBuilder constructorArgs = new StringBuilder("this, _query, _observation");
@@ -306,19 +301,17 @@ if (_conToUse == null) {
 
         if (isVoid) {
             mb.addStatement("""
-    $T.where($T.VALUE, _observation)
-        .where($T.VALUE, $T.current().with(_observation.span()))
-        .run(new $L($L))""",
+                    $T.where($T.VALUE, _observation)
+                        .where($T.VALUE, $T.current().with(_observation.span()))
+                        .run(new $L($L))""",
                 ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
         } else {
             mb.addStatement("""
-    return $T.where($T.VALUE, _observation)
-        .where($T.VALUE, $T.current().with(_observation.span()))
-        .call(new $L($L))""",
+                    return $T.where($T.VALUE, _observation)
+                        .where($T.VALUE, $T.current().with(_observation.span()))
+                        .call(new $L($L))""",
                 ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
         }
-
-        mb.addCode(";\n");
         return mb.build();
     }
 
@@ -344,11 +337,11 @@ if (_conToUse == null) {
     private static String batchReturnTypeError(ExecutableElement method, TypeMirror returnType) {
         return """
             Invalid JDBC `@Batch` repository method return type: `%s`.
-
+            
             Method `%s#%s` has a batch parameter, but JDBC batch execution cannot map arbitrary result rows.
             Supported return types without generated keys: `void`, `UpdateCount`, `int[]`, or `long[]`.
             Returning generated keys is supported only when the method is annotated with `@Id`.
-
+            
             Fix: change the return type to one of the supported batch result types, or add `@Id` when the query returns database-generated ids.
             """.formatted(returnType, method.getEnclosingElement().getSimpleName(), method.getSimpleName());
     }
