@@ -7,13 +7,16 @@ import ch.qos.logback.classic.util.*;
 import ch.qos.logback.core.*;
 import ch.qos.logback.core.encoder.*;
 import ch.qos.logback.core.spi.*;
+import io.koraframework.logging.logback.text.ColorConsoleTextEncoderFactory;
+import io.koraframework.logging.logback.text.ConsoleTextEncoderFactory;
 import org.jspecify.annotations.*;
 import org.slf4j.bridge.*;
 
 import java.util.*;
+import java.util.function.Consumer;
 
 /**
- * The single Logback {@link Configurator} of Kora, discovered by Logback via {@link java.util.ServiceLoader}.
+ * The single Logback {@link Configurator} of Kora, discovered by Logback via {@link ServiceLoader}.
  * <p>
  * Configuration is resolved in this order:
  * <ol>
@@ -52,11 +55,14 @@ public class KoraLogbackConfigurator extends ContextAwareBase implements Configu
     }
 
     private ExecutionStatus configureLogging(LoggerContext context) {
-        var joran = new DefaultJoranConfigurator();
-        joran.setContext(context);
-        if (joran.configure(context) == ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY) {
-            this.addInfo("Logback configuration file was applied, Kora encoder selection is skipped");
-            return ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY;
+        var classLoader = KoraLogbackConfigurator.class.getClassLoader();
+        if (classLoader.getResource("logback.xml") != null || classLoader.getResource("logback-test.xml") != null) {
+            var joran = new DefaultJoranConfigurator();
+            joran.setContext(context);
+            if (joran.configure(context) == ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY) {
+                this.addInfo("Logback configuration file was applied, Kora encoder selection is skipped");
+                return ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY;
+            }
         }
 
         var selected = KoraLogbackProperties.get(ENCODER_PROPERTY);
@@ -208,7 +214,7 @@ public class KoraLogbackConfigurator extends ContextAwareBase implements Configu
         return nameList.toString();
     }
 
-    private static final class WarnConsumer implements java.util.function.Consumer<String> {
+    private static final class WarnConsumer implements Consumer<String> {
         private final KoraLogbackConfigurator configurator;
 
         WarnConsumer(KoraLogbackConfigurator configurator) {
