@@ -35,8 +35,19 @@ public final class ContainerValidators {
      */
     @SafeVarargs
     public static <T> Validator<T> all(Validator<? super T>... validators) {
-        return (value, context) -> {
-            final List<Violation> violations = new ArrayList<>();
+        return new AllValidator<>(validators);
+    }
+
+    private static final class AllValidator<T> implements Validator<T> {
+        private final Validator<? super T>[] validators;
+
+        AllValidator(Validator<? super T>[] validators) {
+            this.validators = validators;
+        }
+
+        @Override
+        public List<Violation> validate(T value, ValidationContext context) {
+            var violations = new ArrayList<Violation>();
             for (var validator : validators) {
                 violations.addAll(validator.validate(value, context));
                 if (context.isFailFast() && !violations.isEmpty()) {
@@ -44,6 +55,6 @@ public final class ContainerValidators {
                 }
             }
             return violations;
-        };
+        }
     }
 }
