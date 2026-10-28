@@ -32,7 +32,7 @@ resteasy = "6.2.19.Final"
 # Data and messaging
 kafka = "4.3.1"
 cassandra = "4.19.3"
-flyway = "13.9.0"
+flyway = "13.11.1"
 
 # gRPC and protobuf
 grpc-java = "1.84.0"

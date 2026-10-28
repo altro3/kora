@@ -154,90 +154,170 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         if (methodType.getReturnType().getKind() != TypeKind.VOID) {
             mb.addCode("return ");
         }
-        CommonUtils.observe(mb, "_observation", methodType.getReturnType().getKind() == TypeKind.VOID ? "run" : "call", b -> {
-            b.add("""
-                var _conToUse = $L;
-                $T _conToClose;
-                if (_conToUse == null) {
-                    _conToUse = this._jdbcExecutor.acquireConnection();
-                    _conToClose = _conToUse;
-                } else {
-                    _conToClose = null;
-                }
-                """, connection, JdbcTypes.CONNECTION);
-            var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
-            if (generatedKeys) {
-                b.beginControlFlow("try (_conToClose; var _stmt = _conToUse.prepareStatement(_query.sql(), $T.RETURN_GENERATED_KEYS))", Statement.class);
-            } else {
-                b.beginControlFlow("try (_conToClose; var _stmt = _conToUse.prepareStatement(_query.sql()))");
-            }
-            b.add(StatementSetterGenerator.generate(method, query, parameters, batchParam, parameterMappers));
-            if (MethodUtils.isVoid(method)) {
-                if (batchParam != null) {
-                    b.addStatement("_stmt.executeBatch()");
-                } else {
-                    b.addStatement("_stmt.execute()");
-                }
-            } else if (batchParam != null) {
-                if (returnType.toString().equals(DbUtils.UPDATE_COUNT.canonicalName())) {
-                    b.addStatement("var _batchResult = _stmt.executeLargeBatch()");
-                    b.addStatement("return new $T($T.of(_batchResult).sum())", DbUtils.UPDATE_COUNT, LongStream.class);
-                } else if (returnType.toString().equals("long[]")) {
-                    b.addStatement("var _batchResult = _stmt.executeLargeBatch()");
-                    b.addStatement("return _batchResult");
-                } else if (returnType.toString().equals("int[]")) {
-                    b.addStatement("var _batchResult = _stmt.executeBatch()");
-                    b.addStatement("return _batchResult");
-                } else if (generatedKeys) {
-                    var result = CommonUtils.isNullable(method) || method.getReturnType().getKind().isPrimitive()
-                        ? CodeBlock.of("_result")
-                        : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
+        boolean isVoid = methodType.getReturnType().getKind() == TypeKind.VOID;
+        String invokerClassName = "_" + method.getSimpleName() + "_Invoker_" + methodNumber;
+        var implClassName = ClassName.bestGuess(repositoryElement.getQualifiedName().toString() + "_Impl");
 
-                    b.addStatement("var _batchResult = _stmt.executeBatch()");
-                    b.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                        .addStatement("var _result = $L.apply(_rs)", resultMapperName)
-                        .addStatement("return $L", result)
-                        .endControlFlow();
-                } else {
-                    b.addStatement("var _batchResult = _stmt.executeBatch()");
-                    b.addStatement("_telemetry.close(null)");
-                }
-            } else if (returnType.toString().equals(DbUtils.UPDATE_COUNT.canonicalName())) {
-                b
-                    .addStatement("var _updateCount = _stmt.executeLargeUpdate()")
-                    .addStatement("return new $T(_updateCount)", DbUtils.UPDATE_COUNT);
+        var observationClassName = ClassName.get("io.koraframework.common.telemetry", "Observation");
+        var opentelemetryContextClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContext");
+        var contextClassName = ClassName.get("io.opentelemetry.context", "Context");
+
+        var invokerTypeBuilder = TypeSpec.classBuilder(invokerClassName)
+            .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+            .addSuperinterface(isVoid
+                ? ClassName.get(Runnable.class)
+                : ParameterizedTypeName.get(ClassName.get(java.util.concurrent.Callable.class), TypeName.get(returnType).box()));
+
+        invokerTypeBuilder.addField(implClassName, "repo", Modifier.PRIVATE, Modifier.FINAL);
+        invokerTypeBuilder.addField(DbUtils.QUERY_CONTEXT, "_query", Modifier.PRIVATE, Modifier.FINAL);
+        invokerTypeBuilder.addField(observationClassName, "_observation", Modifier.PRIVATE, Modifier.FINAL);
+
+        for (var param : method.getParameters()) {
+            invokerTypeBuilder.addField(TypeName.get(param.asType()), param.getSimpleName().toString(), Modifier.PRIVATE, Modifier.FINAL);
+        }
+
+        var constructorInvoker = MethodSpec.constructorBuilder()
+            .addModifiers(Modifier.PUBLIC)
+            .addParameter(implClassName, "repo")
+            .addParameter(DbUtils.QUERY_CONTEXT, "_query")
+            .addParameter(observationClassName, "_observation");
+
+        constructorInvoker.addStatement("this.repo = repo");
+        constructorInvoker.addStatement("this._query = _query");
+        constructorInvoker.addStatement("this._observation = _observation");
+
+        for (var param : method.getParameters()) {
+            String pName = param.getSimpleName().toString();
+            constructorInvoker.addParameter(TypeName.get(param.asType()), pName);
+            constructorInvoker.addStatement("this.$L = $L", pName, pName);
+        }
+        invokerTypeBuilder.addMethod(constructorInvoker.build());
+
+        var execMethodBuilder = MethodSpec.methodBuilder(isVoid ? "run" : "call")
+            .addModifiers(Modifier.PUBLIC)
+            .addAnnotation(Override.class)
+            .returns(isVoid ? TypeName.VOID : TypeName.get(returnType).box());
+
+        if (!isVoid) {
+            execMethodBuilder.addException(Exception.class);
+        }
+
+        var eb = execMethodBuilder;
+
+        String repoConnection = connection.toString().contains("this._jdbcExecutor")
+            ? "this.repo._jdbcExecutor.currentConnection()"
+            : connection.toString();
+
+        eb.addCode("""
+var _conToUse = $L;
+$T _conToClose;
+if (_conToUse == null) {
+    _conToUse = this.repo._jdbcExecutor.acquireConnection();
+    _conToClose = _conToUse;
+} else {
+    _conToClose = null;
+}
+""", repoConnection, JdbcTypes.CONNECTION);
+
+        var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
+        if (generatedKeys) {
+            eb.beginControlFlow("try (_conToClose; var _stmt = _conToUse.prepareStatement(_query.sql(), $T.RETURN_GENERATED_KEYS))", Statement.class);
+        } else {
+            eb.beginControlFlow("try (_conToClose; var _stmt = _conToUse.prepareStatement(_query.sql()))");
+        }
+
+        eb.addCode(StatementSetterGenerator.generate(method, query, parameters, batchParam, parameterMappers));
+
+        String repoMapperName = resultMapperName != null ? "this.repo." + resultMapperName : null;
+
+        if (MethodUtils.isVoid(method)) {
+            if (batchParam != null) {
+                eb.addStatement("_stmt.executeBatch()");
+            } else {
+                eb.addStatement("_stmt.execute()");
+            }
+        } else if (batchParam != null) {
+            if (returnType.toString().equals(DbUtils.UPDATE_COUNT.canonicalName())) {
+                eb.addStatement("var _batchResult = _stmt.executeLargeBatch()");
+                eb.addStatement("return new $T($T.of(_batchResult).sum())", DbUtils.UPDATE_COUNT, LongStream.class);
+            } else if (returnType.toString().equals("long[]")) {
+                eb.addStatement("var _batchResult = _stmt.executeLargeBatch()");
+                eb.addStatement("return _batchResult");
+            } else if (returnType.toString().equals("int[]")) {
+                eb.addStatement("var _batchResult = _stmt.executeBatch()");
+                eb.addStatement("return _batchResult");
             } else if (generatedKeys) {
                 var result = CommonUtils.isNullable(method) || method.getReturnType().getKind().isPrimitive()
                     ? CodeBlock.of("_result")
                     : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
 
-                b.add("_stmt.execute();\n");
-                b.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                    .addStatement("var _result = $L.apply(_rs)", resultMapperName)
+                eb.addStatement("var _batchResult = _stmt.executeBatch()");
+                eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
+                    .addStatement("var _result = $L.apply(_rs)", repoMapperName)
                     .addStatement("return $L", result)
                     .endControlFlow();
             } else {
-                var result = CommonUtils.isNullable(method) || method.getReturnType().getKind().isPrimitive()
-                    ? CodeBlock.of("_result")
-                    : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
-
-                Objects.requireNonNull(resultMapperName, () -> "Illegal State occurred when expected to get result mapper, but got null in " + method.getEnclosingElement().getSimpleName() + "#" + method.getSimpleName());
-
-                b.beginControlFlow("try (var _rs = _stmt.executeQuery())")
-                    .addStatement("var _result = $L.apply(_rs)", resultMapperName)
-                    .addStatement("return $L", result)
-                    .endControlFlow();
+                eb.addStatement("var _batchResult = _stmt.executeBatch()");
             }
-            b.nextControlFlow("catch (java.sql.SQLException e)")
-                .addStatement("_observation.observeError(e)")
-                .addStatement("throw new io.koraframework.database.jdbc.exception.UncheckedSqlException(e)");
-            b.nextControlFlow("catch (Exception e)")
-                .addStatement("_observation.observeError(e)")
-                .addStatement("throw e");
-            b.nextControlFlow("finally")
-                .addStatement("_observation.end()")
+        } else if (returnType.toString().equals(DbUtils.UPDATE_COUNT.canonicalName())) {
+            eb.addStatement("var _updateCount = _stmt.executeLargeUpdate()")
+                .addStatement("return new $T(_updateCount)", DbUtils.UPDATE_COUNT);
+        } else if (generatedKeys) {
+            var result = CommonUtils.isNullable(method) || method.getReturnType().getKind().isPrimitive()
+                ? CodeBlock.of("_result")
+                : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
+
+            eb.addStatement("_stmt.execute()");
+            eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
+                .addStatement("var _result = $L.apply(_rs)", repoMapperName)
+                .addStatement("return $L", result)
                 .endControlFlow();
-        });
+        } else {
+            var result = CommonUtils.isNullable(method) || method.getReturnType().getKind().isPrimitive()
+                ? CodeBlock.of("_result")
+                : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
+
+            Objects.requireNonNull(repoMapperName, () -> "Illegal State occurred when expected to get result mapper, but got null in " + method.getEnclosingElement().getSimpleName() + "#" + method.getSimpleName());
+
+            eb.beginControlFlow("try (var _rs = _stmt.executeQuery())")
+                .addStatement("var _result = $L.apply(_rs)", repoMapperName)
+                .addStatement("return $L", result)
+                .endControlFlow();
+        }
+
+        eb.nextControlFlow("catch (java.sql.SQLException e)")
+            .addStatement("_observation.observeError(e)")
+            .addStatement("throw new io.koraframework.database.jdbc.exception.UncheckedSqlException(e)");
+        eb.nextControlFlow("catch (Exception e)")
+            .addStatement("_observation.observeError(e)")
+            .addStatement("throw e");
+        eb.nextControlFlow("finally")
+            .addStatement("_observation.end()")
+            .endControlFlow();
+
+        invokerTypeBuilder.addMethod(eb.build());
+
+        type.addType(invokerTypeBuilder.build());
+
+        StringBuilder constructorArgs = new StringBuilder("this, _query, _observation");
+        for (var param : method.getParameters()) {
+            constructorArgs.append(", ").append(param.getSimpleName());
+        }
+
+        if (isVoid) {
+            mb.addStatement("""
+    $T.where($T.VALUE, _observation)
+        .where($T.VALUE, $T.current().with(_observation.span()))
+        .run(new $L($L))""",
+                ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
+        } else {
+            mb.addStatement("""
+    return $T.where($T.VALUE, _observation)
+        .where($T.VALUE, $T.current().with(_observation.span()))
+        .call(new $L($L))""",
+                ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
+        }
+
         mb.addCode(";\n");
         return mb.build();
     }
