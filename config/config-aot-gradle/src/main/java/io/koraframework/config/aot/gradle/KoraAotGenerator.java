@@ -246,11 +246,17 @@ public class KoraAotGenerator {
 
         var flywayJdbcSubDir = outputDir.toPath().resolve("org/flywaydb/core/internal/jdbc");
         Files.createDirectories(flywayJdbcSubDir);
+        var flywayParserSubDir = outputDir.toPath().resolve("org/flywaydb/core/internal/parser");
+        Files.createDirectories(flywayParserSubDir);
+        var flywayUtilSubDir = outputDir.toPath().resolve("org/flywaydb/core/internal/util");
+        Files.createDirectories(flywayUtilSubDir);
 
         Files.writeString(targetSubDir.resolve("AotFlywayJdbcDatabaseModule.java"), readTemplate("AotFlywayJdbcDatabaseModule.java"));
         Files.writeString(targetSubDir.resolve("AotFlywayFactoryModule.java"), readTemplate("AotFlywayFactoryModule.java"));
         Files.writeString(targetSubDir.resolve("AotClassicConfiguration.java"), readTemplate("AotClassicConfiguration.java"));
         Files.writeString(flywayJdbcSubDir.resolve("JdbcConnectionFactory.java"), readTemplate("JdbcConnectionFactory.java"));
+        Files.writeString(flywayParserSubDir.resolve("ParsingContext.java"), readTemplate("ParsingContext.java"));
+        Files.writeString(flywayUtilSubDir.resolve("FlywayDbWebsiteLinks.java"), readTemplate("FlywayDbWebsiteLinks.java"));
 
         var chunksMethods = new StringBuilder();
         var listInit = new StringBuilder();
