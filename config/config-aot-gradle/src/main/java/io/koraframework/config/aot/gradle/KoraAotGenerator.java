@@ -244,8 +244,13 @@ public class KoraAotGenerator {
         var targetSubDir = outputDir.toPath().resolve(packageName.replace('.', '/'));
         Files.createDirectories(targetSubDir);
 
+        var flywayJdbcSubDir = outputDir.toPath().resolve("org/flywaydb/core/internal/jdbc");
+        Files.createDirectories(flywayJdbcSubDir);
+
         Files.writeString(targetSubDir.resolve("AotFlywayJdbcDatabaseModule.java"), readTemplate("AotFlywayJdbcDatabaseModule.java"));
         Files.writeString(targetSubDir.resolve("AotFlywayFactoryModule.java"), readTemplate("AotFlywayFactoryModule.java"));
+        Files.writeString(targetSubDir.resolve("AotClassicConfiguration.java"), readTemplate("AotClassicConfiguration.java"));
+        Files.writeString(flywayJdbcSubDir.resolve("JdbcConnectionFactory.java"), readTemplate("JdbcConnectionFactory.java"));
 
         var chunksMethods = new StringBuilder();
         var listInit = new StringBuilder();
@@ -253,7 +258,6 @@ public class KoraAotGenerator {
         final int MAX_STRING_CHUNK_LENGTH = 16384;
         int migrationIndex = 0;
 
-        // Дефолтные настройки Flyway для парсинга имен файлов на этапе компиляции
         String sqlMigrationPrefix = "V";
         String repeatableSqlMigrationPrefix = "R";
         String sqlMigrationSeparator = "__";

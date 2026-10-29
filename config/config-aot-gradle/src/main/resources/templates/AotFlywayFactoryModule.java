@@ -10,30 +10,27 @@ import io.koraframework.database.jdbc.*;
 import org.flywaydb.core.api.*;
 import org.flywaydb.core.api.configuration.*;
 import org.flywaydb.core.api.executor.*;
-import org.flywaydb.core.api.logging.LogFactory;
+import org.flywaydb.core.api.logging.*;
 import org.flywaydb.core.api.migration.baseline.*;
 import org.flywaydb.core.api.resolver.*;
 import org.flywaydb.core.api.resource.*;
 import org.flywaydb.core.extensibility.*;
-import org.flywaydb.core.internal.callback.NoopCallbackExecutor;
-import org.flywaydb.core.internal.clazz.NoopClassProvider;
-import org.flywaydb.core.internal.command.DbMigrate;
-import org.flywaydb.core.internal.command.DbRepair;
-import org.flywaydb.core.internal.command.clean.DbClean;
+import org.flywaydb.core.internal.callback.*;
+import org.flywaydb.core.internal.clazz.*;
+import org.flywaydb.core.internal.command.*;
+import org.flywaydb.core.internal.command.clean.*;
 import org.flywaydb.core.internal.configuration.models.*;
-import org.flywaydb.core.internal.database.base.Database;
-import org.flywaydb.core.internal.database.base.Schema;
+import org.flywaydb.core.internal.database.base.*;
 import org.flywaydb.core.internal.jdbc.*;
-import org.flywaydb.core.internal.logging.slf4j.Slf4jLogCreator;
-import org.flywaydb.core.internal.parser.ParsingContext;
+import org.flywaydb.core.internal.logging.slf4j.*;
+import org.flywaydb.core.internal.parser.*;
 import org.flywaydb.core.internal.plugin.*;
 import org.flywaydb.core.internal.resolver.*;
 import org.flywaydb.core.internal.schemahistory.*;
-import org.flywaydb.core.internal.util.IOUtils;
+import org.flywaydb.core.internal.util.*;
 import org.flywaydb.database.postgresql.*;
 import org.slf4j.*;
 
-import java.io.*;
 import java.sql.*;
 import java.util.*;
 import java.util.Date;
@@ -77,13 +74,23 @@ public final class AotFlywayFactoryModule {
 
             LogFactory.setLogCreator(new Slf4jLogCreator());
 
+            try {
+                Class.forName("org.flywaydb.database.postgresql.PostgreSQLAdvisoryLockTemplate");
+            } catch (ClassNotFoundException ignored) {
+            }
+
             var emptyResourceProvider = new AotEmptyResourceProvider();
             var baselineExt = new BaselineMigrationConfigurationExtension();
             baselineExt.setBaselineMigrationPrefix("B");
 
             var modernConfig = ConfigurationModel.defaults();
-            var config = new ClassicConfiguration(modernConfig);
-            config.setPluginRegister(new AotPostgresPluginRegister(baselineExt));
+            var aotEnvironment = new EnvironmentModel();
+            modernConfig.setEnvironments(Map.of("default", aotEnvironment));
+            modernConfig.getFlyway().setEnvironment("default");
+
+            var config = new AotClassicConfiguration(modernConfig);
+            var databaseType = new PostgreSQLDatabaseType();
+            config.setAotPluginRegister(new AotPostgresPluginRegister(baselineExt, databaseType));
 
             config.setDataSource(value.value());
             config.setMixed(flywayConfig.mixed());
@@ -102,7 +109,6 @@ public final class AotFlywayFactoryModule {
                 null
             );
 
-            var databaseType = jdbcConnectionFactory.getDatabaseType();
             var parsingContext = new ParsingContext();
             var sqlScriptFactory = databaseType.createSqlScriptFactory(config, parsingContext);
 
@@ -113,7 +119,7 @@ public final class AotFlywayFactoryModule {
 
                 var schemasPair = SchemaHistoryFactory.prepareSchemas(config, database);
                 var defaultSchema = schemasPair.getLeft();
-                var schemas = schemasPair.getRight().toArray(Schema[]::new);
+                var schemas = schemasPair.getRight().toArray(new Schema[0]);
 
                 var noCallbackSqlScriptExecutorFactory = databaseType.createSqlScriptExecutorFactory(
                     jdbcConnectionFactory,
@@ -142,7 +148,6 @@ public final class AotFlywayFactoryModule {
                 );
 
                 var callbackExecutor = NoopCallbackExecutor.INSTANCE;
-
 
                 switch (flywayConfig.mode()) {
                     case MIGRATE:
@@ -191,7 +196,6 @@ public final class AotFlywayFactoryModule {
             return value;
         }
     }
-
 
     private static final class AotEmptyResourceProvider implements ResourceProvider {
         @Override
@@ -264,8 +268,8 @@ public final class AotFlywayFactoryModule {
     private static final class AotPostgresPluginRegister extends PluginRegister {
         private final List<Plugin> aotPlugins = new ArrayList<>();
 
-        public AotPostgresPluginRegister(BaselineMigrationConfigurationExtension baselineExt) {
-            aotPlugins.add(new PostgreSQLDatabaseType());
+        public AotPostgresPluginRegister(BaselineMigrationConfigurationExtension baselineExt, Plugin postgresDatabaseType) {
+            aotPlugins.add(postgresDatabaseType);
             aotPlugins.add(new PostgreSQLConfigurationExtension());
             aotPlugins.add(baselineExt);
             aotPlugins.add(new AotSqlAppliedMigration());
@@ -368,48 +372,6 @@ public final class AotFlywayFactoryModule {
                                        int executionTime,
                                        boolean success) {
             return new AotSqlAppliedMigration(installedRank, version, description, type, script, checksum, installedOn, installedBy, executionTime, success);
-        }
-    }
-
-    private static final class AotResource extends LoadableResource {
-        private final String path;
-        private final String filename;
-        private final String content;
-
-        public AotResource(String path, String filename, String content) {
-            this.filename = filename;
-            this.content = content;
-            int lastSlash = path.lastIndexOf('/');
-            if (lastSlash != -1) {
-                this.path = path.substring(lastSlash + 1);
-            } else {
-                this.path = path;
-            }
-        }
-
-        @Override
-        public String getRelativePath() {
-            return this.path;
-        }
-
-        @Override
-        public String getFilename() {
-            return this.filename;
-        }
-
-        @Override
-        public String getAbsolutePath() {
-            return this.path;
-        }
-
-        @Override
-        public String getAbsolutePathOnDisk() {
-            return this.path;
-        }
-
-        @Override
-        public Reader read() {
-            return new StringReader(this.content);
         }
     }
 }
