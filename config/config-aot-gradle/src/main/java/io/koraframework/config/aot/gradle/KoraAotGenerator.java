@@ -5,9 +5,11 @@ import io.koraframework.config.aot.*;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
+import java.util.zip.CRC32;
 
 public class KoraAotGenerator {
     private static final int MAX_FIELDS_PER_CHUNK = 350;
@@ -43,15 +45,6 @@ public class KoraAotGenerator {
         }
         outputDir.mkdirs();
 
-        var targetClasses = new LinkedHashSet<String>();
-
-        scanSources(targetClasses);
-
-        var urls = new ArrayList<URL>();
-        for (var file : classpathFiles) {
-            urls.add(file.toURI().toURL());
-        }
-
         try (var scanResult = new ClassGraph()
             .overrideClasspath(classpathFiles)
             .enableAnnotationInfo()
@@ -60,46 +53,291 @@ public class KoraAotGenerator {
             .enableExternalClasses()
             .scan()) {
 
-            if (!classpathFiles.isEmpty()) {
-                targetClasses.addAll(scanResult.getClassesWithAnnotation(ANNOTATION_NAME).getNames());
+            boolean hasConfig = processConfig(scanResult);
+            boolean hasFlyway = checkFlywayMigrations(scanResult);
+
+            if (hasFlyway) {
+                logger.lifecycle("[Kora-Aot] Flyway migrations detected. Generating AOT Flyway module.");
+                generateAotFlywayModule(scanResult, outputDir);
+            } else {
+                logger.lifecycle("[Kora-Aot] No Flyway migrations found. Skipping Flyway AOT generation.");
             }
 
-            if (targetClasses.isEmpty()) {
-                logger.lifecycle("[Kora-Aot] No classes with @ConfigSource found. Skipping AOT generation.");
+            if (!hasConfig && !hasFlyway) {
+                logger.lifecycle("[Kora-Aot] Nothing to generate. Skipping generation.");
                 return;
             }
-            logger.lifecycle("[Kora-Aot] Found " + targetClasses.size() + " configuration classes to process.");
 
-            try (var projectClassLoader = new URLClassLoader(urls.toArray(new URL[0]), getClass().getClassLoader())) {
-                var format = configFormat;
-                var file = configFile;
+            generateMainAotModule(outputDir, hasConfig, hasFlyway);
+        }
+    }
 
-                if (format == null || format.isBlank()) {
-                    if (file != null && !file.isBlank()) {
-                        var lower = file.toLowerCase();
-                        if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {format = "YAML";} else if (lower.endsWith(".conf") || lower.endsWith(".json")) format = "HOCON";
-                    } else {
-                        var resource = configResource != null ? configResource : "application";
-                        if (projectClassLoader.getResource(resource + ".yaml") != null ||
-                            projectClassLoader.getResource(resource + ".yml") != null) {
-                            format = "YAML";
-                        } else if (projectClassLoader.getResource(resource + ".conf") != null ||
-                            projectClassLoader.getResource(resource + ".json") != null) {
-                            format = "HOCON";
-                        }
+    private boolean processConfig(ScanResult scanResult) throws Exception {
+        var targetClasses = new LinkedHashSet<String>();
+        scanSources(targetClasses);
+
+        if (!classpathFiles.isEmpty()) {
+            targetClasses.addAll(scanResult.getClassesWithAnnotation(ANNOTATION_NAME).getNames());
+        }
+
+        if (targetClasses.isEmpty()) {
+            logger.lifecycle("[Kora-Aot] No configuration classes found. Skipping AotConfigModule.");
+            return false;
+        }
+
+        logger.lifecycle("[Kora-Aot] Found " + targetClasses.size() + " configuration classes to process.");
+
+        var urls = new ArrayList<URL>();
+        for (var file : classpathFiles) {
+            urls.add(file.toURI().toURL());
+        }
+
+        try (var projectClassLoader = new URLClassLoader(urls.toArray(new URL[0]), getClass().getClassLoader())) {
+            var format = configFormat;
+            var file = configFile;
+
+            if (format == null || format.isBlank()) {
+                if (file != null && !file.isBlank()) {
+                    var lower = file.toLowerCase();
+                    if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {
+                        format = "YAML";
+                    } else if (lower.endsWith(".conf") || lower.endsWith(".json")) {
+                        format = "HOCON";
+                    }
+                } else {
+                    var resource = configResource != null ? configResource : "application";
+                    if (projectClassLoader.getResource(resource + ".yaml") != null ||
+                        projectClassLoader.getResource(resource + ".yml") != null) {
+                        format = "YAML";
+                    } else if (projectClassLoader.getResource(resource + ".conf") != null ||
+                        projectClassLoader.getResource(resource + ".json") != null) {
+                        format = "HOCON";
                     }
                 }
+            }
 
-                if (format == null || format.isBlank()) {
-                    format = "HOCON";
+            if (format == null || format.isBlank()) {
+                format = "HOCON";
+            }
+
+            var configParser = "YAML".equalsIgnoreCase(format) ? new YamlAotParser() : new HoconAotParser();
+            configParser.loadAndMerge(projectClassLoader, configResource, configFile);
+
+            generateAotConfigModule(configParser, outputDir);
+        }
+        return true;
+    }
+
+    private boolean checkFlywayMigrations(ScanResult scanResult) {
+        var sqlResources = scanResult.getResourcesMatchingPattern(Pattern.compile("db/migration/.*\\.sql"));
+        return !sqlResources.isEmpty();
+    }
+
+    private void generateMainAotModule(File outputDir, boolean hasConfig, boolean hasFlyway) throws Exception {
+        var packageName = "io.koraframework.config.aot.generated";
+        var moduleName = "AotModule";
+
+        var extendsList = new ArrayList<String>();
+        if (hasConfig) extendsList.add("AotConfigModule");
+        if (hasFlyway) extendsList.add("AotFlywayJdbcDatabaseModule");
+
+        String extendsClause = extendsList.isEmpty() ? "" : "extends " + String.join(", ", extendsList);
+
+        var template = readTemplate("AotModule.java");
+        var finalCode = template.replace("// EXTENDS_INJECTION_POINT", extendsClause);
+
+        var targetSubDir = outputDir.toPath().resolve(packageName.replace('.', '/'));
+        Files.createDirectories(targetSubDir);
+        Files.writeString(targetSubDir.resolve(moduleName + ".java"), finalCode);
+    }
+
+    private String readTemplate(String templateName) throws IOException {
+        try (var is = getClass().getResourceAsStream("/templates/" + templateName)) {
+            if (is == null) {
+                throw new FileNotFoundException("Template " + templateName + " not found in plugin resources");
+            }
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        }
+    }
+
+    private void generateAotConfigModule(AotConfigParser parser, File outputDir) throws Exception {
+        var packageName = "io.koraframework.config.aot.generated";
+        var moduleName = "AotConfigModule";
+
+        var globalFlattenedValues = new LinkedHashMap<String, Object>();
+        collectFlattenedProperties(parser, "", globalFlattenedValues);
+
+        var fillDataBuilder = new StringBuilder();
+        var chunksBuilder = new StringBuilder();
+
+        if (!globalFlattenedValues.isEmpty()) {
+            var entries = new ArrayList<>(globalFlattenedValues.entrySet());
+            var currentChunkIndex = 0;
+            var currentChunkBuilder = new StringBuilder();
+
+            for (var i = 0; i < entries.size(); i++) {
+                var entry = entries.get(i);
+                var fullKey = entry.getKey();
+                var baseVal = entry.getValue();
+
+                String statement = switch (baseVal) {
+                    case null -> "null";
+                    case Boolean b -> b.toString();
+                    case Long l -> l + "L";
+                    case Number n -> n.toString();
+                    case String s -> "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+                    case List<?> list -> {
+                        var listBuilder = new StringBuilder("java.util.List.of(");
+                        for (var j = 0; j < list.size(); j++) {
+                            var item = list.get(j);
+                            if (item instanceof String) {listBuilder.append("\"").append(item.toString().replace("\\", "\\\\").replace("\"", "\\\"")).append("\"");} else if (item instanceof Long) {
+                                listBuilder.append(item).append("L");
+                            } else listBuilder.append(item);
+                            if (j < list.size() - 1) listBuilder.append(", ");
+                        }
+                        yield listBuilder.append(")").toString();
+                    }
+                    default -> "\"" + baseVal.toString().replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
+                };
+
+                var pathBuilder = new StringBuilder("r");
+                int start = 0;
+                int dotIdx;
+                while ((dotIdx = fullKey.indexOf('.', start)) != -1) {
+                    pathBuilder.append(".child(\"").append(fullKey.substring(start, dotIdx)).append("\")");
+                    start = dotIdx + 1;
                 }
+                pathBuilder.append(".child(\"").append(fullKey.substring(start)).append("\")");
 
-                var configParser = "YAML".equalsIgnoreCase(format) ? new YamlAotParser() : new HoconAotParser();
-                configParser.loadAndMerge(projectClassLoader, configResource, configFile);
+                currentChunkBuilder.append("            root.put(\"").append(fullKey).append("\", new AotLeaf(").append(pathBuilder).append(", ").append(statement).append("));\n");
 
-                generateMonolithicAotModule(configParser, outputDir);
+                if ((i + 1) % MAX_FIELDS_PER_CHUNK == 0 || (i + 1) == entries.size()) {
+                    var chunkMethodName = "initChunk" + currentChunkIndex;
+
+                    chunksBuilder.append("        static void ").append(chunkMethodName).append("(Map<String, Object> root) {\n")
+                        .append("            var r = ConfigValuePath.root();\n")
+                        .append(currentChunkBuilder)
+                        .append("        }\n\n");
+
+                    fillDataBuilder.append("            ").append(chunkMethodName).append("(root);\n");
+
+                    currentChunkBuilder = new StringBuilder();
+                    currentChunkIndex++;
+                }
             }
         }
+
+        var template = readTemplate("AotConfigModule.java");
+        var finalCode = template
+            .replace("// TARGET_INJECTION_POINT", fillDataBuilder.toString().trim())
+            .replace("// CHUNKS_INJECTION_POINT", chunksBuilder.toString().trim());
+
+        var targetSubDir = outputDir.toPath().resolve(packageName.replace('.', '/'));
+        Files.createDirectories(targetSubDir);
+        Files.writeString(targetSubDir.resolve(moduleName + ".java"), finalCode);
+    }
+
+    private void generateAotFlywayModule(ScanResult scanResult, File outputDir) throws Exception {
+        var packageName = "io.koraframework.config.aot.generated";
+        var sqlResources = scanResult.getResourcesMatchingPattern(Pattern.compile("db/migration/.*\\.sql"));
+
+        var targetSubDir = outputDir.toPath().resolve(packageName.replace('.', '/'));
+        Files.createDirectories(targetSubDir);
+
+        Files.writeString(targetSubDir.resolve("AotFlywayJdbcDatabaseModule.java"), readTemplate("AotFlywayJdbcDatabaseModule.java"));
+        Files.writeString(targetSubDir.resolve("AotFlywayFactoryModule.java"), readTemplate("AotFlywayFactoryModule.java"));
+
+        var chunksMethods = new StringBuilder();
+        var listInit = new StringBuilder();
+
+        final int MAX_STRING_CHUNK_LENGTH = 16384;
+        int migrationIndex = 0;
+
+        // Дефолтные настройки Flyway для парсинга имен файлов на этапе компиляции
+        String sqlMigrationPrefix = "V";
+        String repeatableSqlMigrationPrefix = "R";
+        String sqlMigrationSeparator = "__";
+
+        for (var res : sqlResources) {
+            String path = res.getPath();
+            String filename = path.substring(path.lastIndexOf('/') + 1);
+
+            byte[] bytes;
+            try (var is = res.open()) {
+                bytes = is.readAllBytes();
+            }
+
+            var crc32 = new CRC32();
+            crc32.update(bytes);
+            long checksumValue = crc32.getValue();
+            int checksum = (int) checksumValue;
+
+            String content = new String(bytes, StandardCharsets.UTF_8);
+
+            String cleanName = filename.endsWith(".sql") ? filename.substring(0, filename.length() - 4) : filename;
+            String version = "";
+            String description = cleanName;
+
+            if (cleanName.startsWith(sqlMigrationPrefix)) {
+                int sepIdx = cleanName.indexOf(sqlMigrationSeparator);
+                if (sepIdx != -1) {
+                    version = cleanName.substring(sqlMigrationPrefix.length(), sepIdx);
+                    description = cleanName.substring(sepIdx + sqlMigrationSeparator.length()).replace("_", " ");
+                }
+            } else if (cleanName.startsWith(repeatableSqlMigrationPrefix)) {
+                version = null;
+                description = cleanName.substring(repeatableSqlMigrationPrefix.length()).replace("_", " ");
+            }
+
+            String escaped = content
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\r", "")
+                .replace("\n", "\\n");
+
+            int length = escaped.length();
+            var chunkMethodNames = new ArrayList<String>();
+            int chunkIndex = 0;
+
+            for (int i = 0; i < length; i += MAX_STRING_CHUNK_LENGTH) {
+                String chunk = escaped.substring(i, Math.min(length, i + MAX_STRING_CHUNK_LENGTH));
+                String chunkMethodName = "getMigration_" + migrationIndex + "_chunk_" + chunkIndex;
+                chunkMethodNames.add(chunkMethodName);
+
+                chunksMethods.append("    private static String ").append(chunkMethodName).append("() {\n")
+                    .append("        return \"").append(chunk).append("\";\n")
+                    .append("    }\n\n");
+
+                chunkIndex++;
+            }
+
+            String mainMethodName = "getMigrationContent_" + migrationIndex;
+            chunksMethods.append("    private static String ").append(mainMethodName).append("() {\n")
+                .append("        var sb = new java.lang.StringBuilder(").append(length).append(");\n");
+            for (String chunkMethod : chunkMethodNames) {
+                chunksMethods.append("        sb.append(").append(chunkMethod).append("());\n");
+            }
+            chunksMethods.append("        return sb.toString();\n")
+                .append("    }\n\n");
+
+            listInit.append("        list.add(new MigrationData(\"")
+                .append(path).append("\", \"")
+                .append(filename).append("\", ")
+                .append(mainMethodName).append("(), ")
+                .append(version == null ? "null" : "\"" + version + "\"").append(", \"")
+                .append(description).append("\", ")
+                .append(checksum).append(", \"")
+                .append(path).append("\"));\n");
+
+            migrationIndex++;
+        }
+
+        var migrationsTemplate = readTemplate("AotFlywayMigrations.java");
+        var finalMigrationsCode = migrationsTemplate
+            .replace("// CHUNKS_METHODS_POINT", chunksMethods.toString().trim())
+            .replace("// LIST_INIT_POINT", listInit.toString().trim());
+
+        Files.writeString(targetSubDir.resolve("AotFlywayMigrations.java"), finalMigrationsCode);
     }
 
     private void scanSources(Set<String> targetClasses) {
@@ -126,88 +364,6 @@ public class KoraAotGenerator {
                 });
             } catch (IOException _) {}
         }
-    }
-
-    private void generateMonolithicAotModule(AotConfigParser parser, File outputDir) throws Exception {
-        var packageName = "io.koraframework.config.aot.generated";
-        var moduleName = "AotConfigModule";
-
-        var globalFlattenedValues = new LinkedHashMap<String, Object>();
-        collectFlattenedProperties(parser, "", globalFlattenedValues);
-
-        var fillDataBuilder = new StringBuilder();
-        var chunksBuilder = new StringBuilder();
-
-        if (!globalFlattenedValues.isEmpty()) {
-            var entries = new ArrayList<>(globalFlattenedValues.entrySet());
-            var currentChunkIndex = 0;
-            var currentChunkBuilder = new StringBuilder();
-
-            for (var i = 0; i < entries.size(); i++) {
-                var entry = entries.get(i);
-                var fullKey = entry.getKey();
-                var baseVal = entry.getValue();
-
-                String statement = switch (baseVal) {
-                    case null -> "null";
-                    case Boolean b -> b.toString();
-                    case Long l -> l + "L";
-                    case Number n -> n.toString();
-                    case String s -> "\"" + s.replace("\"", "\\\"") + "\"";
-                    case List<?> list -> {
-                        var listBuilder = new StringBuilder("java.util.List.of(");
-                        for (var j = 0; j < list.size(); j++) {
-                            var item = list.get(j);
-                            if (item instanceof String) listBuilder.append("\"").append(item.toString().replace("\"", "\\\"")).append("\"");
-                            else if (item instanceof Long) listBuilder.append(item).append("L");
-                            else listBuilder.append(item);
-                            if (j < list.size() - 1) listBuilder.append(", ");
-                        }
-                        yield listBuilder.append(")").toString();
-                    }
-                    default -> "\"" + baseVal.toString().replace("\"", "\\\"") + "\"";
-                };
-
-                var pathBuilder = new StringBuilder("r");
-                int start = 0;
-                int dotIdx;
-                while ((dotIdx = fullKey.indexOf('.', start)) != -1) {
-                    pathBuilder.append(".child(\"").append(fullKey.substring(start, dotIdx)).append("\")");
-                    start = dotIdx + 1;
-                }
-                pathBuilder.append(".child(\"").append(fullKey.substring(start)).append("\")");
-
-                currentChunkBuilder.append("            root.put(\"").append(fullKey).append("\", new AotLeaf(").append(pathBuilder).append(", ").append(statement).append("));\n");
-
-                if ((i + 1) % MAX_FIELDS_PER_CHUNK == 0 || (i + 1) == entries.size()) {
-                    var chunkMethodName = "initChunk" + currentChunkIndex;
-
-                    chunksBuilder.append("        private static void ").append(chunkMethodName).append("(Map<String, Object> root) {\n")
-                        .append("            var r = ConfigValuePath.root();\n")
-                        .append(currentChunkBuilder)
-                        .append("        }\n\n");
-
-                    fillDataBuilder.append("            ").append(chunkMethodName).append("(root);\n");
-
-                    currentChunkBuilder = new StringBuilder();
-                    currentChunkIndex++;
-                }
-            }
-        }
-
-        String template;
-        try (var is = getClass().getResourceAsStream("/templates/AotConfigModule.java")) {
-            if (is == null) throw new FileNotFoundException("Template not found in plugin resources");
-            template = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-        }
-
-        var finalCode = template
-            .replace("// TARGET_INJECTION_POINT", fillDataBuilder.toString().trim())
-            .replace("// CHUNKS_INJECTION_POINT", chunksBuilder.toString().trim());
-
-        var targetSubDir = outputDir.toPath().resolve(packageName.replace('.', '/'));
-        Files.createDirectories(targetSubDir);
-        Files.writeString(targetSubDir.resolve(moduleName + ".java"), finalCode);
     }
 
     private void collectFlattenedProperties(AotConfigParser parser, String currentPath, Map<String, Object> result) {

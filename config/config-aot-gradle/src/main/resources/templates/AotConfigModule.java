@@ -5,7 +5,6 @@ import io.koraframework.config.common.ConfigValue.*;
 import io.koraframework.config.common.annotation.*;
 import io.koraframework.config.common.impl.*;
 import io.koraframework.config.common.origin.*;
-
 import java.util.*;
 
 public interface AotConfigModule extends ConfigModule {
@@ -40,7 +39,7 @@ public interface AotConfigModule extends ConfigModule {
             var part = fullKey.substring(start, dotIdx);
             var nextMap = (Map<String, Object>) currentMap.get(part);
             if (nextMap == null) {
-                nextMap = new LinkedHashMap<String, Object>();
+                nextMap = new LinkedHashMap<>();
                 currentMap.put(part, nextMap);
             }
             currentMap = nextMap;
