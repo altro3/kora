@@ -12,6 +12,9 @@ import java.util.*;
 
 public final class AotClassicConfiguration extends ClassicConfiguration {
 
+    private static MigrationPattern[] EMPTY_CHERRY_PICK = new MigrationPattern[0];
+    private static ValidatePattern[] EMPTY_IGNORE_PATTERNS = new ValidatePattern[0];
+
     private ResolvedEnvironment aotResolvedEnvironment;
     private PluginRegister aotPluginRegister;
 
@@ -54,11 +57,15 @@ public final class AotClassicConfiguration extends ClassicConfiguration {
 
     @Override
     public MigrationPattern[] getCherryPick() {
-        return new MigrationPattern[0];
+        var rs = EMPTY_CHERRY_PICK;
+        EMPTY_CHERRY_PICK = null;
+        return rs;
     }
 
     @Override
     public ValidatePattern[] getIgnoreMigrationPatterns() {
-        return new ValidatePattern[0];
+        var rs =  EMPTY_IGNORE_PATTERNS;
+        EMPTY_IGNORE_PATTERNS = null;
+        return rs;
     }
 }

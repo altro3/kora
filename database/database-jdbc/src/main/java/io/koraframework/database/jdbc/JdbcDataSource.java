@@ -19,10 +19,18 @@ import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Objects;
+import java.util.concurrent.*;
 
 public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecutor, ReadinessProbe {
 
     private static final Logger logger = LoggerFactory.getLogger(JdbcDataSource.class);
+
+    static {
+        try {
+            Class.forName("com.zaxxer.hikari.pool.ProxyConnection");
+        } catch (ClassNotFoundException ignored) {
+        }
+    }
 
     private final JdbcDatabaseConfig databaseConfig;
     private final HikariDataSource dataSource;
@@ -38,10 +46,19 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
             config.poolName(),
             jdbcDatabase
         );
-        this.dataSource = new HikariDataSource(JdbcDatabaseConfig.toHikariConfig(this.databaseConfig, configurer));
+
+        var hikariConfig = JdbcDatabaseConfig.toHikariConfig(this.databaseConfig, configurer);
+
+        var threadFactory = Thread.ofVirtual().name("hikari-vt-", 1).factory();
+        hikariConfig.setThreadFactory(threadFactory);
+
+        var executor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(threadFactory);
+        hikariConfig.setScheduledExecutor(executor);
+
         if (this.databaseConfig.telemetry().metrics().driverMetrics()) {
-            this.dataSource.setMetricRegistry(this.telemetry.meterRegistry());
+            hikariConfig.setMetricRegistry(this.telemetry.meterRegistry());
         }
+        this.dataSource = new HikariDataSource(hikariConfig);
     }
 
     @Override
@@ -160,5 +177,4 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
             return callback.apply(context);
         }
     }
-
 }

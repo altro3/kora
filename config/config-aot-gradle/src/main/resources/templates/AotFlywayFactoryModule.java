@@ -20,6 +20,7 @@ import org.flywaydb.core.internal.clazz.*;
 import org.flywaydb.core.internal.command.*;
 import org.flywaydb.core.internal.command.clean.*;
 import org.flywaydb.core.internal.configuration.models.*;
+import org.flywaydb.core.internal.database.*;
 import org.flywaydb.core.internal.database.base.*;
 import org.flywaydb.core.internal.jdbc.*;
 import org.flywaydb.core.internal.logging.slf4j.*;
@@ -34,6 +35,7 @@ import org.slf4j.*;
 import java.sql.*;
 import java.util.*;
 import java.util.Date;
+import java.util.logging.LogManager;
 
 public final class AotFlywayFactoryModule {
 
@@ -52,6 +54,34 @@ public final class AotFlywayFactoryModule {
     public AotFlywayJdbcDatabaseInterceptor flywayInterceptor(@Tag(Tag.Factory.class) FlywayConfig flywayConfig) {
         return new AotFlywayJdbcDatabaseInterceptor(flywayConfig);
     }
+
+    static {
+        try {
+            Class.forName("org.postgresql.Driver");
+            LogManager.getLogManager();
+
+            var cl = AotFlywayFactoryModule.class.getClassLoader();
+            var classesToWarmUp = List.of(
+                "org.flywaydb.database.postgresql.PostgreSQLDatabaseType",
+                "org.flywaydb.database.postgresql.PostgreSQLDatabase",
+                "org.flywaydb.core.internal.database.base.Database",
+                "org.flywaydb.core.internal.schemahistory.SchemaHistoryFactory",
+                "org.flywaydb.core.internal.resolver.CompositeMigrationResolver",
+                "org.flywaydb.core.internal.command.DbMigrate",
+                "org.flywaydb.database.postgresql.PostgreSQLAdvisoryLockTemplate",
+                "org.flywaydb.core.internal.configuration.models.ConfigurationModel",
+                "org.flywaydb.core.internal.configuration.resolvers.ResolvedEnvironment",
+                "org.flywaydb.core.api.pattern.MigrationPattern",
+                "org.flywaydb.core.api.pattern.ValidatePattern"
+            );
+
+            for (String className : classesToWarmUp) {
+                Class.forName(className, true, cl);
+            }
+        } catch (ClassNotFoundException ignored) {
+        }
+    }
+
 
     public static final class AotFlywayJdbcDatabaseInterceptor implements GraphInterceptor<JdbcDataSource> {
 
@@ -73,11 +103,6 @@ public final class AotFlywayFactoryModule {
             logger.debug("AOT FlyWay migration applying (zero run-time scanning)...");
 
             LogFactory.setLogCreator(new Slf4jLogCreator());
-
-            try {
-                Class.forName("org.flywaydb.database.postgresql.PostgreSQLAdvisoryLockTemplate");
-            } catch (ClassNotFoundException ignored) {
-            }
 
             var emptyResourceProvider = new AotEmptyResourceProvider();
             var baselineExt = new BaselineMigrationConfigurationExtension();
@@ -120,13 +145,11 @@ public final class AotFlywayFactoryModule {
                 var schemasPair = SchemaHistoryFactory.prepareSchemas(config, database);
                 var defaultSchema = schemasPair.getLeft();
                 var schemas = schemasPair.getRight().toArray(new Schema[0]);
-
                 var noCallbackSqlScriptExecutorFactory = databaseType.createSqlScriptExecutorFactory(
                     jdbcConnectionFactory,
                     NoopCallbackExecutor.INSTANCE,
                     null
                 );
-
                 var schemaHistory = SchemaHistoryFactory.getSchemaHistory(
                     config,
                     noCallbackSqlScriptExecutorFactory,
@@ -135,7 +158,6 @@ public final class AotFlywayFactoryModule {
                     defaultSchema,
                     null
                 );
-
                 var resolver = new CompositeMigrationResolver(
                     emptyResourceProvider,
                     NoopClassProvider.INSTANCE,
@@ -264,21 +286,37 @@ public final class AotFlywayFactoryModule {
         }
     }
 
-
     private static final class AotPostgresPluginRegister extends PluginRegister {
         private final List<Plugin> aotPlugins = new ArrayList<>();
+        private final Map<Class<?>, Object> exactCache = new HashMap<>();
 
         public AotPostgresPluginRegister(BaselineMigrationConfigurationExtension baselineExt, Plugin postgresDatabaseType) {
+            var ext = new PostgreSQLConfigurationExtension();
+            var sqlMig = new AotSqlAppliedMigration();
+            var baseMig = new BaselineAppliedMigration();
+
             aotPlugins.add(postgresDatabaseType);
-            aotPlugins.add(new PostgreSQLConfigurationExtension());
+            aotPlugins.add(ext);
             aotPlugins.add(baselineExt);
-            aotPlugins.add(new AotSqlAppliedMigration());
-            aotPlugins.add(new BaselineAppliedMigration());
+            aotPlugins.add(sqlMig);
+            aotPlugins.add(baseMig);
+
+            exactCache.put(postgresDatabaseType.getClass(), postgresDatabaseType);
+            exactCache.put(ext.getClass(), ext);
+            exactCache.put(baselineExt.getClass(), baselineExt);
+            exactCache.put(sqlMig.getClass(), sqlMig);
+            exactCache.put(baseMig.getClass(), baseMig);
+            exactCache.put(DatabaseType.class, postgresDatabaseType);
+            exactCache.put(ConfigurationExtension.class, ext);
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> T getExact(Class<T> clazz) {
+            var exact = exactCache.get(clazz);
+            if (exact != null) {
+                return (T) exact;
+            }
             for (var plugin : aotPlugins) {
                 if (clazz.isInstance(plugin)) {
                     return (T) plugin;
@@ -290,6 +328,10 @@ public final class AotFlywayFactoryModule {
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> List<T> getInstancesOf(Class<T> clazz) {
+            var exact = exactCache.get(clazz);
+            if (exact != null) {
+                return List.of((T) exact);
+            }
             var result = new ArrayList<T>();
             for (var plugin : aotPlugins) {
                 if (clazz.isInstance(plugin)) {
@@ -304,8 +346,10 @@ public final class AotFlywayFactoryModule {
         public <T extends Plugin> List<T> getLicensedInstancesOf(Class<T> clazz, Configuration configuration) {
             var result = new ArrayList<T>();
             for (var plugin : aotPlugins) {
-                if (clazz.isInstance(plugin) && plugin.isLicensed(configuration)) {
-                    result.add((T) plugin);
+                if (clazz.isInstance(plugin)) {
+                    if (plugin.isLicensed(configuration)) {
+                        result.add((T) plugin);
+                    }
                 }
             }
             return result;
@@ -313,8 +357,19 @@ public final class AotFlywayFactoryModule {
 
         @Override
         public <T extends Plugin> T getLicensedInstanceOf(Class<T> clazz, Configuration configuration) {
+            var exact = exactCache.get(clazz);
+            if (exact != null) {
+                var plugin = (Plugin) exact;
+                if (plugin.isLicensed(configuration)) {
+                    return (T) plugin;
+                }
+                return null;
+            }
             var list = getLicensedInstancesOf(clazz, configuration);
-            return list.isEmpty() ? null : list.get(0);
+            if (list.isEmpty()) {
+                return null;
+            }
+            return list.get(0);
         }
 
         @Override
@@ -348,11 +403,7 @@ public final class AotFlywayFactoryModule {
             this.installedBy = installedBy;
             this.executionTime = executionTime;
             this.success = success;
-            try {
-                this.type = CoreMigrationType.valueOf(type.toUpperCase());
-            } catch (Exception e) {
-                this.type = CoreMigrationType.SQL;
-            }
+            this.type = CoreMigrationType.SQL;
         }
 
         @Override

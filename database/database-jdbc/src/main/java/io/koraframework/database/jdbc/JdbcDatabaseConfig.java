@@ -130,13 +130,27 @@ public interface JdbcDatabaseConfig {
         hikariConfig.setMinimumIdle(config.minIdle());
         hikariConfig.setUsername(config.username());
         hikariConfig.setPassword(config.password());
-        hikariConfig.setJdbcUrl(config.jdbcUrl());
         hikariConfig.setPoolName(config.poolName());
         hikariConfig.setInitializationFailTimeout(-1);
         hikariConfig.setAutoCommit(true);
         hikariConfig.setSchema(config.schema());
         hikariConfig.setDataSourceProperties(config.dsProperties());
         hikariConfig.setRegisterMbeans(false);
+        var jdbcUrl = config.jdbcUrl();
+        hikariConfig.setJdbcUrl(jdbcUrl);
+        if (jdbcUrl.startsWith("jdbc:postgresql:")) {
+            hikariConfig.setDriverClassName("org.postgresql.Driver");
+        } else if (jdbcUrl.startsWith("jdbc:mysql:")) {
+            hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
+        } else if (jdbcUrl.startsWith("jdbc:mariadb:")) {
+            hikariConfig.setDriverClassName("org.mariadb.jdbc.Driver");
+        } else if (jdbcUrl.startsWith("jdbc:h2:")) {
+            hikariConfig.setDriverClassName("org.h2.Driver");
+        } else if (jdbcUrl.startsWith("jdbc:oracle:")) {
+            hikariConfig.setDriverClassName("oracle.jdbc.OracleDriver");
+        } else if (jdbcUrl.startsWith("jdbc:sqlserver:")) {
+            hikariConfig.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+        }
         if (configurer != null) {
             return configurer.configure(hikariConfig);
         }
