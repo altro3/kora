@@ -26,16 +26,18 @@ import org.flywaydb.core.internal.jdbc.*;
 import org.flywaydb.core.internal.logging.slf4j.*;
 import org.flywaydb.core.internal.parser.*;
 import org.flywaydb.core.internal.plugin.*;
+import org.flywaydb.core.internal.proprietaryStubs.CherryPickSupportStub;
 import org.flywaydb.core.internal.resolver.*;
 import org.flywaydb.core.internal.schemahistory.*;
 import org.flywaydb.core.internal.util.*;
 import org.flywaydb.database.postgresql.*;
 import org.slf4j.*;
+import org.slf4j.Logger;
 
 import java.sql.*;
 import java.util.*;
 import java.util.Date;
-import java.util.logging.LogManager;
+import java.util.logging.*;
 
 public final class AotFlywayFactoryModule {
 
@@ -72,7 +74,10 @@ public final class AotFlywayFactoryModule {
                 "org.flywaydb.core.internal.configuration.models.ConfigurationModel",
                 "org.flywaydb.core.internal.configuration.resolvers.ResolvedEnvironment",
                 "org.flywaydb.core.api.pattern.MigrationPattern",
-                "org.flywaydb.core.api.pattern.ValidatePattern"
+                "org.flywaydb.core.api.pattern.ValidatePattern",
+                "org.postgresql.jdbc.PgDatabaseMetaData",
+                "org.postgresql.jdbc.TypeInfoCache",
+                "org.postgresql.core.v3.TypeTransferModeRegistry"
             );
 
             for (String className : classesToWarmUp) {
@@ -287,25 +292,33 @@ public final class AotFlywayFactoryModule {
     }
 
     private static final class AotPostgresPluginRegister extends PluginRegister {
-        private final List<Plugin> aotPlugins = new ArrayList<>();
-        private final Map<Class<?>, Object> exactCache = new HashMap<>();
+        private final Plugin[] aotPlugins;
+        private final Map<Class<?>, Object> exactCache;
 
         public AotPostgresPluginRegister(BaselineMigrationConfigurationExtension baselineExt, Plugin postgresDatabaseType) {
+            super();
+
             var ext = new PostgreSQLConfigurationExtension();
             var sqlMig = new AotSqlAppliedMigration();
             var baseMig = new BaselineAppliedMigration();
+            var cherrySupport = new CherryPickSupportStub();
 
-            aotPlugins.add(postgresDatabaseType);
-            aotPlugins.add(ext);
-            aotPlugins.add(baselineExt);
-            aotPlugins.add(sqlMig);
-            aotPlugins.add(baseMig);
+            aotPlugins = new Plugin[] {
+                postgresDatabaseType,
+                ext,
+                baselineExt,
+                sqlMig,
+                baseMig,
+                cherrySupport
+            };
 
+            exactCache = new HashMap<>();
             exactCache.put(postgresDatabaseType.getClass(), postgresDatabaseType);
             exactCache.put(ext.getClass(), ext);
             exactCache.put(baselineExt.getClass(), baselineExt);
             exactCache.put(sqlMig.getClass(), sqlMig);
             exactCache.put(baseMig.getClass(), baseMig);
+            exactCache.put(cherrySupport.getClass(), cherrySupport);
             exactCache.put(DatabaseType.class, postgresDatabaseType);
             exactCache.put(ConfigurationExtension.class, ext);
         }
@@ -317,8 +330,15 @@ public final class AotFlywayFactoryModule {
             if (exact != null) {
                 return (T) exact;
             }
-            for (var plugin : aotPlugins) {
-                if (clazz.isInstance(plugin)) {
+
+            var targetName = clazz.getCanonicalName();
+            if (targetName == null) {
+                return null;
+            }
+
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
+                if (plugin.getClass().getCanonicalName().equals(targetName)) {
                     return (T) plugin;
                 }
             }
@@ -330,10 +350,12 @@ public final class AotFlywayFactoryModule {
         public <T extends Plugin> List<T> getInstancesOf(Class<T> clazz) {
             var exact = exactCache.get(clazz);
             if (exact != null) {
-                return List.of((T) exact);
+                return Collections.singletonList((T) exact);
             }
-            var result = new ArrayList<T>();
-            for (var plugin : aotPlugins) {
+
+            var result = new ArrayList<T>(aotPlugins.length);
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
                 if (clazz.isInstance(plugin)) {
                     result.add((T) plugin);
                 }
@@ -344,8 +366,9 @@ public final class AotFlywayFactoryModule {
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> List<T> getLicensedInstancesOf(Class<T> clazz, Configuration configuration) {
-            var result = new ArrayList<T>();
-            for (var plugin : aotPlugins) {
+            var result = new ArrayList<T>(aotPlugins.length);
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
                 if (clazz.isInstance(plugin)) {
                     if (plugin.isLicensed(configuration)) {
                         result.add((T) plugin);
@@ -365,11 +388,59 @@ public final class AotFlywayFactoryModule {
                 }
                 return null;
             }
-            var list = getLicensedInstancesOf(clazz, configuration);
-            if (list.isEmpty()) {
-                return null;
+
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
+                if (clazz.isInstance(plugin)) {
+                    if (plugin.isLicensed(configuration)) {
+                        return (T) plugin;
+                    }
+                }
             }
-            return list.get(0);
+            return null;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T extends Plugin> T getInstanceOf(Class<T> clazz) {
+            var exact = exactCache.get(clazz);
+            if (exact != null) {
+                return (T) exact;
+            }
+
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
+                if (clazz.isInstance(plugin)) {
+                    return (T) plugin;
+                }
+            }
+            return null;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T extends Plugin> T getExact(String className) {
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
+                if (plugin.getClass().getSimpleName().equals(className)) {
+                    return (T) plugin;
+                }
+            }
+            return null;
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <T extends Plugin> T getLicensedExact(String className, Configuration configuration) {
+            for (int i = 0; i < aotPlugins.length; i++) {
+                var plugin = aotPlugins[i];
+                if (plugin.getClass().getSimpleName().equals(className)) {
+                    if (plugin.isLicensed(configuration)) {
+                        return (T) plugin;
+                    }
+                }
+            }
+            return null;
         }
 
         @Override
