@@ -136,6 +136,7 @@ public interface JdbcDatabaseConfig {
         hikariConfig.setSchema(config.schema());
         hikariConfig.setDataSourceProperties(config.dsProperties());
         hikariConfig.setRegisterMbeans(false);
+        hikariConfig.setMinimumIdle(1);
         var jdbcUrl = config.jdbcUrl();
         hikariConfig.setJdbcUrl(jdbcUrl);
         if (jdbcUrl.startsWith("jdbc:postgresql:")) {

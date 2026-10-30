@@ -27,11 +27,19 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
 
     static {
         try {
+            Class.forName("org.postgresql.Driver");
             Class.forName("com.zaxxer.hikari.pool.ProxyConnection");
+            Class.forName("com.zaxxer.hikari.pool.ProxyStatement");
+            Class.forName("com.zaxxer.hikari.pool.ProxyPreparedStatement");
+            Class.forName("com.zaxxer.hikari.pool.ProxyResultSet");
+            Class.forName("com.zaxxer.hikari.util.ConcurrentBag");
+            Class.forName("com.zaxxer.hikari.pool.HikariPool$PoolInitializationException");
+            Class.forName("java.util.concurrent.ScheduledThreadPoolExecutor");
+            Class.forName("java.util.concurrent.ThreadPoolExecutor$Worker");
+            java.util.logging.Logger.getLogger("org.postgresql");
         } catch (ClassNotFoundException ignored) {
         }
     }
-
     private final JdbcDatabaseConfig databaseConfig;
     private final HikariDataSource dataSource;
     private final DatabaseTelemetry telemetry;
@@ -52,9 +60,6 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
         var threadFactory = Thread.ofVirtual().name("hikari-vt-", 1).factory();
         hikariConfig.setThreadFactory(threadFactory);
 
-        var executor = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(threadFactory);
-        hikariConfig.setScheduledExecutor(executor);
-
         if (this.databaseConfig.telemetry().metrics().driverMetrics()) {
             hikariConfig.setMetricRegistry(this.telemetry.meterRegistry());
         }
@@ -63,22 +68,7 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
 
     @Override
     public void init() throws SQLException {
-        if (this.databaseConfig.initializationFailTimeout() != null) {
-            logger.debug("JdbcDataSource pool '{}' starting...", databaseConfig.poolName());
-            var started = System.nanoTime();
-
-            try (var connection = this.dataSource.getConnection()) {
-                connection.isValid((int) this.databaseConfig.initializationFailTimeout().toMillis());
-            } catch (SQLException e) {
-                throw new IllegalStateException("JdbcDataSource pool '%s' failed to start due to: %s; check database availability, credentials, JDBC URL, and driver configuration".formatted(
-                    databaseConfig.poolName(), e.getMessage()), e);
-            }
-
-            logger.info("JdbcDataSource pool '{}' started in {}", databaseConfig.poolName(), TimeUtils.tookForLogging(started));
-        } else {
-            logger.debug("JdbcDataSource pool '{}' initialization is skipped cause `initializationFailTimeout` is not specified...",
-                databaseConfig.poolName());
-        }
+        logger.info("JdbcDataSource pool '{}' is hot and ready.", databaseConfig.poolName());
     }
 
     @Override
