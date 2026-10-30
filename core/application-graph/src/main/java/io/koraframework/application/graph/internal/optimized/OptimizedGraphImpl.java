@@ -226,12 +226,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
 
         var size = draw.size();
-        var dependentNodes = new BitSet(size);
+        var dependentNodes = new boolean[size];
 
         if (isFullInit) {
-            dependentNodes.set(0, size);
+            Arrays.fill(dependentNodes, true);
         } else {
-            dependentNodes.set(startFrom);
+            dependentNodes[startFrom] = true;
             var rEdges = draw.getRefreshEdges();
             var rOffsets = draw.getRefreshOffsets();
             var iEdges = draw.getInterceptorEdges();
@@ -242,7 +242,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 var start = rOffsets[i];
                 var end = rOffsets[i + 1];
                 for (var j = start; j < end; j++) {
-                    if (dependentNodes.get(rEdges[j])) {
+                    if (dependentNodes[rEdges[j]]) {
                         dependsOnChanged = true;
                         break;
                     }
@@ -251,7 +251,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                     start = iOffsets[i];
                     end = iOffsets[i + 1];
                     for (var j = start; j < end; j++) {
-                        if (dependentNodes.get(iEdges[j])) {
+                        if (dependentNodes[iEdges[j]]) {
                             dependsOnChanged = true;
                             break;
                         }
@@ -259,12 +259,12 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 }
 
                 if (dependsOnChanged) {
-                    dependentNodes.set(i);
+                    dependentNodes[i] = true;
                 }
             }
 
             for (var i = size - 1; i >= startFrom; i--) {
-                if (dependentNodes.get(i)) {
+                if (dependentNodes[i]) {
                     var oldInstance = OBJECTS_VH.getVolatile(graphObjects, i);
                     if (oldInstance != null && !(oldInstance instanceof ConditionFailedValue)) {
                         try {
@@ -311,7 +311,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         var localVisitedCache = new short[size];
 
         for (short i = 0; i < size; i++) {
-            if (i < startFrom || !dependentNodes.get(i)) {
+            if (i < startFrom || !dependentNodes[i]) {
                 continue;
             }
             totalDependentTasks++;
@@ -322,25 +322,27 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             var end = cOffsets[i + 1];
             for (var j = start; j < end; j++) {
                 var depIdx = cEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx) && localVisitedCache[depIdx] != iterId) {
+                if (depIdx >= startFrom && dependentNodes[depIdx] && localVisitedCache[depIdx] != iterId) {
                     localVisitedCache[depIdx] = iterId;
                     depCount++;
                 }
             }
-            start = rOffsets[i];
-            end = rOffsets[i + 1];
-            for (var j = start; j < end; j++) {
-                var depIdx = rEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx) && localVisitedCache[depIdx] != iterId) {
-                    localVisitedCache[depIdx] = iterId;
-                    depCount++;
+            if (start != rOffsets[i] || end != rOffsets[i + 1]) {
+                start = rOffsets[i];
+                end = rOffsets[i + 1];
+                for (int j = start; j < end; j++) {
+                    var depIdx = rEdges[j];
+                    if (depIdx >= startFrom && dependentNodes[depIdx] && localVisitedCache[depIdx] != iterId) {
+                        localVisitedCache[depIdx] = iterId;
+                        depCount++;
+                    }
                 }
             }
             start = iOffsets[i];
             end = iOffsets[i + 1];
-            for (var j = start; j < end; j++) {
+            for (int j = start; j < end; j++) {
                 var depIdx = iEdges[j];
-                if (depIdx >= startFrom && dependentNodes.get(depIdx) && localVisitedCache[depIdx] != iterId) {
+                if (depIdx >= startFrom && dependentNodes[depIdx] && localVisitedCache[depIdx] != iterId) {
                     localVisitedCache[depIdx] = iterId;
                     depCount++;
                 }
@@ -361,13 +363,13 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         mainThread = Thread.currentThread();
 
         for (short i = startFrom; i < size; i++) {
-            if (dependentNodes.get(i)) {
+            if (dependentNodes[i]) {
                 nodeCreationStates.set(i, 0);
             }
         }
 
         for (var i = startFrom; i < size; i++) {
-            if (dependentNodes.get(i) && tasks[i] != null && tasks[i].remainingDeps.get() == 0) {
+            if (dependentNodes[i] && tasks[i] != null && tasks[i].remainingDeps.get() == 0) {
                 final var task = tasks[i];
                 // println(" Spawning starter Thread for Node " + task.index);
                 Thread.ofVirtual().start(new VirtualThreadTask(this, task, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks));
@@ -427,7 +429,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         }
 
         if (!nodeCreationStates.compareAndSet(targetIndex, 0, 1)) {
-            var currentState = nodeCreationStates.get(targetIndex);
+            // var currentState = nodeCreationStates.get(targetIndex);
             // println("[" + threadName + "] Node " + targetIndex + " failed nodeCreationStates CAS (0 -> 1), current state=" + currentState);
             decrementGlobalTasks(1, threadName, targetIndex, " (skipped duplicate state)");
             notifyDownstreamConsumers(targetIndex, startFrom, isFullInit, isDebug, isTrace, tmpGraph, tasks, threadName, " (skipped duplicate state)");
@@ -512,8 +514,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
             return;
         }
 
-        var notified = new BitSet(draw.size());
-
         for (var k = dsStart; k < dsEnd; k++) {
             var nextIdx = dsEdges[k];
             var nextTask = tasks[nextIdx];
@@ -521,12 +521,6 @@ public final class OptimizedGraphImpl implements InitializedGraph {
                 // println("[" + threadName + "] Node " + targetIndex + " found null task for downstream index " + nextIdx + ", skipping");
                 continue;
             }
-
-            if (notified.get(nextIdx)) {
-                // println("[" + threadName + "] Node " + targetIndex + " already notified downstream index " + nextIdx + " in this pass, skipping duplicate edge");
-                continue;
-            }
-            notified.set(nextIdx);
 
             var remaining = nextTask.remainingDeps.decrementAndGet();
             // println("[" + threadName + "] Node " + targetIndex + logSuffix + " decremented Node " + nextIdx + " remainingDeps -> " + remaining);
