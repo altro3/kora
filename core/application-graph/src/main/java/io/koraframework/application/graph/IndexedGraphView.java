@@ -20,8 +20,7 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> T get(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        var oldIdx = nodeImpl.index;
-        var subIdx = seenMap[oldIdx];
+        var subIdx = seenMap[nodeImpl.index];
         return (T) delegate.get(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 
@@ -29,8 +28,7 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> ValueOf<T> valueOf(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        var oldIdx = nodeImpl.index;
-        var subIdx = seenMap[oldIdx];
+        var subIdx = seenMap[nodeImpl.index];
         return (ValueOf<T>) delegate.valueOf(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 
@@ -38,11 +36,9 @@ public final class IndexedGraphView implements RefreshableGraph {
     @SuppressWarnings("unchecked")
     public <T> PromiseOf<T> promiseOf(Node<? extends T> node) {
         var nodeImpl = (NodeImpl<?>) node;
-        var oldIdx = nodeImpl.index;
-        var subIdx = seenMap[oldIdx];
+        var subIdx = seenMap[nodeImpl.index];
         return (PromiseOf<T>) delegate.promiseOf(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
-
 
     @Override
     public <N, V> PromiseOf<V> getOnePromiseOf(NodeWithMapper<N, V>... nodes) {
@@ -52,8 +48,7 @@ public final class IndexedGraphView implements RefreshableGraph {
     @Override
     public void refresh(Node<?> fromNode) {
         var nodeImpl = (NodeImpl<?>) fromNode;
-        var oldIdx = nodeImpl.index;
-        var subIdx = seenMap[oldIdx];
+        var subIdx = seenMap[nodeImpl.index];
         delegate.refresh(nodeImpl.graphDraw.getNodeByIndex(subIdx));
     }
 }

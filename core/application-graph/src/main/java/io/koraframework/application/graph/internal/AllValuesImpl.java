@@ -2,20 +2,20 @@ package io.koraframework.application.graph.internal;
 
 import io.koraframework.application.graph.*;
 
-import java.util.ArrayList;
-import java.util.Iterator;
-import java.util.function.Function;
+import java.util.*;
+import java.util.function.*;
 
 public final class AllValuesImpl<T> implements All<ValueOf<T>> {
     private final Graph graph;
-    private final ArrayList<ValueWrapper<?, T>> values;
+    private final ValueWrapper<?, T>[] values;
 
     @SafeVarargs
+    @SuppressWarnings("unchecked")
     public AllValuesImpl(Graph graph, NodeWithMapper<?, T>... nodes) {
         this.graph = graph;
-        this.values = new ArrayList<>(nodes.length);
-        for (var node : nodes) {
-            this.values.add(new ValueWrapper<>(graph, node));
+        values = new ValueWrapper[nodes.length];
+        for (int i = 0; i < nodes.length; i++) {
+            values[i] = new ValueWrapper<>(graph, nodes[i]);
         }
     }
 
@@ -38,9 +38,9 @@ public final class AllValuesImpl<T> implements All<ValueOf<T>> {
 
         @SuppressWarnings("unchecked")
         public ValueWrapper(Graph graph, NodeWithMapper<N, V> element) {
-            this.value = graph.valueOf(element.node());
-            this.mapper = (Function<Object, Object>) element.mapper();
-            this.node = element.node();
+            value = graph.valueOf(element.node());
+            mapper = (Function<Object, Object>) element.mapper();
+            node = element.node();
         }
 
         public Node<? extends N> node() {
@@ -49,20 +49,10 @@ public final class AllValuesImpl<T> implements All<ValueOf<T>> {
 
         @SuppressWarnings("unchecked")
         public ValueOf<V> get() {
-            return (ValueOf<V>) value.map(new WrapperMapper(mapper));
-        }
-    }
-
-    private static final class WrapperMapper implements Function<Object, Object> {
-        private final Function<Object, Object> mapper;
-
-        public WrapperMapper(Function<Object, Object> mapper) {
-            this.mapper = mapper;
-        }
-
-        @Override
-        public Object apply(Object n) {
-            return mapper.apply(n);
+            if (mapper == null) {
+                return (ValueOf<V>) value;
+            }
+            return (ValueOf<V>) value.map(mapper);
         }
     }
 }

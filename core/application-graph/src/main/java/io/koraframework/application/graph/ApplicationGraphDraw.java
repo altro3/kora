@@ -101,7 +101,7 @@ public class ApplicationGraphDraw {
         short @Nullable [] refreshDependencies,
         short @Nullable [] downstreamConsumers,
         NodeImpl<?> @Nullable [] interceptors,
-        Graph.Factory<? extends T> factory
+        Graph.Factory<?> factory
     ) {
         var currentIndex = size;
 
@@ -113,7 +113,12 @@ public class ApplicationGraphDraw {
         createOffsets[currentIndex + 1] = createEdgesSize;
 
         refreshOffsets[currentIndex] = refreshEdgesSize;
-        if (refreshDependencies != null && refreshDependencies.length > 0) {
+        if (refreshDependencies == null) {
+            if (createDependencies != null && createDependencies.length > 0) {
+                System.arraycopy(createDependencies, 0, refreshEdges, refreshEdgesSize, createDependencies.length);
+                refreshEdgesSize += (short) createDependencies.length;
+            }
+        } else if (refreshDependencies.length > 0) {
             System.arraycopy(refreshDependencies, 0, refreshEdges, refreshEdgesSize, refreshDependencies.length);
             refreshEdgesSize += (short) refreshDependencies.length;
         }

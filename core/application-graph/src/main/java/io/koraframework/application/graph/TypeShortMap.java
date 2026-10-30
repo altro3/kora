@@ -1,7 +1,7 @@
 package io.koraframework.application.graph;
 
-import java.lang.reflect.Type;
-import java.util.Arrays;
+import java.lang.reflect.*;
+import java.util.*;
 
 public final class TypeShortMap {
     private Type[] keys;
@@ -12,11 +12,20 @@ public final class TypeShortMap {
 
     public TypeShortMap(short capacity) {
         int tableSize = 1;
-        while (tableSize < capacity) tableSize <<= 1;
+        while (tableSize < capacity) {
+            tableSize <<= 1;
+        }
         keys = new Type[tableSize];
         values = new short[tableSize];
         Arrays.fill(values, (short) -1);
         mask = tableSize - 1;
+    }
+
+    private TypeShortMap(Type[] keys, short[] values, int mask, short size) {
+        this.keys = keys;
+        this.values = values;
+        this.mask = mask;
+        this.size = size;
     }
 
     public void put(Type key, short value) {
@@ -48,19 +57,18 @@ public final class TypeShortMap {
     }
 
     public TypeShortMap copy() {
-        TypeShortMap copy = new TypeShortMap((short) keys.length);
-        System.arraycopy(keys, 0, copy.keys, 0, keys.length);
-        System.arraycopy(values, 0, copy.values, 0, values.length);
-        copy.mask = mask;
-        copy.size = size;
-        return copy;
+        var newKeys = new Type[keys.length];
+        var newValues = new short[values.length];
+        System.arraycopy(keys, 0, newKeys, 0, keys.length);
+        System.arraycopy(values, 0, newValues, 0, values.length);
+        return new TypeShortMap(newKeys, newValues, mask, size);
     }
 
     private void rehash() {
         Type[] oldKeys = keys;
         short[] oldValues = values;
         int newCapacity = oldKeys.length << 1;
-        
+
         keys = new Type[newCapacity];
         values = new short[newCapacity];
         Arrays.fill(values, (short) -1);

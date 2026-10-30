@@ -1,11 +1,9 @@
 package io.koraframework.application.graph;
 
-import io.koraframework.application.graph.exception.MoreThanOneConditionalNodeMatches;
-import io.koraframework.application.graph.exception.NoneOfConditionalNodeMatches;
-import org.jspecify.annotations.Nullable;
+import io.koraframework.application.graph.exception.*;
+import org.jspecify.annotations.*;
 
-import java.util.ArrayList;
-import java.util.Map;
+import java.util.*;
 
 public interface Graph {
     ApplicationGraphDraw draw();
@@ -24,7 +22,7 @@ public interface Graph {
         if (condition != null && condition.apply(this) instanceof GraphCondition.ConditionResult.Failed) {
             return null;
         }
-        return this.get(node);
+        return get(node);
     }
 
     <T> ValueOf<T> valueOf(Node<? extends T> node);
@@ -34,7 +32,7 @@ public interface Graph {
     @SuppressWarnings("unchecked")
     default <N, V> V getOneOf(NodeWithMapper<N, V>... nodes) {
         var node = getOneNodeMatchingCondition(this, nodes);
-        var value = this.get(node.node());
+        var value = get(node.node());
         return node.mapper().apply(value);
     }
 
@@ -77,35 +75,59 @@ public interface Graph {
 
     @SafeVarargs
     private static <T, V> NodeWithMapper<T, V> getOneNodeMatchingCondition(Graph graph, NodeWithMapper<T, V>... nodes) {
-        var lastValue = (@Nullable NodeWithMapper<T, V>) null;
-        var errors = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Failed>>(nodes.length);
-        var matchedNodes = new ArrayList<NodeWithMapper<? extends T, V>>(nodes.length);
-        var matchReasons = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Matched>>(nodes.length);
-        for (var node : nodes) {
+        var matched = (@Nullable NodeWithMapper<T, V>) null;
+        var matchCount = 0;
+
+        for (int i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
             var condition = node.node().condition();
             if (condition == null) {
-                lastValue = node;
-                matchedNodes.add(node);
+                matched = node;
+                matchCount++;
+            } else {
+                var res = condition.apply(graph);
+                if (res instanceof GraphCondition.ConditionResult.Matched) {
+                    matched = node;
+                    matchCount++;
+                }
+            }
+        }
+
+        if (matchCount == 1) {
+            return matched;
+        }
+
+        return handleConditionalErrors(graph, nodes, matchCount);
+    }
+
+    private static <T, V> NodeWithMapper<T, V> handleConditionalErrors(Graph graph, NodeWithMapper<T, V>[] nodes, int matchCount) {
+        if (matchCount == 0) {
+            var errors = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Failed>>(nodes.length);
+            for (int i = 0; i < nodes.length; i++) {
+                var node = nodes[i];
+                var condition = node.node().condition();
+                if (condition != null) {
+                    var res = condition.apply(graph);
+                    if (res instanceof GraphCondition.ConditionResult.Failed failed) {
+                        errors.add(Map.entry(node.node(), failed));
+                    }
+                }
+            }
+            throw new NoneOfConditionalNodeMatches(errors);
+        }
+        var matchReasons = new ArrayList<Map.Entry<Node<?>, GraphCondition.ConditionResult.Matched>>(nodes.length);
+        for (int i = 0; i < nodes.length; i++) {
+            var node = nodes[i];
+            var condition = node.node().condition();
+            if (condition == null) {
                 matchReasons.add(Map.entry(node.node(), new GraphCondition.ConditionResult.Matched("Node %s has no conditions".formatted(node.toString()))));
             } else {
                 var res = condition.apply(graph);
-                if (res instanceof GraphCondition.ConditionResult.Failed failed) {
-                    errors.add(Map.entry(node.node(), failed));
-                } else if (res instanceof GraphCondition.ConditionResult.Matched matched) {
-                    lastValue = node;
-                    matchedNodes.add(node);
+                if (res instanceof GraphCondition.ConditionResult.Matched matched) {
                     matchReasons.add(Map.entry(node.node(), matched));
                 }
             }
         }
-        if (matchedNodes.size() == 1) {
-            assert lastValue != null;
-            return lastValue;
-        }
-        if (matchedNodes.isEmpty()) {
-            throw new NoneOfConditionalNodeMatches(errors);
-        } else {
-            throw new MoreThanOneConditionalNodeMatches(matchReasons);
-        }
+        throw new MoreThanOneConditionalNodeMatches(matchReasons);
     }
 }

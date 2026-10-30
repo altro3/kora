@@ -1,7 +1,7 @@
 package io.koraframework.application.graph;
 
-import java.util.*;
-import java.util.function.*;
+import java.util.Objects;
+import java.util.function.Function;
 
 public final class NodeWithMapper<N, V> {
 
@@ -36,15 +36,20 @@ public final class NodeWithMapper<N, V> {
 
     @Override
     public boolean equals(Object obj) {
-        if (this == obj) return true;
-        if (obj == null || getClass() != obj.getClass()) return false;
-        NodeWithMapper<?, ?> other = (NodeWithMapper<?, ?>) obj;
-        return Objects.equals(node, other.node) && Objects.equals(mapper, other.mapper);
+        if (this == obj) {
+            return true;
+        }
+        if (obj instanceof NodeWithMapper) {
+            var other = (NodeWithMapper<?, ?>) obj;
+            return Objects.equals(node, other.node) && Objects.equals(mapper, other.mapper);
+        }
+        return false;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(node, mapper);
+        var h = 31 + (node == null ? 0 : node.hashCode());
+        return 31 * h + (mapper == null ? 0 : mapper.hashCode());
     }
 
     @Override

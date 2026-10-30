@@ -1,8 +1,7 @@
 package io.koraframework.application.graph;
 
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
-import java.util.Arrays;
+import java.lang.reflect.*;
+import java.util.*;
 
 public class TypeRef<T> implements ParameterizedType {
     private final Class<T> rawType;
@@ -14,16 +13,22 @@ public class TypeRef<T> implements ParameterizedType {
         this.actualTypeArguments = actualTypeArguments;
         int result = rawType.hashCode();
         result = 31 * result + Arrays.hashCode(actualTypeArguments);
-        this.hashCode = result;
+        hashCode = result;
     }
 
     @SuppressWarnings("unchecked")
     public static <T> TypeRef<T> of(Class<? super T> rawType, Type... actualTypeArguments) {
         var args = new Type[actualTypeArguments.length];
         for (int i = 0; i < args.length; i++) {
-            args[i] = actualTypeArguments[i] instanceof TypeRef<?> typeRef && typeRef.actualTypeArguments.length == 0
-                ? typeRef.rawType
-                : actualTypeArguments[i];
+            var arg = actualTypeArguments[i];
+            if (arg instanceof TypeRef) {
+                var typeRef = (TypeRef<?>) arg;
+                if (typeRef.actualTypeArguments.length == 0) {
+                    args[i] = typeRef.rawType;
+                    continue;
+                }
+            }
+            args[i] = arg;
         }
         return new TypeRef<>((Class<T>) rawType, args);
     }
@@ -48,7 +53,8 @@ public class TypeRef<T> implements ParameterizedType {
         if (this == o) {
             return true;
         }
-        if (o instanceof ParameterizedType that) {
+        if (o instanceof ParameterizedType) {
+            var that = (ParameterizedType) o;
             if (rawType != that.getRawType()) {
                 return false;
             }
@@ -56,8 +62,12 @@ public class TypeRef<T> implements ParameterizedType {
                 return false;
             }
             return Arrays.equals(actualTypeArguments, that.getActualTypeArguments());
-        } else if (o instanceof Class<?> type && actualTypeArguments.length == 0) {
-            return rawType.equals(type);
+        }
+        if (o instanceof Class) {
+            var type = (Class<?>) o;
+            if (actualTypeArguments.length == 0) {
+                return rawType.equals(type);
+            }
         }
         return false;
     }
@@ -75,8 +85,9 @@ public class TypeRef<T> implements ParameterizedType {
         }
         var sb = new StringBuilder(rawTypeString).append("<");
         for (int i = 0; i < actualTypeArguments.length; i++) {
-            Type t = actualTypeArguments[i];
-            if (t instanceof Class<?> c) {
+            var t = actualTypeArguments[i];
+            if (t instanceof Class) {
+                var c = (Class<?>) t;
                 sb.append(c.getName());
             } else {
                 sb.append(t.getTypeName());

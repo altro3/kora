@@ -1,5 +1,6 @@
 package io.koraframework.kora.app.annotation.processor;
 
+import io.koraframework.kora.app.annotation.processor.component.ResolvedComponent;
 import io.koraframework.kora.app.annotation.processor.extension.Extensions;
 
 import javax.annotation.processing.Filer;
@@ -7,6 +8,7 @@ import javax.annotation.processing.Messager;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
+import java.util.List;
 
 public class ProcessingContext {
     public final Types types;
@@ -16,6 +18,10 @@ public class ProcessingContext {
     public final ServiceTypesHelper serviceTypeHelper;
     public final Extensions extensions;
     public final DependencyModuleHintProvider dependencyModuleHintProvider;
+
+    public List<ResolvedComponent> components;
+    public int componentsPerPartition;
+    public int currentPartition;
 
     public ProcessingContext(ProcessingEnvironment env) {
         this.types = env.getTypeUtils();

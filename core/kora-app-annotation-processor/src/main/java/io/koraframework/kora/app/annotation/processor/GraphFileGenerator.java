@@ -48,8 +48,8 @@ public class GraphFileGenerator {
         for (int k = startIdx; k < endIdx; k++) {
             var comp = components.get(k);
             TypeName compTypeName = TypeName.get(comp.type()).box();
+            String typeKey = compTypeName.toString();
             CodeBlock typeCode = buildTypeInitializer(typeRefClassName, compTypeName);
-            String typeKey = typeCode.toString();
 
             cache.types.computeIfAbsent(typeKey, _ -> new CacheEntry<>(typeCode)).count++;
             if (comp.tag() != null) {
@@ -90,7 +90,7 @@ public class GraphFileGenerator {
                 return CodeBlock.of("new $T(null, null)", koraWildcardClassName);
             }
         } else if (typeName instanceof ArrayTypeName atn) {
-            return CodeBlock.of("java.lang.reflect.Array.newInstance($L, 0).getClass()", buildTypeInitializer(typeRefClassName, atn.componentType()));
+            return CodeBlock.of("$T.class", atn);
         } else {
             return CodeBlock.of("$T.class", typeName);
         }
@@ -100,6 +100,9 @@ public class GraphFileGenerator {
         var packageElement = (PackageElement) classElement.getEnclosingElement();
         var implClass = ClassName.get(packageElement.getQualifiedName().toString(), "$" + classElement.getSimpleName() + "Impl");
         var graphName = classElement.getSimpleName() + "Graph";
+
+        ctx.components = this.components;
+        ctx.componentsPerPartition = COMPONENTS_PER_PARTITION;
 
         var classBuilder = TypeSpec.classBuilder(graphName)
             .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
@@ -114,8 +117,12 @@ public class GraphFileGenerator {
         var expectedInterceptorEdges = 0;
 
         for (var component : components) {
-            expectedCreateEdges += countDependencies(getCreateDependencies(component));
-            expectedRefreshEdges += countDependencies(getRefreshDependencies(component));
+            var createDeps = getCreateDependencies(component);
+            var refreshDeps = getRefreshDependencies(component, createDeps);
+            expectedCreateEdges += countDependencies(createDeps);
+            expectedRefreshEdges += refreshDeps.toString().equals("null")
+                ? countDependencies(createDeps)
+                : countDependencies(refreshDeps);
             expectedInterceptorEdges += interceptors.interceptorsFor(component).size();
         }
 
@@ -136,13 +143,14 @@ public class GraphFileGenerator {
                 expectedNodes, expectedCreateEdges, expectedRefreshEdges, expectedInterceptorEdges, expectedDownstreamEdges);
 
         for (var p = 0; p < totalPartitions; p++) {
-            var partitionClassName = ClassName.get(packageElement.getQualifiedName().toString() + "." + graphName, "Partition" + p);
+            var partitionClassName = ClassName.get(packageElement.getQualifiedName() + "." + graphName, "Partition" + p);
             baseStaticBlock.addStatement("new $T().init(graphDraw, impl)", partitionClassName);
         }
         classBuilder.addStaticBlock(baseStaticBlock.build());
 
         var typeRefClassName = ClassName.get("io.koraframework.application.graph", "TypeRef");
         for (var p = 0; p < totalPartitions; p++) {
+            ctx.currentPartition = p;
             var startIdx = p * COMPONENTS_PER_PARTITION;
             var endIdx = Math.min(expectedNodes, startIdx + COMPONENTS_PER_PARTITION);
 
@@ -184,11 +192,15 @@ public class GraphFileGenerator {
 
             for (var i = startIdx; i < endIdx; i++) {
                 var component = components.get(i);
+                //                var typeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
                 var componentTypeName = TypeName.get(component.type()).box();
-
-                var typeCode = buildTypeInitializer(typeRefClassName, componentTypeName);
-                var typeEntry = partitionCache.types.get(typeCode.toString());
-                var typeExpression = (typeEntry != null && typeEntry.assignedIndex != null) ? "type_" + typeEntry.assignedIndex : typeCode.toString();
+                var typeEntry = partitionCache.types.get(componentTypeName.toString());
+                Object typeExpression;
+                if (typeEntry != null && typeEntry.assignedIndex != null) {
+                    typeExpression = "type_" + typeEntry.assignedIndex;
+                } else {
+                    typeExpression = buildTypeInitializer(typeRefClassName, componentTypeName);
+                }
 
                 var tagCode = CodeBlock.of("null");
                 if (component.tag() != null) {
@@ -197,7 +209,7 @@ public class GraphFileGenerator {
                 }
 
                 var createDeps = getCreateDependencies(component);
-                var refreshDeps = getRefreshDependencies(component);
+                var refreshDeps = getRefreshDependencies(component, createDeps);
                 var interceptorsFor = interceptors.interceptorsFor(component);
 
                 CodeBlock interceptorBuilder;
@@ -229,11 +241,10 @@ public class GraphFileGenerator {
                     downstreamCode = cb.build();
                 }
 
-                initMethodBuilder.addStatement("$L = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, ($T<? extends $T>) ($T<?>) INSTANCE)",
-                    component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder,
-                    ClassName.get("io.koraframework.application.graph.Graph", "Factory"), componentTypeName,
-                    ClassName.get("io.koraframework.application.graph.Graph", "Factory")
-                );                var declaration = component.declaration();
+                initMethodBuilder.addStatement("$L = graphDraw.addNode($L, $L, $L, $L, $L, $L, $L, INSTANCE)",
+                    component.fieldName(), typeExpression, tagCode, conditionCode, createDeps, refreshDeps, downstreamCode, interceptorBuilder
+                );
+                var declaration = component.declaration();
                 var dependenciesCode = generateDependenciesCode(ctx, component, 0, p);
                 var innerCodeBlock = CodeBlock.builder();
 
@@ -318,7 +329,7 @@ public class GraphFileGenerator {
                 .returns(Object.class)
                 .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")
                 .addException(ClassName.get(Exception.class))
-                .addStatement("throw new $T($S)", UnsupportedOperationException.class, "Используйте get(graph, index)");
+                .addStatement("throw new $T($S)", UnsupportedOperationException.class, "Use get(graph, index)");
 
             var factoryGetIndexedMethod = MethodSpec.methodBuilder("get")
                 .addAnnotation(Override.class)
@@ -350,7 +361,13 @@ public class GraphFileGenerator {
             .addStatement("return graphDraw");
         classBuilder.addMethod(supplierStaticMethodBuilder.build());
 
-        return JavaFile.builder(packageElement.getQualifiedName().toString(), classBuilder.build()).build();
+        return JavaFile.builder(packageElement.getQualifiedName().toString(), classBuilder.build())
+            .addStaticImport(CommonClassNames.nodeWithMapper, "node")
+            .addStaticImport(CommonClassNames.nodeWithMapper, "unwrap")
+            .addStaticImport(CommonClassNames.all, "all")
+            .addStaticImport(CommonClassNames.all, "allValues")
+            .addStaticImport(CommonClassNames.all, "allPromises")
+            .build();
     }
 
     private CodeBlock generateDependenciesCode(ProcessingContext ctx, ResolvedComponent component, int startFrom, int currentPartition) {
@@ -360,18 +377,12 @@ public class GraphFileGenerator {
         }
         var b = CodeBlock.builder();
         for (int i = startFrom, dependenciesSize = resolvedDependencies.size(); i < dependenciesSize; i++) {
-            if (i > startFrom) b.add(", ");
+            if (i > startFrom) {
+                b.add(", ");
+            }
             var resolvedDependency = resolvedDependencies.get(i);
             var depCode = resolvedDependency.write(ctx);
-            var depStr = depCode.toString();
-            for (var comp : components) {
-                var globalIdx = components.indexOf(comp);
-                var targetPartition = globalIdx / COMPONENTS_PER_PARTITION;
-                if (targetPartition != currentPartition) {
-                    depStr = depStr.replaceAll("\\b" + comp.fieldName() + "\\b", "Partition" + targetPartition + "." + comp.fieldName());
-                }
-            }
-            b.add("$L", CodeBlock.of(depStr));
+            b.add("$L", depCode);
         }
         return b.build();
     }
@@ -604,7 +615,7 @@ public class GraphFileGenerator {
         return b.build();
     }
 
-    private CodeBlock getRefreshDependencies(ResolvedComponent component) {
+    private CodeBlock getRefreshDependencies(ResolvedComponent component, CodeBlock createDeps) {
         var indexList = new ArrayList<String>();
 
         if (component.declaration().condition() != null) {
@@ -640,7 +651,6 @@ public class GraphFileGenerator {
                 }
                 case ComponentDependency.AllOfDependency allOfDependency -> {
                     var claimType = allOfDependency.claim().claimType();
-                    // Исключаем как ALL_OF_PROMISE, так и ALL_OF_VALUE (коллекции ValueOf) из refresh-зависимостей
                     if (claimType != DependencyClaim.DependencyClaimType.ALL_OF_PROMISE && claimType != DependencyClaim.DependencyClaimType.ALL_OF_VALUE) {
                         for (var d : allOfDependency.getResolvedDependencies()) {
                             int idx = components.indexOf(d.component());
@@ -679,6 +689,12 @@ public class GraphFileGenerator {
             b.add("$L", indexList.get(i));
         }
         b.add("}");
-        return b.build();
+        CodeBlock refreshDeps = b.build();
+
+        if (createDeps != null && createDeps.toString().equals(refreshDeps.toString())) {
+            return CodeBlock.of("null");
+        }
+
+        return refreshDeps;
     }
 }

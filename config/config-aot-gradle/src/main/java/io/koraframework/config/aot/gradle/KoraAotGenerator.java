@@ -56,12 +56,12 @@ public class KoraAotGenerator {
             boolean hasConfig = processConfig(scanResult);
             boolean hasFlyway = checkFlywayMigrations(scanResult);
 
-            if (hasFlyway) {
-                logger.lifecycle("[Kora-Aot] Flyway migrations detected. Generating AOT Flyway module.");
-                generateAotFlywayModule(scanResult, outputDir);
-            } else {
-                logger.lifecycle("[Kora-Aot] No Flyway migrations found. Skipping Flyway AOT generation.");
-            }
+//            if (hasFlyway) {
+//                logger.lifecycle("[Kora-Aot] Flyway migrations detected. Generating AOT Flyway module.");
+//                generateAotFlywayModule(scanResult, outputDir);
+//            } else {
+//                logger.lifecycle("[Kora-Aot] No Flyway migrations found. Skipping Flyway AOT generation.");
+//            }
 
             if (!hasConfig && !hasFlyway) {
                 logger.lifecycle("[Kora-Aot] Nothing to generate. Skipping generation.");
@@ -139,7 +139,7 @@ public class KoraAotGenerator {
 
         var extendsList = new ArrayList<String>();
         if (hasConfig) extendsList.add("AotConfigModule");
-        if (hasFlyway) extendsList.add("AotFlywayJdbcDatabaseModule");
+//        if (hasFlyway) extendsList.add("AotFlywayJdbcDatabaseModule");
 
         String extendsClause = extendsList.isEmpty() ? "" : "extends " + String.join(", ", extendsList);
 
