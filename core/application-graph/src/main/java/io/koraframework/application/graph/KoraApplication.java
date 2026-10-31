@@ -61,6 +61,10 @@ public final class KoraApplication {
         thread.setName("kora-shutdown");
         Runtime.getRuntime().addShutdownHook(thread);
 
+        if (Boolean.getBoolean("kora.exit.after.init")) {
+            System.exit(0);
+        }
+
         if (keepAlive) {
             keepAliveLock.lock();
             try {

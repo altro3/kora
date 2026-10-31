@@ -91,7 +91,7 @@ public interface JdbcDatabaseConfig {
      * @return Minimum number of idle ready connections in the Hikari pool.
      */
     default int minIdle() {
-        return 0;
+        return 1;
     }
 
     /**
@@ -136,7 +136,6 @@ public interface JdbcDatabaseConfig {
         hikariConfig.setSchema(config.schema());
         hikariConfig.setDataSourceProperties(config.dsProperties());
         hikariConfig.setRegisterMbeans(false);
-        hikariConfig.setMinimumIdle(1);
         var jdbcUrl = config.jdbcUrl();
         hikariConfig.setJdbcUrl(jdbcUrl);
         if (jdbcUrl.startsWith("jdbc:postgresql:")) {
