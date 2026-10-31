@@ -10,17 +10,6 @@ import java.util.function.*;
 
 public class ApplicationGraphDraw {
 
-    private static final String ANY_TAG_NAME = "io.koraframework.common.Tag.Any";
-    private static final @Nullable Class<?> ANY_TAG_CLASS;
-
-    static {
-        Class<?> clazz = null;
-        try {
-            clazz = Class.forName(ANY_TAG_NAME);
-        } catch (ClassNotFoundException _) {}
-        ANY_TAG_CLASS = clazz;
-    }
-
     private final Class<?> root;
     private final NodeImpl<?>[] graphNodes;
     private short size = 0;
@@ -184,7 +173,8 @@ public class ApplicationGraphDraw {
         }
 
         var result = new ArrayList<Node<?>>();
-        boolean isAnyTag = tag != null && tag == ANY_TAG_CLASS;
+        boolean isAnyTag = tag != null && "io.koraframework.common.Tag.Any".equals(tag.getName());
+
         while (current != -1) {
             var graphNode = graphNodes[current];
             if (isAnyTag || Objects.equals(tag, graphNode.tag())) {

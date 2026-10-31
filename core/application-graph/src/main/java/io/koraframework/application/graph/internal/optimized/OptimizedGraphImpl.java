@@ -15,8 +15,6 @@ import static io.koraframework.application.graph.GraphCondition.*;
 
 public final class OptimizedGraphImpl implements InitializedGraph {
 
-    private static final boolean KORA_GRAPH_DEBUG = Boolean.getBoolean("kora.graph.debug");
-    private static final long SLOW_NODE_INIT_THRESHOLD_NANOS = Long.parseLong(System.getProperty("kora.graph.slowNodeInitThresholdMillis", "100")) * 1_000_000L;
     private static final VarHandle OBJECTS_VH = MethodHandles.arrayElementVarHandle(Object[].class);
     private static final VarHandle CONDITION_VH = MethodHandles.arrayElementVarHandle(int[].class);
     private static final VarHandle GLOBAL_REMAINING_VH;
@@ -49,7 +47,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
         graphObjects = new Object[draw.size()];
         conditionResultsCache = new int[draw.size()];
         nodeCreationStates = new AtomicIntegerArray(draw.size());
-        if (KORA_GRAPH_DEBUG) {
+        if (Boolean.getBoolean("kora.graph.debug")) {
             logger = LoggerFactory.getLogger(draw.getRoot());
         }
     }
@@ -469,7 +467,7 @@ public final class OptimizedGraphImpl implements InitializedGraph {
 
             if (isDebug) {
                 var tookNanos = System.nanoTime() - start;
-                if (tookNanos > SLOW_NODE_INIT_THRESHOLD_NANOS) {
+                if (tookNanos > Long.parseLong(System.getProperty("kora.graph.slowNodeInitThresholdMillis", "100")) * 1_000_000L) {
                     ensureLogger().debug("Initialized node {} at index {} in {}ms", currentNode.type(), currentNode.index, tookNanos / 1_000_000);
                 }
             }

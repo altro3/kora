@@ -7,7 +7,6 @@ import io.koraframework.kora.app.annotation.processor.declaration.*;
 import io.koraframework.kora.app.annotation.processor.interceptor.*;
 
 import javax.lang.model.element.*;
-import java.time.ZoneId;
 import java.util.*;
 import java.util.function.*;
 
@@ -135,8 +134,6 @@ public class GraphFileGenerator {
         var totalPartitions = (expectedNodes + COMPONENTS_PER_PARTITION - 1) / COMPONENTS_PER_PARTITION;
 
         var baseStaticBlock = CodeBlock.builder()
-            .addStatement("var _ = $T.getenv($S)", System.class, "KORA_WARMUP_CHECK")
-            .addStatement("var _ = $T.systemDefault()", ZoneId.class)
             .addStatement("impl = new $T()", implClass)
             .addStatement("graphDraw = new $T($T.class, (short) $L, (short) $L, (short) $L, (short) $L, (short) $L)",
                 CommonClassNames.applicationGraphDraw, classElement,
@@ -144,7 +141,7 @@ public class GraphFileGenerator {
 
         for (var p = 0; p < totalPartitions; p++) {
             var partitionClassName = ClassName.get(packageElement.getQualifiedName() + "." + graphName, "Partition" + p);
-            baseStaticBlock.addStatement("new $T().init(graphDraw, impl)", partitionClassName);
+            baseStaticBlock.addStatement("$T.INSTANCE.init(graphDraw, impl)", partitionClassName);
         }
         classBuilder.addStaticBlock(baseStaticBlock.build());
 

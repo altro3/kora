@@ -26,18 +26,16 @@ import org.flywaydb.core.internal.jdbc.*;
 import org.flywaydb.core.internal.logging.slf4j.*;
 import org.flywaydb.core.internal.parser.*;
 import org.flywaydb.core.internal.plugin.*;
-import org.flywaydb.core.internal.proprietaryStubs.CherryPickSupportStub;
+import org.flywaydb.core.internal.proprietaryStubs.*;
 import org.flywaydb.core.internal.resolver.*;
 import org.flywaydb.core.internal.schemahistory.*;
 import org.flywaydb.core.internal.util.*;
 import org.flywaydb.database.postgresql.*;
 import org.slf4j.*;
-import org.slf4j.Logger;
 
 import java.sql.*;
 import java.util.*;
 import java.util.Date;
-import java.util.logging.*;
 
 public final class AotFlywayFactoryModule {
 
@@ -56,37 +54,6 @@ public final class AotFlywayFactoryModule {
     public AotFlywayJdbcDatabaseInterceptor flywayInterceptor(@Tag(Tag.Factory.class) FlywayConfig flywayConfig) {
         return new AotFlywayJdbcDatabaseInterceptor(flywayConfig);
     }
-
-    static {
-        try {
-            Class.forName("org.postgresql.Driver");
-            LogManager.getLogManager();
-
-            var cl = AotFlywayFactoryModule.class.getClassLoader();
-            var classesToWarmUp = List.of(
-                "org.flywaydb.database.postgresql.PostgreSQLDatabaseType",
-                "org.flywaydb.database.postgresql.PostgreSQLDatabase",
-                "org.flywaydb.core.internal.database.base.Database",
-                "org.flywaydb.core.internal.schemahistory.SchemaHistoryFactory",
-                "org.flywaydb.core.internal.resolver.CompositeMigrationResolver",
-                "org.flywaydb.core.internal.command.DbMigrate",
-                "org.flywaydb.database.postgresql.PostgreSQLAdvisoryLockTemplate",
-                "org.flywaydb.core.internal.configuration.models.ConfigurationModel",
-                "org.flywaydb.core.internal.configuration.resolvers.ResolvedEnvironment",
-                "org.flywaydb.core.api.pattern.MigrationPattern",
-                "org.flywaydb.core.api.pattern.ValidatePattern",
-                "org.postgresql.jdbc.PgDatabaseMetaData",
-                "org.postgresql.jdbc.TypeInfoCache",
-                "org.postgresql.core.v3.TypeTransferModeRegistry"
-            );
-
-            for (String className : classesToWarmUp) {
-                Class.forName(className, true, cl);
-            }
-        } catch (ClassNotFoundException ignored) {
-        }
-    }
-
 
     public static final class AotFlywayJdbcDatabaseInterceptor implements GraphInterceptor<JdbcDataSource> {
 
@@ -302,6 +269,8 @@ public final class AotFlywayFactoryModule {
             var sqlMig = new AotSqlAppliedMigration();
             var baseMig = new BaselineAppliedMigration();
             var cherrySupport = new CherryPickSupportStub();
+            var errorOverride = new ErrorOverridesSupportStub();
+            var execStrategy = new DefaultExecutionStrategy();
 
             aotPlugins = new Plugin[] {
                 postgresDatabaseType,
@@ -321,6 +290,8 @@ public final class AotFlywayFactoryModule {
             exactCache.put(cherrySupport.getClass(), cherrySupport);
             exactCache.put(DatabaseType.class, postgresDatabaseType);
             exactCache.put(ConfigurationExtension.class, ext);
+            exactCache.put(ErrorOverridesSupport.class, errorOverride);
+            exactCache.put(DefaultExecutionStrategy.class, execStrategy);
         }
 
         @Override
