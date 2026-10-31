@@ -1,5 +1,6 @@
 package io.koraframework.application.graph;
 
+import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.management.ManagementFactory;
@@ -20,16 +21,20 @@ public final class KoraApplication {
     public static void run(Supplier<ApplicationGraphDraw> supplier, boolean keepAlive) {
         var initStart = System.nanoTime();
         var graphDraw = supplier.get();
-        var logger = LoggerFactory.getLogger(graphDraw.getRoot());
-        logger.debug("Application initializing...");
+        LoggerFactory.getILoggerFactory();
 
         var keepAliveLock = new ReentrantLock();
         var condition = keepAliveLock.newCondition();
         InitializedGraph graph;
+        Logger logger;
+
         try {
             graph = graphDraw.init();
             var initEnd = System.nanoTime();
             var initTook = (initEnd - initStart) / 1_000_000;
+            logger = LoggerFactory.getLogger(graphDraw.getRoot());
+            logger.debug("Application initializing...");
+
             if (Boolean.getBoolean("kora.jmx.uptime.enabled")) {
                 try {
                     var uptimeTook = ManagementFactory.getRuntimeMXBean().getUptime() / 1000.0;
@@ -41,10 +46,11 @@ public final class KoraApplication {
                 logger.info("Application initialized in {}ms", initTook);
             }
         } catch (Exception e) {
+            logger = LoggerFactory.getLogger(graphDraw.getRoot());
             logger.error("Application initializing failed with error", e);
             e.printStackTrace();
             try {
-                Thread.sleep(100);// so async logger is able to write exception to log
+                Thread.sleep(100); // so async logger is able to write exception to log
             } catch (InterruptedException ignore) {}
             System.exit(-1);
             return;
@@ -72,9 +78,9 @@ public final class KoraApplication {
         private final boolean keepAlive;
         private final ReentrantLock keepAliveLock;
         private final Condition condition;
-        private final org.slf4j.Logger logger;
+        private final Logger logger;
 
-        public ShutdownTask(InitializedGraph initializedGraph, boolean keepAlive, ReentrantLock keepAliveLock, Condition condition, org.slf4j.Logger logger) {
+        public ShutdownTask(InitializedGraph initializedGraph, boolean keepAlive, ReentrantLock keepAliveLock, Condition condition, Logger logger) {
             this.initializedGraph = initializedGraph;
             this.keepAlive = keepAlive;
             this.keepAliveLock = keepAliveLock;

@@ -24,6 +24,7 @@ public final class XnioLifecycle implements Lifecycle, Wrapped<XnioWorker> {
                          @Nullable Configurer<XnioWorker.Builder> configurer) {
         this.configValue = configValue;
         this.configurer = configurer;
+        System.setProperty("xnio.management.disabled", "true");
     }
 
     @Override
