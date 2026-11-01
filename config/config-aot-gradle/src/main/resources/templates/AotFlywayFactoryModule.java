@@ -8,10 +8,13 @@ import io.koraframework.config.common.mapper.*;
 import io.koraframework.database.flyway.*;
 import io.koraframework.database.jdbc.*;
 import org.flywaydb.core.api.*;
+import org.flywaydb.core.api.callback.*;
 import org.flywaydb.core.api.configuration.*;
+import org.flywaydb.core.api.exception.*;
 import org.flywaydb.core.api.executor.*;
 import org.flywaydb.core.api.logging.*;
 import org.flywaydb.core.api.migration.baseline.*;
+import org.flywaydb.core.api.pattern.*;
 import org.flywaydb.core.api.resolver.*;
 import org.flywaydb.core.api.resource.*;
 import org.flywaydb.core.extensibility.*;
@@ -67,7 +70,7 @@ public final class AotFlywayFactoryModule {
         @Override
         public JdbcDataSource afterInit(JdbcDataSource value) {
             if (!flywayConfig.enabled()) {
-                logger.info("FlyWay is disabled, skipping migrate...");
+                logger.debug("FlyWay is disabled, skipping migrate...");
                 return value;
             }
 
@@ -148,32 +151,25 @@ public final class AotFlywayFactoryModule {
                         if (!schemaHistory.exists()) {
                             schemaHistory.create(false);
                         }
-                        var dbMigrate = new DbMigrate(
-                            database, schemaHistory, defaultSchema, resolver, config, callbackExecutor
-                        );
+                        validateBeforeMigrate(database, schemaHistory, defaultSchema, resolver, config, callbackExecutor);
+                        var dbMigrate = new DbMigrate(database, schemaHistory, defaultSchema, resolver, config, callbackExecutor);
                         dbMigrate.migrate();
                         break;
 
                     case REPAIR:
-                        var dbRepair = new DbRepair(
-                            database, resolver, schemaHistory, callbackExecutor, config
-                        );
+                        var dbRepair = new DbRepair(database, resolver, schemaHistory, callbackExecutor, config);
                         dbRepair.repair();
                         break;
 
                     case CLEAN_MIGRATE:
-                        var dbClean = new DbClean(
-                            database, schemaHistory, defaultSchema, schemas, callbackExecutor, config
-                        );
+                        var dbClean = new DbClean(database, schemaHistory, defaultSchema, schemas, callbackExecutor, config);
                         dbClean.clean();
 
                         if (!schemaHistory.exists()) {
                             schemaHistory.create(false);
                         }
-
-                        var dbMigrateClean = new DbMigrate(
-                            database, schemaHistory, defaultSchema, resolver, config, callbackExecutor
-                        );
+                        validateBeforeMigrate(database, schemaHistory, defaultSchema, resolver, config, callbackExecutor);
+                        var dbMigrateClean = new DbMigrate(database, schemaHistory, defaultSchema, resolver, config, callbackExecutor);
                         dbMigrateClean.migrate();
                         break;
                 }
@@ -181,13 +177,31 @@ public final class AotFlywayFactoryModule {
                 IOUtils.close(database);
             }
 
-            logger.info("AOT FlyWay migration in mode '{}' applied in {}", flywayConfig.mode(), TimeUtils.tookForLogging(started));
+            logger.debug("AOT FlyWay migration in mode '{}' applied in {}", flywayConfig.mode(), TimeUtils.tookForLogging(started));
             return value;
         }
 
         @Override
         public JdbcDataSource beforeRelease(JdbcDataSource value) {
             return value;
+        }
+
+        private void validateBeforeMigrate(Database database, SchemaHistory schemaHistory, Schema defaultSchema, CompositeMigrationResolver resolver, Configuration config, CallbackExecutor<Event> callbackExecutor) {
+            if (!flywayConfig.validateOnMigrate()) {
+                return;
+            }
+            logger.debug("AOT FlyWay validating applied migrations...");
+
+            ValidatePattern[] ignorePatterns = {ValidatePattern.fromPattern("*:pending")};
+
+            var dbValidate = new DbValidate(database, schemaHistory, defaultSchema, resolver, config, callbackExecutor, ignorePatterns);
+
+            var validateResult = dbValidate.validate();
+
+            if (!validateResult.validationSuccessful && validateResult.errorDetails != null) {
+                throw new FlywayValidateException(validateResult.errorDetails, validateResult.getAllErrorMessages());
+            }
+            logger.debug("AOT FlyWay validation successful.");
         }
     }
 

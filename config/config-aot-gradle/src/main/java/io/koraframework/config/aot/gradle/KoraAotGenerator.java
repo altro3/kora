@@ -272,17 +272,30 @@ public class KoraAotGenerator {
             String path = res.getPath();
             String filename = path.substring(path.lastIndexOf('/') + 1);
 
-            byte[] bytes;
-            try (var is = res.open()) {
-                bytes = is.readAllBytes();
+            var crc32 = new CRC32();
+            var contentBuilder = new StringBuilder();
+
+            try (var is = res.open();
+                 var reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+
+                String line;
+                boolean firstLine = true;
+                while ((line = reader.readLine()) != null) {
+                    if (firstLine) {
+                        if (line.startsWith("\uFEFF")) {
+                            line = line.substring(1);
+                        }
+                        firstLine = false;
+                    } else {
+                        contentBuilder.append('\n');
+                    }
+                    crc32.update(line.getBytes(StandardCharsets.UTF_8));
+                    contentBuilder.append(line);
+                }
             }
 
-            var crc32 = new CRC32();
-            crc32.update(bytes);
-            long checksumValue = crc32.getValue();
-            int checksum = (int) checksumValue;
-
-            String content = new String(bytes, StandardCharsets.UTF_8);
+            int checksum = (int) crc32.getValue();
+            String content = contentBuilder.toString();
 
             String cleanName = filename.endsWith(".sql") ? filename.substring(0, filename.length() - 4) : filename;
             String version = "";
