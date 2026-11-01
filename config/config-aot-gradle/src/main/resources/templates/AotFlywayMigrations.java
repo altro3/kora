@@ -8,8 +8,7 @@ public final class AotFlywayMigrations {
     // CHUNKS_METHODS_POINT
 
     public static List<MigrationData> getMigrations() {
-        var list = new ArrayList<MigrationData>();
-        // LIST_INIT_POINT
+        // MIGRATIONS_INIT_POINT
         return list;
     }
 

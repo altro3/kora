@@ -264,6 +264,7 @@ public class KoraAotGenerator {
         final int MAX_STRING_CHUNK_LENGTH = 16384;
         final int MAX_METHOD_BYTE_SIZE = 60000;
 
+        int totalMigrationsCount = sqlResources.size();
         int migrationIndex = 0;
         int currentMethodIndex = 0;
         int currentMethodEstimatedSize = 0;
@@ -343,7 +344,7 @@ public class KoraAotGenerator {
 
             String mainMethodName = "getMigrationContent_" + migrationIndex;
             chunksMethods.append("    private static String ").append(mainMethodName).append("() {\n")
-                .append("        var sb = new java.lang.StringBuilder(").append(length).append(");\n");
+                .append("        var sb = new StringBuilder(").append(length).append(");\n");
             for (String chunkMethod : chunkMethodNames) {
                 chunksMethods.append("        sb.append(").append(chunkMethod).append("());\n");
             }
@@ -394,10 +395,16 @@ public class KoraAotGenerator {
             listInit.append("        ").append(methodName).append("(list);\n");
         }
 
+        var migrationsInit = new StringBuilder();
+        migrationsInit.append("var list = new ArrayList<MigrationData>(").append(totalMigrationsCount).append(");\n");
+        for (String methodName : chunkMethodsList) {
+            migrationsInit.append("        ").append(methodName).append("(list);\n");
+        }
+
         var migrationsTemplate = readTemplate("AotFlywayMigrations.java");
         var finalMigrationsCode = migrationsTemplate
             .replace("// CHUNKS_METHODS_POINT", chunksMethods.toString().trim())
-            .replace("// LIST_INIT_POINT", listInit.toString().trim());
+            .replace("// MIGRATIONS_INIT_POINT", migrationsInit.toString().trim());
 
         Files.writeString(targetSubDir.resolve("AotFlywayMigrations.java"), finalMigrationsCode);
     }
