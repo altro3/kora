@@ -262,11 +262,18 @@ public class KoraAotGenerator {
         var listInit = new StringBuilder();
 
         final int MAX_STRING_CHUNK_LENGTH = 16384;
+        final int MAX_METHOD_BYTE_SIZE = 60000;
+
         int migrationIndex = 0;
+        int currentMethodIndex = 0;
+        int currentMethodEstimatedSize = 0;
 
         String sqlMigrationPrefix = "V";
         String repeatableSqlMigrationPrefix = "R";
         String sqlMigrationSeparator = "__";
+
+        var chunkMethodsList = new ArrayList<String>();
+        var currentChunkBuilder = new StringBuilder();
 
         for (var res : sqlResources) {
             String path = res.getPath();
@@ -343,7 +350,8 @@ public class KoraAotGenerator {
             chunksMethods.append("        return sb.toString();\n")
                 .append("    }\n\n");
 
-            listInit.append("        list.add(new MigrationData(\"")
+            var statementBuilder = new StringBuilder();
+            statementBuilder.append("        list.add(new MigrationData(\"")
                 .append(path).append("\", \"")
                 .append(filename).append("\", ")
                 .append(mainMethodName).append("(), ")
@@ -352,7 +360,38 @@ public class KoraAotGenerator {
                 .append(checksum).append(", \"")
                 .append(path).append("\"));\n");
 
+            String statement = statementBuilder.toString();
+            int statementSize = statement.getBytes(StandardCharsets.UTF_8).length;
+
+            if (currentMethodEstimatedSize + statementSize > MAX_METHOD_BYTE_SIZE) {
+                String methodName = "addMigrations_chunk_" + currentMethodIndex;
+                chunkMethodsList.add(methodName);
+
+                chunksMethods.append("    private static void ").append(methodName).append("(List<MigrationData> list) {\n")
+                    .append(currentChunkBuilder)
+                    .append("    }\n\n");
+
+                currentChunkBuilder.setLength(0);
+                currentMethodEstimatedSize = 0;
+                currentMethodIndex++;
+            }
+
+            currentChunkBuilder.append(statement);
+            currentMethodEstimatedSize += statementSize;
             migrationIndex++;
+        }
+
+        if (currentChunkBuilder.length() > 0) {
+            String methodName = "addMigrations_chunk_" + currentMethodIndex;
+            chunkMethodsList.add(methodName);
+
+            chunksMethods.append("    private static void ").append(methodName).append("(List<MigrationData> list) {\n")
+                .append(currentChunkBuilder)
+                .append("    }\n\n");
+        }
+
+        for (String methodName : chunkMethodsList) {
+            listInit.append("        ").append(methodName).append("(list);\n");
         }
 
         var migrationsTemplate = readTemplate("AotFlywayMigrations.java");
