@@ -30,6 +30,18 @@ public final class ContainerValidators {
         return new MapValidator<>(keyValidator, valueValidator);
     }
 
+    public static List<Violation> addViolation(@Nullable List<Violation> list, Violation violation) {
+        if (list == null) list = new ArrayList<>();
+        list.add(violation);
+        return list;
+    }
+
+    public static List<Violation> addAllViolations(@Nullable List<Violation> list, List<Violation> source) {
+        if (list == null) return new ArrayList<>(source);
+        list.addAll(source);
+        return list;
+    }
+
     /**
      * @return validator that applies all the validators to the same value
      */
