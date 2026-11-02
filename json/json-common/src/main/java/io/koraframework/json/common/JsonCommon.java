@@ -14,6 +14,7 @@ public final class JsonCommon {
     public static final String ERR_OBJECT_EXPECTED = "an object '{...}'";
     public static final String ERR_FIELD_NAME_EXPECTED = "a field name";
     public static final String ERR_INTEGER_EXPECTED = "an integer number";
+    public static final String ERR_FLOAT_EXPECTED = "a fractional number";
     public static final String ERR_STRING_EXPECTED = "a string";
     public static final String ERR_BOOLEAN_EXPECTED = "a boolean"; // ДОБАВЛЕНО
     public static final String ERR_BINARY_EXPECTED = "a base64-encoded string";

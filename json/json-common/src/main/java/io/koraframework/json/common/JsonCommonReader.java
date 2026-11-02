@@ -1,10 +1,13 @@
 package io.koraframework.json.common;
 
-import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
-import tools.jackson.core.exc.StreamReadException;
-import java.io.IOException;
-import java.util.UUID;
+import tools.jackson.core.*;
+import tools.jackson.core.exc.*;
+
+import java.io.*;
+import java.math.*;
+import java.time.*;
+import java.util.*;
+
 import static io.koraframework.json.common.JsonCommon.*;
 
 public final class JsonCommonReader {
@@ -75,6 +78,118 @@ public final class JsonCommonReader {
         if (token == JsonToken.VALUE_STRING) return UUID.fromString(parser.getString());
         if (token == JsonToken.VALUE_NULL) return null;
         throw __unexpectedToken(parser, className, member, ERR_UUID_EXPECTED);
+    }
+
+    public static Byte readByteObject(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_INT) return parser.getByteValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_INTEGER_EXPECTED);
+    }
+
+    public static byte readBytePrimitive(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_INT) return parser.getByteValue();
+        if (token == JsonToken.VALUE_NULL) throw __requiredFieldNull(parser, className, member);
+        throw __unexpectedToken(parser, className, member, ERR_INTEGER_EXPECTED);
+    }
+
+    public static Short readShortObject(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_INT) return parser.getShortValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_INTEGER_EXPECTED);
+    }
+
+    public static short readShortPrimitive(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_INT) return parser.getShortValue();
+        if (token == JsonToken.VALUE_NULL) throw __requiredFieldNull(parser, className, member);
+        throw __unexpectedToken(parser, className, member, ERR_INTEGER_EXPECTED);
+    }
+
+    public static Double readDoubleObject(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_FLOAT || token == JsonToken.VALUE_NUMBER_INT) return parser.getDoubleValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_FLOAT_EXPECTED);
+    }
+
+    public static double readDoublePrimitive(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_FLOAT || token == JsonToken.VALUE_NUMBER_INT) return parser.getDoubleValue();
+        if (token == JsonToken.VALUE_NULL) throw __requiredFieldNull(parser, className, member);
+        throw __unexpectedToken(parser, className, member, ERR_FLOAT_EXPECTED);
+    }
+
+    public static Float readFloatObject(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_FLOAT || token == JsonToken.VALUE_NUMBER_INT) return parser.getFloatValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_FLOAT_EXPECTED);
+    }
+
+    public static float readFloatPrimitive(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_FLOAT || token == JsonToken.VALUE_NUMBER_INT) return parser.getFloatValue();
+        if (token == JsonToken.VALUE_NULL) throw __requiredFieldNull(parser, className, member);
+        throw __unexpectedToken(parser, className, member, ERR_FLOAT_EXPECTED);
+    }
+
+    public static BigInteger readBigInteger(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_INT) return parser.getBigIntegerValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_INTEGER_EXPECTED);
+    }
+
+    public static BigDecimal readBigDecimal(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NUMBER_FLOAT || token == JsonToken.VALUE_NUMBER_INT) return parser.getDecimalValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_FLOAT_EXPECTED);
+    }
+
+    public static byte[] readBinary(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING || token == JsonToken.VALUE_EMBEDDED_OBJECT) return parser.getBinaryValue();
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
+    }
+
+    public static Instant readInstant(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING) return Instant.parse(parser.getString());
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
+    }
+
+    public static LocalDate readLocalDate(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING) return LocalDate.parse(parser.getString());
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
+    }
+
+    public static LocalDateTime readLocalDateTime(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING) return LocalDateTime.parse(parser.getString());
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
+    }
+
+    public static OffsetDateTime readOffsetDateTime(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING) return OffsetDateTime.parse(parser.getString());
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
+    }
+
+    public static ZonedDateTime readZonedDateTime(JsonParser parser, String className, String member) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_STRING) return ZonedDateTime.parse(parser.getString());
+        if (token == JsonToken.VALUE_NULL) return null;
+        throw __unexpectedToken(parser, className, member, ERR_STRING_EXPECTED);
     }
 
     public static String __jsonPath(JsonParser parser) {
