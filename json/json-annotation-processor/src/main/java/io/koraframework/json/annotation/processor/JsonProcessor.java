@@ -102,6 +102,7 @@ public class JsonProcessor {
         var javaFile = JavaFile.builder(packageElement, codecType)
             .addStaticImport(jsonCommonClass, "*")
             .addStaticImport(jsonCommonReaderClass, "*")
+            .addStaticImport(JsonTypes.jsonToken, "*")
             .skipJavaLangImports(true)
             .build();
         CommonUtils.safeWriteTo(this.processingEnv, javaFile);

@@ -11,6 +11,14 @@ public final class JsonCommonReader {
 
     private JsonCommonReader() {}
 
+    public static <T> T readRequiredObject(JsonParser parser, JsonReader<T> reader, String className, String fieldName) {
+        var token = parser.nextToken();
+        if (token == JsonToken.VALUE_NULL) {
+            throw __requiredFieldNull(parser, className, fieldName);
+        }
+        return reader.read(parser);
+    }
+
     public static String readString(JsonParser parser, String className, String member) {
         var token = parser.nextToken();
         if (token == JsonToken.VALUE_STRING) return parser.getString();
@@ -87,6 +95,10 @@ public final class JsonCommonReader {
         if (t == JsonToken.VALUE_NUMBER_FLOAT) return T_ACTUAL_FLOAT + v;
         if (t == JsonToken.VALUE_TRUE || t == JsonToken.VALUE_FALSE) return T_ACTUAL_BOOLEAN + v;
         return T_ACTUAL_TOKEN + t;
+    }
+
+    public static StreamReadException __unexpectedToken(JsonParser parser, String className, String errorCode) {
+        return __unexpectedToken(parser, className, "", errorCode);
     }
 
     public static StreamReadException __unexpectedToken(JsonParser parser, String className, String member, String expected) {
