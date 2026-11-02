@@ -134,23 +134,41 @@ public interface JdbcDatabaseConfig {
         hikariConfig.setInitializationFailTimeout(-1);
         hikariConfig.setAutoCommit(true);
         hikariConfig.setSchema(config.schema());
-        hikariConfig.setDataSourceProperties(config.dsProperties());
-        hikariConfig.setRegisterMbeans(false);
+        hikariConfig.setRegisterMbeans(false); // Отключаем рефлексию JMX
+
         var jdbcUrl = config.jdbcUrl();
-        hikariConfig.setJdbcUrl(jdbcUrl);
+        String className = null;
+        String urlKey = "url";
+
         if (jdbcUrl.startsWith("jdbc:postgresql:")) {
-            hikariConfig.setDriverClassName("org.postgresql.Driver");
+            className = "org.postgresql.ds.PGSimpleDataSource";
         } else if (jdbcUrl.startsWith("jdbc:mysql:")) {
-            hikariConfig.setDriverClassName("com.mysql.cj.jdbc.Driver");
+            className = "com.mysql.cj.jdbc.MysqlDataSource";
         } else if (jdbcUrl.startsWith("jdbc:mariadb:")) {
-            hikariConfig.setDriverClassName("org.mariadb.jdbc.Driver");
+            className = "org.mariadb.jdbc.MariaDbDataSource";
         } else if (jdbcUrl.startsWith("jdbc:h2:")) {
-            hikariConfig.setDriverClassName("org.h2.Driver");
+            className = "org.h2.jdbcx.JdbcDataSource";
         } else if (jdbcUrl.startsWith("jdbc:oracle:")) {
-            hikariConfig.setDriverClassName("oracle.jdbc.OracleDriver");
+            className = "oracle.jdbc.pool.OracleDataSource";
+            urlKey = "URL";
         } else if (jdbcUrl.startsWith("jdbc:sqlserver:")) {
-            hikariConfig.setDriverClassName("com.microsoft.sqlserver.jdbc.SQLServerDriver");
+            className = "com.microsoft.sqlserver.jdbc.SQLServerDataSource";
         }
+
+        var props = config.dsProperties();
+        if (className != null) {
+            hikariConfig.setDataSourceClassName(className);
+            if (props != null) {
+                props.putIfAbsent(urlKey, jdbcUrl);
+            }
+        } else {
+            hikariConfig.setJdbcUrl(jdbcUrl);
+        }
+
+        if (props != null) {
+            hikariConfig.setDataSourceProperties(props);
+        }
+
         if (configurer != null) {
             return configurer.configure(hikariConfig);
         }

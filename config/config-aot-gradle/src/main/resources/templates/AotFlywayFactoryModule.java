@@ -90,13 +90,18 @@ public final class AotFlywayFactoryModule {
 
             var config = new AotClassicConfiguration(modernConfig);
             var databaseType = new PostgreSQLDatabaseType();
-            config.setAotPluginRegister(new AotPostgresPluginRegister(baselineExt, databaseType));
+            var aotRegister = new AotPostgresPluginRegister(baselineExt, databaseType);
+            config.setAotPluginRegister(aotRegister);
+            config.setPluginRegister(aotRegister);
+
+            config.setReportEnabled(false);
 
             config.setDataSource(value.value());
             config.setMixed(flywayConfig.mixed());
             config.setExecuteInTransaction(flywayConfig.executeInTransaction());
             config.setValidateOnMigrate(flywayConfig.validateOnMigrate());
             config.setResourceProvider(emptyResourceProvider);
+            config.setGroup(false);
 
             config.setSkipDefaultResolvers(true);
             config.setResolvers(new AotStaticMigrationResolver(config));
@@ -275,6 +280,10 @@ public final class AotFlywayFactoryModule {
     private static final class AotPostgresPluginRegister extends PluginRegister {
         private final Plugin[] aotPlugins;
         private final Map<Class<?>, Object> exactCache;
+        private final Map<String, Plugin> canonicalNameCache;
+        private final Map<String, Plugin> simpleNameCache;
+        private final Map<Class<?>, List<Plugin>> instancesCache;
+
 
         public AotPostgresPluginRegister(BaselineMigrationConfigurationExtension baselineExt, Plugin postgresDatabaseType) {
             super();
@@ -306,6 +315,29 @@ public final class AotFlywayFactoryModule {
             exactCache.put(ConfigurationExtension.class, ext);
             exactCache.put(ErrorOverridesSupport.class, errorOverride);
             exactCache.put(DefaultExecutionStrategy.class, execStrategy);
+
+            canonicalNameCache = new HashMap<>(16);
+            simpleNameCache = new HashMap<>(16);
+            for (var plugin : aotPlugins) {
+                Class<?> cls = plugin.getClass();
+                String canonical = cls.getCanonicalName();
+                if (canonical != null) {
+                    canonicalNameCache.put(canonical, plugin);
+                }
+                simpleNameCache.put(cls.getSimpleName(), plugin);
+            }
+
+            instancesCache = new HashMap<>(32);
+            Class<?>[] interfacesToCache = { Plugin.class, DatabaseType.class, ConfigurationExtension.class, AppliedMigration.class };
+            for (var iface : interfacesToCache) {
+                var list = new ArrayList<Plugin>();
+                for (var plugin : aotPlugins) {
+                    if (iface.isInstance(plugin)) {
+                        list.add(plugin);
+                    }
+                }
+                instancesCache.put(iface, Collections.unmodifiableList(list));
+            }
         }
 
         @Override
@@ -315,29 +347,24 @@ public final class AotFlywayFactoryModule {
             if (exact != null) {
                 return (T) exact;
             }
-
-            var targetName = clazz.getCanonicalName();
+            String targetName = clazz.getCanonicalName();
             if (targetName == null) {
                 return null;
             }
-
-            for (int i = 0; i < aotPlugins.length; i++) {
-                var plugin = aotPlugins[i];
-                if (plugin.getClass().getCanonicalName().equals(targetName)) {
-                    return (T) plugin;
-                }
-            }
-            return null;
+            return (T) canonicalNameCache.get(targetName);
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> List<T> getInstancesOf(Class<T> clazz) {
+            var cachedList = instancesCache.get(clazz);
+            if (cachedList != null) {
+                return (List<T>) cachedList;
+            }
             var exact = exactCache.get(clazz);
             if (exact != null) {
                 return Collections.singletonList((T) exact);
             }
-
             var result = new ArrayList<T>(aotPlugins.length);
             for (int i = 0; i < aotPlugins.length; i++) {
                 var plugin = aotPlugins[i];
@@ -405,25 +432,15 @@ public final class AotFlywayFactoryModule {
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> T getExact(String className) {
-            for (int i = 0; i < aotPlugins.length; i++) {
-                var plugin = aotPlugins[i];
-                if (plugin.getClass().getSimpleName().equals(className)) {
-                    return (T) plugin;
-                }
-            }
-            return null;
+            return (T) simpleNameCache.get(className);
         }
 
         @Override
         @SuppressWarnings("unchecked")
         public <T extends Plugin> T getLicensedExact(String className, Configuration configuration) {
-            for (int i = 0; i < aotPlugins.length; i++) {
-                var plugin = aotPlugins[i];
-                if (plugin.getClass().getSimpleName().equals(className)) {
-                    if (plugin.isLicensed(configuration)) {
-                        return (T) plugin;
-                    }
-                }
+            var plugin = simpleNameCache.get(className);
+            if (plugin != null && plugin.isLicensed(configuration)) {
+                return (T) plugin;
             }
             return null;
         }

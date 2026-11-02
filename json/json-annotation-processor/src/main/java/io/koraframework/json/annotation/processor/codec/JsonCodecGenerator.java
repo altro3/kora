@@ -245,18 +245,7 @@ public class JsonCodecGenerator {
             String rawFieldName = field.parameter().getSimpleName().toString();
             String stringFieldName = "STR_" + rawFieldName;
             String serializedFieldName = this.jsonNameStaticName(rawFieldName);
-
-            if (i > 0) {
-                var prevField = meta.fields().get(i - 1);
-                boolean prevHasCustomReader = this.getCommonReadMethodName(prevField) == null;
-                if (prevHasCustomReader) {
-                    method.addCode("if (__parser.nextToken() == PROPERTY_NAME && __parser.nextName($L)) {$>\n", serializedFieldName);
-                } else {
-                    method.addCode("if (__parser.nextName($L)) {$>\n", serializedFieldName);
-                }
-            } else {
-                method.addCode("if (__parser.nextName($L)) {$>\n", serializedFieldName);
-            }
+            method.addCode("if (__parser.nextName($L)) {$>\n", serializedFieldName);
 
             String commonReadMethod = this.getCommonReadMethodName(field);
             if (commonReadMethod != null) {

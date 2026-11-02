@@ -55,6 +55,7 @@ public class KoraLogbackConfigurator extends ContextAwareBase implements Configu
     }
 
     private ExecutionStatus configureLogging(LoggerContext context) {
+        context.setPackagingDataEnabled(false);
         var classLoader = KoraLogbackConfigurator.class.getClassLoader();
         if (classLoader.getResource("logback.xml") != null || classLoader.getResource("logback-test.xml") != null) {
             var joran = new DefaultJoranConfigurator();
@@ -64,6 +65,8 @@ public class KoraLogbackConfigurator extends ContextAwareBase implements Configu
                 return ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY;
             }
         }
+
+        context.getLogger("org.flywaydb").setLevel(Level.WARN);
 
         var selected = KoraLogbackProperties.get(ENCODER_PROPERTY);
         if (selected != null && selected.equalsIgnoreCase(ENCODER_NONE)) {
