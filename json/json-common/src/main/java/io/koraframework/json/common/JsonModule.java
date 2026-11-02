@@ -14,7 +14,7 @@ import java.util.*;
 public interface JsonModule {
 
     JsonFactory JSON_FACTORY = new JsonFactoryBuilder()
-        .recyclerPool(JsonRecyclerPools.threadLocalPool())
+        .recyclerPool(JsonRecyclerPools.newBoundedPool(200))
         .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
         .build();
 

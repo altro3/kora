@@ -1,25 +1,16 @@
 package io.koraframework.json.annotation.processor;
 
-import com.palantir.javapoet.JavaFile;
-import io.koraframework.annotation.processor.common.CommonUtils;
-import io.koraframework.annotation.processor.common.ComparableTypeMirror;
-import io.koraframework.json.annotation.processor.codec.JsonCodecGenerator;
-import io.koraframework.json.annotation.processor.codec.JsonEnumCodecGenerator;
-import io.koraframework.json.annotation.processor.codec.JsonDelegatingCodecGenerator;
-import io.koraframework.json.annotation.processor.codec.JsonSealedCodecGenerator;
-import io.koraframework.json.annotation.processor.reader.ReaderTypeMetaParser;
-import io.koraframework.json.annotation.processor.writer.WriterTypeMetaParser;
+import com.palantir.javapoet.*;
+import io.koraframework.annotation.processor.common.*;
+import io.koraframework.json.annotation.processor.codec.*;
+import io.koraframework.json.annotation.processor.reader.*;
+import io.koraframework.json.annotation.processor.writer.*;
 
-import javax.annotation.processing.ProcessingEnvironment;
-import javax.lang.model.element.ElementKind;
-import javax.lang.model.element.Modifier;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.type.TypeMirror;
-import javax.lang.model.util.Elements;
-import javax.lang.model.util.Types;
-import java.util.Objects;
-import java.util.HashSet;
-import java.util.Set;
+import javax.annotation.processing.*;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
+import javax.lang.model.util.*;
+import java.util.*;
 
 public class JsonProcessor {
     private final ProcessingEnvironment processingEnv;
@@ -72,6 +63,7 @@ public class JsonProcessor {
         }
         this.generateDtoCodec(jsonElement, jsonElementType);
     }
+
     public void generateWriter(TypeElement jsonElement) {
         var wrapper = new ComparableTypeMirror(this.types, jsonElement.asType());
         var packageElement = JsonUtils.jsonClassPackage(this.elements, jsonElement);
@@ -105,7 +97,13 @@ public class JsonProcessor {
         var writerMeta = Objects.requireNonNull(this.writerTypeMetaParser.parse(typeElement, jsonTypeMirror));
         var codecType = Objects.requireNonNull(this.codecGenerator.generate(readerMeta, writerMeta));
 
-        var javaFile = JavaFile.builder(packageElement, codecType).build();
+        var jsonCommonClass = ClassName.get("io.koraframework.json.common", "JsonCommon");
+        var jsonCommonReaderClass = ClassName.get("io.koraframework.json.common", "JsonCommonReader");
+        var javaFile = JavaFile.builder(packageElement, codecType)
+            .addStaticImport(jsonCommonClass, "*")
+            .addStaticImport(jsonCommonReaderClass, "*")
+            .skipJavaLangImports(true)
+            .build();
         CommonUtils.safeWriteTo(this.processingEnv, javaFile);
     }
 
