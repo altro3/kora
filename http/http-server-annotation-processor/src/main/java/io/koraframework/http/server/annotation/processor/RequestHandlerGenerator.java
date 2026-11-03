@@ -1,28 +1,17 @@
 package io.koraframework.http.server.annotation.processor;
 
 import com.palantir.javapoet.*;
-import org.jspecify.annotations.Nullable;
-import io.koraframework.annotation.processor.common.AnnotationUtils;
-import io.koraframework.annotation.processor.common.CommonUtils;
-import io.koraframework.annotation.processor.common.TagUtils;
+import io.koraframework.annotation.processor.common.*;
+import org.jspecify.annotations.*;
 
-import javax.annotation.processing.ProcessingEnvironment;
-import javax.lang.model.element.ExecutableElement;
-import javax.lang.model.element.Modifier;
-import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
-import javax.lang.model.type.DeclaredType;
-import javax.lang.model.type.TypeKind;
-import javax.lang.model.type.TypeMirror;
-import javax.tools.Diagnostic;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Locale;
-import java.util.Optional;
-import java.util.concurrent.CompletionException;
-import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import javax.annotation.processing.*;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
+import javax.tools.*;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.function.*;
+import java.util.stream.*;
 
 import static io.koraframework.http.server.annotation.processor.HttpServerClassNames.*;
 import static io.koraframework.http.server.annotation.processor.RequestHandlerGenerator.ParameterType.*;
@@ -301,8 +290,9 @@ public class RequestHandlerGenerator {
             b.beginControlFlow("try");
             b.addStatement("$N = $LHttpRequestMapper.apply($L)", mappedParameter.name, mappedParameter.name, requestName);
             b.nextControlFlow("catch ($T _e)", CompletionException.class);
-            b.addStatement("if (_e.getCause() instanceof $T && _e.getCause() instanceof $T) throw ($T) _e.getCause()", httpServerResponse, RuntimeException.class, RuntimeException.class);
-            b.addStatement("throw $T.of(400, _e.getCause())", httpServerResponseException);
+            b.addStatement("var cause = _e.getCause()");
+            b.addStatement("if (cause instanceof $T && cause instanceof $T) throw ($T) cause", RuntimeException.class, httpServerResponse, RuntimeException.class);
+            b.addStatement("throw $T.of(400, cause)", httpServerResponseException);
             b.nextControlFlow("catch (Exception _e)");
             b.addStatement("if (_e instanceof $T) throw _e", httpServerResponse);
             b.addStatement("throw $T.of(400, _e)", httpServerResponseException);
@@ -314,8 +304,7 @@ public class RequestHandlerGenerator {
         } else if (HttpServerClassNames.httpServerResponse.canonicalName().equals(requestMappingData.executableElement().getReturnType().toString())) {
             b.addStatement("return _controller.$N($L)", requestMappingData.executableElement().getSimpleName(), executeParameters);
         } else {
-            b.addStatement("var _result = _controller.$N($L)", requestMappingData.executableElement().getSimpleName(), executeParameters);
-            b.addStatement("return _responseMapper.apply(_request, _result)");
+            b.addStatement("return _responseMapper.apply(_request, _controller.$N($L))", requestMappingData.executableElement().getSimpleName(), executeParameters);
         }
         return b.build();
     }
