@@ -9,7 +9,7 @@ import java.nio.charset.*;
 import java.nio.file.*;
 import java.util.*;
 import java.util.regex.*;
-import java.util.zip.CRC32;
+import java.util.zip.*;
 
 public class KoraAotGenerator {
     private static final int MAX_FIELDS_PER_CHUNK = 350;
@@ -20,6 +20,8 @@ public class KoraAotGenerator {
     private final String configResource;
     private final String configFile;
     private final String configFormat;
+    private final boolean configEnabled; // Новый флаг
+    private final boolean flywayEnabled; // Новый флаг
     private final File outputDir;
     private final AppLogger logger;
 
@@ -28,6 +30,8 @@ public class KoraAotGenerator {
                             String configResource,
                             String configFile,
                             String configFormat,
+                            boolean configEnabled,
+                            boolean flywayEnabled,
                             File outputDir,
                             AppLogger logger) {
         this.javaSourceDirs = javaSourceDirs;
@@ -35,6 +39,8 @@ public class KoraAotGenerator {
         this.configResource = configResource;
         this.configFile = configFile;
         this.configFormat = configFormat;
+        this.configEnabled = configEnabled;
+        this.flywayEnabled = flywayEnabled;
         this.outputDir = outputDir;
         this.logger = logger;
     }
@@ -53,19 +59,34 @@ public class KoraAotGenerator {
             .enableExternalClasses()
             .scan()) {
 
-            boolean hasConfig = processConfig(scanResult);
-            boolean hasFlyway = checkFlywayMigrations(scanResult);
-
-            if (hasFlyway) {
-                logger.lifecycle("[Kora-Aot] Flyway migrations detected. Generating AOT Flyway module.");
-                generateAotFlywayModule(scanResult, outputDir);
+            boolean hasConfig = false;
+            if (configEnabled) {
+                hasConfig = processConfig(scanResult);
             } else {
-                logger.lifecycle("[Kora-Aot] No Flyway migrations found. Skipping Flyway AOT generation.");
+                logger.lifecycle("[Kora-Aot] Configuration processing is explicitly disabled.");
+            }
+
+            boolean hasFlyway = false;
+            if (flywayEnabled) {
+                if (scanResult.getClassInfo("org.flywaydb.core.Flyway") != null) {
+                    hasFlyway = checkFlywayMigrations(scanResult);
+                    if (hasFlyway) {
+                        logger.lifecycle("[Kora-Aot] Flyway migrations detected. Generating AOT Flyway module.");
+                        generateAotFlywayModule(scanResult, outputDir);
+                    } else {
+                        logger.lifecycle("[Kora-Aot] No Flyway migrations found. Skipping Flyway AOT generation.");
+                    }
+                } else {
+                    logger.lifecycle("[Kora-Aot] Flyway classes not found in classpath. Skipping Flyway AOT generation.");
+                }
+            } else {
+                logger.lifecycle("[Kora-Aot] Flyway processing is explicitly disabled.");
             }
 
             if (!hasConfig && !hasFlyway) {
-                logger.lifecycle("[Kora-Aot] Nothing to generate. Skipping generation.");
-                return;
+                logger.lifecycle("[Kora-Aot] No custom AOT enhancements found. Generating blank MainAotModule.");
+            } else {
+                logger.lifecycle("[Kora-Aot] Generating MainAotModule with detected features.");
             }
 
             generateMainAotModule(outputDir, hasConfig, hasFlyway);
@@ -192,7 +213,7 @@ public class KoraAotGenerator {
                             var item = list.get(j);
                             if (item instanceof String) {listBuilder.append("\"").append(item.toString().replace("\\", "\\\\").replace("\"", "\\\"")).append("\"");} else if (item instanceof Long) {
                                 listBuilder.append(item).append("L");
-                            } else listBuilder.append(item);
+                            } else {listBuilder.append(item);}
                             if (j < list.size() - 1) listBuilder.append(", ");
                         }
                         yield listBuilder.append(")").toString();

@@ -14,7 +14,7 @@ public class KoraAotPlugin implements Plugin<Project> {
         var javaExtension = project.getExtensions().getByType(JavaPluginExtension.class);
         var mainSourceSet = javaExtension.getSourceSets().getByName(SourceSet.MAIN_SOURCE_SET_NAME);
 
-        var aotTask = project.getTasks().register("koraAotConfig", KoraAotTask.class, task -> {
+        var aotTask = project.getTasks().register("koraAot", KoraAotTask.class, task -> {
             task.getJavaSourceDirs().from(project.file("src/main/java"));
             task.getClasspathResources().from(mainSourceSet.getResources().getSourceDirectories());
 

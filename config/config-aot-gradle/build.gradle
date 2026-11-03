@@ -21,7 +21,7 @@ gradlePlugin {
     plugins {
         register("koraAot") {
             id = "io.koraframework.kora-aot"
-            implementationClass = "io.koraframework.config.aot.gradle.KoraAotConfigPlugin"
+            implementationClass = "io.koraframework.config.aot.gradle.KoraAotPlugin"
             displayName = "Kora Framework AOT Compiler Plugin"
             description = "Gradle Plugin for Kora Framework to merge and compile HOCON/YAML configs, Flyway migrations to static AOT Java source code."
         }
