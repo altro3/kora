@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @CacheableTask
-public abstract class KoraAotConfigTask extends DefaultTask {
+public abstract class KoraAotTask extends DefaultTask {
 
     @InputFiles
     @PathSensitive(PathSensitivity.RELATIVE)
@@ -36,16 +36,22 @@ public abstract class KoraAotConfigTask extends DefaultTask {
     @Input
     public abstract Property<String> getConfigFormat();
 
+    @Input
+    public abstract Property<Boolean> getConfigEnabled();
+
+    @Input
+    public abstract Property<Boolean> getFlywayEnabled();
+
     @OutputDirectory
     public abstract DirectoryProperty getOutputSourceDirectory();
 
     @TaskAction
     public void generate() throws Exception {
-        List<File> classpathFiles = new ArrayList<>();
-        for (File file : getClasspathResources().getFiles()) {
+        var classpathFiles = new ArrayList<File>();
+        for (var file : getClasspathResources().getFiles()) {
             if (file.exists()) classpathFiles.add(file);
         }
-        for (File file : getExternalDependencies().getFiles()) {
+        for (var file : getExternalDependencies().getFiles()) {
             if (file.exists()) classpathFiles.add(file);
         }
 
@@ -55,6 +61,8 @@ public abstract class KoraAotConfigTask extends DefaultTask {
             getConfigResource().getOrNull(),
             getConfigFile().getOrNull(),
             getConfigFormat().getOrNull(),
+            getConfigEnabled().get(),
+            getFlywayEnabled().get(),
             getOutputSourceDirectory().get().getAsFile(),
             msg -> getLogger().lifecycle(msg)
         );
