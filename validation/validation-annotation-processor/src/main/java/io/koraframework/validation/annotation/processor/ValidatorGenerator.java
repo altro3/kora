@@ -13,7 +13,7 @@ import java.util.*;
 import java.util.function.*;
 import java.util.stream.*;
 
-import static io.koraframework.validation.annotation.processor.ValidMeta.TypeUse.CONTAINER_VALIDATORS;
+import static io.koraframework.validation.annotation.processor.ValidMeta.TypeUse.*;
 import static io.koraframework.validation.annotation.processor.ValidTypes.*;
 import static io.koraframework.validation.annotation.processor.ValidUtils.*;
 
@@ -108,7 +108,7 @@ public class ValidatorGenerator {
     }
 
     private ValidAnnotationProcessor.ValidatorSpec getValidatorSpecs(ValidMeta meta) {
-        final List<ParameterSpec> parameterSpecs = new ArrayList<>();
+        var parameterSpecs = new ArrayList<ParameterSpec>();
 
         final TypeName typeName = meta.validator(processingEnv).asPoetType();
         final TypeSpec.Builder validatorSpecBuilder = TypeSpec.classBuilder(meta.validatorImplementationName())
@@ -121,9 +121,9 @@ public class ValidatorGenerator {
             validatorSpecBuilder.addTypeVariable(TypeVariableName.get(typeParameter));
         }
 
-        final Map<ValidMeta.Constraint.Factory, String> constraintToFieldName = new LinkedHashMap<>();
-        final Map<ValidMeta.Validated, String> validatedToFieldName = new LinkedHashMap<>();
-        final List<CodeBlock> fieldConstraintBuilder = new ArrayList<>();
+        var constraintToFieldName = new LinkedHashMap<ValidMeta.Constraint.Factory, String>();
+        var validatedToFieldName = new LinkedHashMap<ValidMeta.Validated, String>();
+        var fieldConstraintBuilder = new ArrayList<CodeBlock>();
         validatorSpecBuilder.addField(FieldSpec.builder(String.class, "ERR_NOT_NULL", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
             .initializer("$S", "Must be non null, but was null")
             .build());
@@ -134,7 +134,6 @@ public class ValidatorGenerator {
             var checkBuilder = CodeBlock.builder();
 
             checkBuilder.addStatement("context.addPath($S)", field.name());
-            checkBuilder.beginControlFlow("try");
 
             if (field.isJsonNullable() && field.isNotNull()) {
                 checkBuilder.beginControlFlow("if (value.$L == null || !value.$L.isDefined() || value.$L.isNull())",
@@ -190,7 +189,6 @@ public class ValidatorGenerator {
                     final String validatorField = validatedToFieldName.computeIfAbsent(validated, (k) -> "_validator" + suffix);
                     final String validatorResultField = "_validatorResult_" + suffix;
 
-                    // Используем оптимизированный вызов addAllViolations
                     checkBuilder.add("""
                             var $L = $L.validate(value.$L, context);
                             if (!$L.isEmpty()) {
@@ -210,13 +208,9 @@ public class ValidatorGenerator {
                 checkBuilder.endControlFlow();
             }
 
-            final ClassName lightweightContextClass = ClassName.get("io.koraframework.validation.common", "LightweightValidationContext");
-
-            checkBuilder.nextControlFlow("finally");
-            checkBuilder.beginControlFlow("if (context instanceof $T lctx)", lightweightContextClass);
-            checkBuilder.addStatement("lctx.popPath()");
+            checkBuilder.beginControlFlow("if (__lctx != null)");
+            checkBuilder.addStatement("__lctx.popPath()");
             checkBuilder.endControlFlow();
-            checkBuilder.endControlFlow(); // Конец try-finally
 
             fieldConstraintBuilder.add(checkBuilder.build());
         }
@@ -269,12 +263,14 @@ public class ValidatorGenerator {
                 type -> CodeBlock.of("$L", elementParameter.apply(ValidMeta.validatorOf(processingEnv, type).asPoetType()))));
         }
 
-        final MethodSpec.Builder validateMethodSpecBuilder = MethodSpec.methodBuilder("validate")
+        final var validateMethodSpecBuilder = MethodSpec.methodBuilder("validate")
             .addAnnotation(Override.class)
             .addModifiers(Modifier.PUBLIC)
             .returns(ParameterizedTypeName.get(ClassName.get(List.class), VIOLATION_TYPE))
             .addParameter(ParameterSpec.builder(meta.source().asPoetType(), "value").build())
             .addParameter(ParameterSpec.builder(CONTEXT_TYPE, "context").build());
+
+        final var lightweightContextClass = ClassName.get("io.koraframework.validation.common", "LightweightValidationContext");
 
         if (fieldConstraintBuilder.isEmpty()) {
             validateMethodSpecBuilder.addCode(CodeBlock.of("""
@@ -290,14 +286,15 @@ public class ValidatorGenerator {
                                 return $T.of(context.violates("$L input must be non null, but was null"));
                             }
                             
+                            final var __lctx = context instanceof $T ? ($T) context : null;
                             $T<$T> _violations = null;
-                            final boolean failFast = context.isFailFast();""",
-                        List.class, meta.sourceElement().getSimpleName(), List.class, ValidTypes.violation),
+                            final var failFast = context.isFailFast();""",
+                        List.class, meta.sourceElement().getSimpleName(), lightweightContextClass, lightweightContextClass, List.class, ValidTypes.violation),
                     CodeBlock.join(fieldConstraintBuilder, "\n"),
                     CodeBlock.of("return _violations == null ? $T.emptyList() : _violations;", Collections.class)),
                 "\n\n"));
         }
-        final TypeSpec validatorSpec = validatorSpecBuilder
+        final var validatorSpec = validatorSpecBuilder
             .addMethod(constructorSpecBuilder.build())
             .addMethod(validateMethodSpecBuilder.build())
             .build();

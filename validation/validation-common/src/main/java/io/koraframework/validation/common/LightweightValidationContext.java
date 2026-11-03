@@ -23,7 +23,6 @@ public final class LightweightValidationContext implements ValidationContext, Va
 
     @Override
     public ValidationContext addPath(int pathIndex) {
-        keys[depth] = null;
         indices[depth] = pathIndex;
         depth++;
         return this;
@@ -32,6 +31,7 @@ public final class LightweightValidationContext implements ValidationContext, Va
     public void popPath() {
         depth--;
         keys[depth] = null;
+        indices[depth] = -1;
     }
 
     @Override

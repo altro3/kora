@@ -183,43 +183,103 @@ public class JsonCodecGenerator {
             .initializer("$S", simpleDtoName)
             .build());
 
-        this.addFieldVariables(method, meta);
-        this.addFastPath(method, meta);
+        addFieldVariables(method, meta);
+        addFastPath(method, meta);
 
-        if (meta.fields().isEmpty()) {
-            method.addStatement("__token = __parser.nextToken()");
-        } else {
-            method.addStatement("__token = __parser.currentToken()");
+        method.addStatement("String __fieldName");
+        method.addCode("while ((__fieldName = __parser.nextName()) != null) {$>\n");
+        method.addCode("if (__fieldName.isEmpty()) continue;\n");
+        method.addCode("switch (__fieldName.charAt(0)) {$>\n");
+
+        var groups = new LinkedHashMap<Character, List<Integer>>();
+        for (int i = 0; i < meta.fields().size(); i++) {
+            String rawFieldName = meta.fields().get(i).parameter().getSimpleName().toString();
+            if (!rawFieldName.isEmpty()) {
+                char firstChar = rawFieldName.charAt(0);
+                groups.computeIfAbsent(firstChar, k -> new ArrayList<>()).add(i);
+            }
         }
 
-        method.addCode("while (__token != END_OBJECT) {$>\n");
-        assertTokenType(method, "PROPERTY_NAME", "ERR_FIELD_NAME_EXPECTED");
-        method.addStatement("var __fieldName = __parser.currentName()");
-        method.addCode("switch (__fieldName) {$>\n");
+        for (var entry : groups.entrySet()) {
+            char c = entry.getKey();
+            var fieldIndices = entry.getValue();
 
-        for (int i = 0, fieldsSize = meta.fields().size(); i < fieldsSize; i++) {
-            var field = meta.fields().get(i);
-            String rawFieldName = field.parameter().getSimpleName().toString();
-            String stringFieldName = "STR_" + rawFieldName;
+            method.addCode("case '$L': {$>\n", c);
 
-            method.addCode("case $L: {$>\n", stringFieldName);
-
-            String commonReadMethod = getCommonReadMethodName(field);
-            if (commonReadMethod != null) {
-                method.addCode("$L = $L(__parser, CLASS_NAME, $L);\n", field.parameter().getSimpleName(), commonReadMethod, stringFieldName);
-            } else {
-                var readerName = field.parameter().getSimpleName() + "Reader";
-                method.addStatement("$L = readRequiredObject(__parser, $L, CLASS_NAME, $L)", field.parameter().getSimpleName(), readerName, stringFieldName);
+            var byLength = new LinkedHashMap<Integer, List<Integer>>();
+            for (int idx : fieldIndices) {
+                String rawFieldName = meta.fields().get(idx).parameter().getSimpleName().toString();
+                byLength.computeIfAbsent(rawFieldName.length(), k -> new ArrayList<>()).add(idx);
             }
 
-            method.addCode(markReceived(meta, i));
+            if (byLength.size() == 1 && byLength.values().iterator().next().size() == 1) {
+                int idx = fieldIndices.getFirst();
+                var field = meta.fields().get(idx);
+                String rawFieldName = field.parameter().getSimpleName().toString();
+                String stringFieldName = "STR_" + rawFieldName;
+
+                method.addCode("if (__fieldName.equals($L)) {$>\n", stringFieldName);
+                String commonReadMethod = getCommonReadMethodName(field);
+                if (commonReadMethod != null) {
+                    method.addCode("$L = $L(__parser, CLASS_NAME, $L);\n", field.parameter().getSimpleName(), commonReadMethod, stringFieldName);
+                } else {
+                    var readerName = field.parameter().getSimpleName() + "Reader";
+                    method.addStatement("$L = readRequiredObject(__parser, $L, CLASS_NAME, $L)", field.parameter().getSimpleName(), readerName, stringFieldName);
+                }
+                method.addCode(markReceived(meta, idx));
+                method.addCode("} else {$>\n__parser.nextToken();\n__parser.skipChildren();\n$<}\n");
+                method.addCode("$<");
+            } else {
+                method.addStatement("var __len = __fieldName.length()");
+                int lenCount = 0;
+                for (Map.Entry<Integer, List<Integer>> lenEntry : byLength.entrySet()) {
+                    int len = lenEntry.getKey();
+                    List<Integer> lenIndices = lenEntry.getValue();
+
+                    if (lenCount == 0) {
+                        method.addCode("if (__len == $L) {$>\n", len);
+                    } else {
+                        method.addCode("} else if (__len == $L) {$>\n", len);
+                    }
+                    lenCount++;
+
+                    int fieldCount = 0;
+                    for (int idx : lenIndices) {
+                        var field = meta.fields().get(idx);
+                        String rawFieldName = field.parameter().getSimpleName().toString();
+                        String stringFieldName = "STR_" + rawFieldName;
+
+                        if (fieldCount == 0) {
+                            method.addCode("if (__fieldName.equals($L)) {$>\n", stringFieldName);
+                        } else {
+                            method.addCode("} else if (__fieldName.equals($L)) {$>\n", stringFieldName);
+                        }
+                        fieldCount++;
+
+                        String commonReadMethod = getCommonReadMethodName(field);
+                        if (commonReadMethod != null) {
+                            method.addCode("$L = $L(__parser, CLASS_NAME, $L);\n", field.parameter().getSimpleName(), commonReadMethod, stringFieldName);
+                        } else {
+                            var readerName = field.parameter().getSimpleName() + "Reader";
+                            method.addStatement("$L = readRequiredObject(__parser, $L, CLASS_NAME, $L)", field.parameter().getSimpleName(), readerName, stringFieldName);
+                        }
+                        method.addCode(markReceived(meta, idx));
+                    }
+                    method.addCode("} else {$>\n__parser.nextToken();\n__parser.skipChildren();\n$<}\n");
+                    method.addCode("$<");
+                }
+                method.addCode("} else {$>\n__parser.nextToken();\n__parser.skipChildren();\n$<}\n");
+                method.addCode("$<");
+            }
             method.addCode("break;\n$<}\n");
         }
 
         method.addCode("default: {$>\n__parser.nextToken();\n__parser.skipChildren();\nbreak;\n$<}\n");
         method.addCode("$<\n}\n");
+        method.addCode("$<}\n");
 
-        method.addCode("__token = __parser.nextToken();");
+        method.addCode("if (__parser.currentToken() != END_OBJECT) {$>\n");
+        method.addCode("    throw __unexpectedToken(__parser, CLASS_NAME, ERR_FIELD_NAME_EXPECTED);\n");
         method.addCode("$<}\n");
 
         method.addCode("""
@@ -236,7 +296,7 @@ public class JsonCodecGenerator {
         method.addCode(");");
 
         typeBuilder.addMethod(method.build());
-        this.generateMissingFieldsExceptionMethod(typeBuilder, meta);
+        generateMissingFieldsExceptionMethod(typeBuilder, meta);
     }
 
     private void addFastPath(MethodSpec.Builder method, JsonClassReaderMeta meta) {
