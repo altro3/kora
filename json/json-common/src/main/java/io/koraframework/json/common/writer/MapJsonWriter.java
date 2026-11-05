@@ -1,5 +1,6 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.JSONWriter;
 import io.koraframework.json.common.JsonWriter;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.core.JsonGenerator;
@@ -25,5 +26,19 @@ public class MapJsonWriter<T> implements JsonWriter<Map<String, T>> {
             this.writer.write(gen, field.getValue());
         }
         gen.writeEndObject();
+    }
+
+    @Override
+    public void write(JSONWriter writer, @Nullable Map<String, T> object) {
+        if (object == null) {
+            writer.writeNull();
+            return;
+        }
+        writer.startObject();
+        for (var field : object.entrySet()) {
+            writer.writeName(field.getKey());
+            this.writer.write(writer, field.getValue());
+        }
+        writer.endObject();
     }
 }

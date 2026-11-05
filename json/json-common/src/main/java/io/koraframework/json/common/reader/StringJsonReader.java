@@ -1,5 +1,7 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.JSONReader;
+import com.alibaba.fastjson2.JSONException;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 import tools.jackson.core.exc.*;
@@ -17,5 +19,17 @@ public class StringJsonReader implements JsonReader<String> {
             return null;
         }
         throw new StreamReadException(parser, "Failed to read json: expected a string, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public String read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            return reader.readString();
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json: expected a string"));
+        }
     }
 }

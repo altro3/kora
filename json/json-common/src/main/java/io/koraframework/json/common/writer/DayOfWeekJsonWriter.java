@@ -1,9 +1,10 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import java.time.DayOfWeek;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
+
+import java.time.*;
 
 public class DayOfWeekJsonWriter implements JsonWriter<DayOfWeek> {
     @Override
@@ -12,6 +13,15 @@ public class DayOfWeekJsonWriter implements JsonWriter<DayOfWeek> {
             gen.writeNull();
         } else {
             gen.writeString(object.name());
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, DayOfWeek object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeString(object.name());
         }
     }
 }

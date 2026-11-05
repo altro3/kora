@@ -1,10 +1,12 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import tools.jackson.core.exc.StreamReadException;
+import tools.jackson.core.exc.*;
 
-import java.time.Year;
+import java.time.*;
+
 import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class YearJsonReader implements JsonReader<Year> {
@@ -18,5 +20,17 @@ public class YearJsonReader implements JsonReader<Year> {
             return null;
         }
         throw new StreamReadException(parser, "Failed to read json: expected a string, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public Year read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            return Year.parse(reader.readString(), KoraDateTimeFormatters.KORA_ISO_YEAR);
+        } catch (Exception e) {
+            throw new JSONException(reader.info("Failed to read json: expected a string matching Kora Year format"));
+        }
     }
 }

@@ -1,5 +1,6 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.JSONWriter;
 import io.koraframework.json.common.JsonWriter;
 import io.koraframework.json.common.RawJson;
 import org.jspecify.annotations.Nullable;
@@ -27,5 +28,14 @@ public final class EnumJsonWriter<T extends Enum<T>, V> implements JsonWriter<T>
             return;
         }
         gen.writeRawValue(this.values[object.ordinal()]);
+    }
+
+    @Override
+    public void write(JSONWriter writer, @Nullable T object) {
+        if (object == null) {
+            writer.writeNull();
+            return;
+        }
+        writer.writeRaw(this.values[object.ordinal()].value);
     }
 }

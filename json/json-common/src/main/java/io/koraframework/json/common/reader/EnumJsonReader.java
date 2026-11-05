@@ -1,5 +1,7 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.JSONReader;
+import com.alibaba.fastjson2.JSONException;
 import io.koraframework.json.common.JsonReader;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.core.JsonParser;
@@ -34,6 +36,20 @@ public final class EnumJsonReader<T extends Enum<T>, V> implements JsonReader<T>
         T value = this.values.get(jsonValue);
         if (value == null) {
             throw new StreamReadException(parser, "Failed to read json enum: expected one of " + this.values.keySet() + ", but got \"" + jsonValue + "\" (at " + jsonPath(parser) + ")");
+        }
+        return value;
+    }
+
+    @Nullable
+    @Override
+    public T read(JSONReader reader) {
+        V jsonValue = this.valueReader.read(reader);
+        if (jsonValue == null) {
+            return null;
+        }
+        T value = this.values.get(jsonValue);
+        if (value == null) {
+            throw new JSONException(reader.info("Failed to read json enum: expected one of " + this.values.keySet() + ", but got \"" + jsonValue + "\""));
         }
         return value;
     }

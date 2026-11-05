@@ -1,15 +1,13 @@
 package io.koraframework.json.common.reader;
 
-import io.koraframework.json.common.JsonReader;
-import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
-import tools.jackson.core.exc.StreamReadException;
+import com.alibaba.fastjson2.*;
+import io.koraframework.json.common.*;
+import tools.jackson.core.*;
+import tools.jackson.core.exc.*;
 
-import java.util.SortedSet;
-import java.util.TreeSet;
+import java.util.*;
 
-import static io.koraframework.json.common.util.JsonModuleUtil.actualValue;
-import static io.koraframework.json.common.util.JsonModuleUtil.jsonPath;
+import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class SortedSetJsonReader<T extends Comparable<T>> implements JsonReader<SortedSet<T>> {
     private final JsonReader<T> reader;
@@ -39,5 +37,27 @@ public class SortedSetJsonReader<T extends Comparable<T>> implements JsonReader<
         }
 
         return result;
+    }
+
+    @Override
+    public SortedSet<T> read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (!reader.nextIfArrayStart()) {
+                throw new JSONException("Expected array start");
+            }
+            var result = new TreeSet<T>();
+            if (reader.nextIfArrayEnd()) {
+                return result;
+            }
+            while (!reader.nextIfArrayEnd()) {
+                result.add(this.reader.read(reader));
+            }
+            return result;
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json array: expected an array"));
+        }
     }
 }

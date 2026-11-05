@@ -153,9 +153,9 @@ public class GraphFileGenerator {
 
             var partitionClassBuilder = TypeSpec.classBuilder("Partition" + p)
                 .addAnnotation(AnnotationUtils.generated(KoraAppProcessor.class))
-                .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
                 .addSuperinterface(ParameterizedTypeName.get(ClassName.get("io.koraframework.application.graph.Graph", "Factory"), ClassName.get(Object.class)))
-                .addField(FieldSpec.builder(ClassName.get("", "Partition" + p), "INSTANCE", Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
+                .addField(FieldSpec.builder(ClassName.get("", "Partition" + p), "INSTANCE", Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL)
                     .initializer("new Partition" + p + "()").build())
                 .addField(implClass, "applicationImpl", Modifier.PRIVATE, Modifier.STATIC);
 
@@ -313,7 +313,7 @@ public class GraphFileGenerator {
             createMethodSwitch.endControlFlow();
 
             var createMethodBuilder = MethodSpec.methodBuilder("create")
-                .addModifiers(Modifier.PRIVATE, Modifier.STATIC)
+                .addModifiers(Modifier.PUBLIC, Modifier.STATIC)
                 .returns(Object.class)
                 .addParameter(int.class, "index")
                 .addParameter(ClassName.get("io.koraframework.application.graph", "RefreshableGraph"), "g")

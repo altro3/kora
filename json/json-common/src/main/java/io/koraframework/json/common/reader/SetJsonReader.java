@@ -1,15 +1,13 @@
 package io.koraframework.json.common.reader;
 
-import io.koraframework.json.common.JsonReader;
-import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
-import tools.jackson.core.exc.StreamReadException;
+import com.alibaba.fastjson2.*;
+import io.koraframework.json.common.*;
+import tools.jackson.core.*;
+import tools.jackson.core.exc.*;
 
-import java.util.LinkedHashSet;
-import java.util.Set;
+import java.util.*;
 
-import static io.koraframework.json.common.util.JsonModuleUtil.actualValue;
-import static io.koraframework.json.common.util.JsonModuleUtil.jsonPath;
+import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class SetJsonReader<T> implements JsonReader<Set<T>> {
     private final JsonReader<T> reader;
@@ -40,5 +38,27 @@ public class SetJsonReader<T> implements JsonReader<Set<T>> {
         }
 
         return result;
+    }
+
+    @Override
+    public Set<T> read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (!reader.nextIfArrayStart()) {
+                throw new JSONException("Expected array start");
+            }
+            if (reader.nextIfArrayEnd()) {
+                return Set.of();
+            }
+            Set<T> result = new LinkedHashSet<>();
+            while (!reader.nextIfArrayEnd()) {
+                result.add(this.reader.read(reader));
+            }
+            return result;
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json array: expected an array"));
+        }
     }
 }

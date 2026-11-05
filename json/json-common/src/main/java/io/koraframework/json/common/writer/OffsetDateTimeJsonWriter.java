@@ -1,9 +1,10 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import java.time.OffsetDateTime;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
+
+import java.time.*;
 
 public class OffsetDateTimeJsonWriter implements JsonWriter<OffsetDateTime> {
     @Override
@@ -12,6 +13,15 @@ public class OffsetDateTimeJsonWriter implements JsonWriter<OffsetDateTime> {
             gen.writeNull();
         } else {
             gen.writeString(object.format(KoraDateTimeFormatters.KORA_ISO_OFFSET_DATE_TIME));
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, OffsetDateTime object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeString(object.format(KoraDateTimeFormatters.KORA_ISO_OFFSET_DATE_TIME));
         }
     }
 }

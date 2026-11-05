@@ -1,8 +1,8 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class ByteArrayJsonWriter implements JsonWriter<byte[]> {
     @Override
@@ -11,6 +11,15 @@ public class ByteArrayJsonWriter implements JsonWriter<byte[]> {
             gen.writeNull();
         } else {
             gen.writeBinary(object);
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, byte[] object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeBinary(object);
         }
     }
 }

@@ -1,10 +1,12 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import java.time.LocalTime;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
-import static java.time.format.DateTimeFormatter.ISO_LOCAL_TIME;
+
+import java.time.*;
+
+import static java.time.format.DateTimeFormatter.*;
 
 public class LocalTimeJsonWriter implements JsonWriter<LocalTime> {
     @Override
@@ -13,6 +15,15 @@ public class LocalTimeJsonWriter implements JsonWriter<LocalTime> {
             gen.writeNull();
         } else {
             gen.writeString(object.format(ISO_LOCAL_TIME));
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, LocalTime object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeString(object.format(ISO_LOCAL_TIME));
         }
     }
 }

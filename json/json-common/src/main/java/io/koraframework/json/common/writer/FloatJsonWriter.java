@@ -1,5 +1,6 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.JSONWriter;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 
@@ -10,6 +11,15 @@ public class FloatJsonWriter implements JsonWriter<Float> {
             gen.writeNull();
         } else {
             gen.writeNumber(object);
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, Float object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeFloat(object);
         }
     }
 }

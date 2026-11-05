@@ -1,10 +1,11 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import java.time.Instant;
-import java.time.format.DateTimeFormatter;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
+
+import java.time.*;
+import java.time.format.*;
 
 public class InstantJsonWriter implements JsonWriter<Instant> {
     @Override
@@ -13,6 +14,15 @@ public class InstantJsonWriter implements JsonWriter<Instant> {
             gen.writeNull();
         } else {
             gen.writeString(DateTimeFormatter.ISO_INSTANT.format(object));
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, Instant object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeString(DateTimeFormatter.ISO_INSTANT.format(object));
         }
     }
 }

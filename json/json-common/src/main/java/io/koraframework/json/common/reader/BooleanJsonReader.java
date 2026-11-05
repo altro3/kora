@@ -1,5 +1,6 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 import tools.jackson.core.exc.*;
@@ -20,5 +21,17 @@ public class BooleanJsonReader implements JsonReader<Boolean> {
             return null;
         }
         throw new StreamReadException(parser, "Failed to read json: expected a boolean, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public Boolean read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            return reader.readBool();
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json: expected a boolean"));
+        }
     }
 }

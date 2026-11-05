@@ -1,5 +1,7 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.JSONReader;
+import com.alibaba.fastjson2.JSONException;
 import io.koraframework.json.common.JsonReader;
 import tools.jackson.core.JsonParser;
 import tools.jackson.core.JsonToken;
@@ -40,5 +42,27 @@ public class ListJsonReader<T> implements JsonReader<List<T>> {
         }
 
         return result;
+    }
+
+    @Override
+    public List<T> read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (!reader.nextIfArrayStart()) {
+                throw new JSONException("Expected array start");
+            }
+            if (reader.nextIfArrayEnd()) {
+                return List.of();
+            }
+            List<T> result = new ArrayList<>();
+            while (!reader.nextIfArrayEnd()) {
+                result.add(this.reader.read(reader));
+            }
+            return result;
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json array: expected an array"));
+        }
     }
 }

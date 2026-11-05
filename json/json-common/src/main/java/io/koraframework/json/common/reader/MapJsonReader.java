@@ -1,15 +1,13 @@
 package io.koraframework.json.common.reader;
 
-import io.koraframework.json.common.JsonReader;
-import tools.jackson.core.JsonParser;
-import tools.jackson.core.JsonToken;
-import tools.jackson.core.exc.StreamReadException;
+import com.alibaba.fastjson2.*;
+import io.koraframework.json.common.*;
+import tools.jackson.core.*;
+import tools.jackson.core.exc.*;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.*;
 
-import static io.koraframework.json.common.util.JsonModuleUtil.actualValue;
-import static io.koraframework.json.common.util.JsonModuleUtil.jsonPath;
+import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class MapJsonReader<T> implements JsonReader<Map<String, T>> {
     private final JsonReader<T> reader;
@@ -45,5 +43,32 @@ public class MapJsonReader<T> implements JsonReader<Map<String, T>> {
         }
 
         return result;
+    }
+
+    @Override
+    public Map<String, T> read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (!reader.nextIfObjectStart()) {
+                throw new JSONException("Expected object start");
+            }
+            if (reader.nextIfObjectEnd()) {
+                return Map.of();
+            }
+            Map<String, T> result = new LinkedHashMap<>();
+            while (!reader.nextIfObjectEnd()) {
+                String fieldName = reader.readFieldName();
+                if (fieldName == null) {
+                    continue;
+                }
+                T element = this.reader.read(reader);
+                result.put(fieldName, element);
+            }
+            return result;
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json object: expected an object"));
+        }
     }
 }

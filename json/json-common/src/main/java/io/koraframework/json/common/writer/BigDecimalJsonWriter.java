@@ -1,5 +1,6 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.JSONWriter;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 
@@ -12,6 +13,15 @@ public class BigDecimalJsonWriter implements JsonWriter<BigDecimal> {
             gen.writeNull();
         } else {
             gen.writeNumber(object);
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, BigDecimal object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeDecimal(object);
         }
     }
 }

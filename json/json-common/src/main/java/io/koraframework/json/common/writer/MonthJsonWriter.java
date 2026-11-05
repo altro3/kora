@@ -1,9 +1,10 @@
 package io.koraframework.json.common.writer;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import java.time.Month;
-import static io.koraframework.json.common.util.JsonModuleUtil.*;
+
+import java.time.*;
 
 public class MonthJsonWriter implements JsonWriter<Month> {
     @Override
@@ -12,6 +13,15 @@ public class MonthJsonWriter implements JsonWriter<Month> {
             gen.writeNull();
         } else {
             gen.writeString(object.name());
+        }
+    }
+
+    @Override
+    public void write(JSONWriter writer, Month object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeString(object.name());
         }
     }
 }

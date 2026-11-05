@@ -1,5 +1,6 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 import tools.jackson.core.exc.*;
@@ -17,5 +18,17 @@ public class FloatJsonReader implements JsonReader<Float> {
             return null;
         }
         throw new StreamReadException(parser, "Failed to read json: expected a number, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public Float read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            return reader.readFloat();
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json: expected a number"));
+        }
     }
 }

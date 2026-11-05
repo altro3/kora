@@ -5,6 +5,7 @@ module kora.http.server.common {
     requires transitive kora.http.common;
     requires transitive kora.logging.common;
     requires transitive kora.telemetry.common;
+    requires transitive com.alibaba.fastjson2;
     requires kora.micrometer.common;
 
     exports io.koraframework.http.server.common;

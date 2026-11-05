@@ -18,6 +18,7 @@ public class JsonProcessor {
     private final Types types;
     private final ReaderTypeMetaParser readerTypeMetaParser;
     private final WriterTypeMetaParser writerTypeMetaParser;
+    private final FastJsonCodecGenerator fastJsonCodecGenerator;
     private final JsonCodecGenerator codecGenerator;
     private final JsonSealedCodecGenerator sealedCodecGenerator;
     private final JsonEnumCodecGenerator enumCodecGenerator;
@@ -31,6 +32,7 @@ public class JsonProcessor {
         var knownTypes = new KnownType();
         this.readerTypeMetaParser = new ReaderTypeMetaParser(this.processingEnv, knownTypes);
         this.writerTypeMetaParser = new WriterTypeMetaParser(processingEnv, knownTypes);
+        this.fastJsonCodecGenerator = new FastJsonCodecGenerator(this.processingEnv);
         this.codecGenerator = new JsonCodecGenerator(this.processingEnv);
         this.sealedCodecGenerator = new JsonSealedCodecGenerator(this.processingEnv);
         this.enumCodecGenerator = new JsonEnumCodecGenerator();
@@ -95,7 +97,8 @@ public class JsonProcessor {
         var packageElement = JsonUtils.jsonClassPackage(this.elements, typeElement);
         var readerMeta = Objects.requireNonNull(this.readerTypeMetaParser.parse(typeElement, jsonTypeMirror));
         var writerMeta = Objects.requireNonNull(this.writerTypeMetaParser.parse(typeElement, jsonTypeMirror));
-        var codecType = Objects.requireNonNull(this.codecGenerator.generate(readerMeta, writerMeta));
+//        var codecType = Objects.requireNonNull(this.codecGenerator.generate(readerMeta, writerMeta));
+        var codecType = Objects.requireNonNull(this.fastJsonCodecGenerator.generate(readerMeta, writerMeta));
 
         var jsonCommonClass = ClassName.get("io.koraframework.json.common", "JsonCommon");
         var jsonCommonReaderClass = ClassName.get("io.koraframework.json.common", "JsonCommonReader");

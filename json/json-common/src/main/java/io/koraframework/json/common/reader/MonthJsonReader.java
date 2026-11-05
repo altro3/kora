@@ -1,10 +1,12 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import tools.jackson.core.exc.StreamReadException;
+import tools.jackson.core.exc.*;
 
-import java.time.Month;
+import java.time.*;
+
 import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class MonthJsonReader implements JsonReader<Month> {
@@ -27,5 +29,26 @@ public class MonthJsonReader implements JsonReader<Month> {
             return Month.of(parser.getValueAsInt());
         }
         throw new StreamReadException(parser, "Failed to read json: expected a string or integer number, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public Month read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (reader.isInt()) {
+                return Month.of(reader.readInt32Value());
+            }
+            String valueAsString = reader.readString();
+            for (Month month : KoraDateTimeFormatters.KORA_MONTHS) {
+                if (month.name().equalsIgnoreCase(valueAsString)) {
+                    return month;
+                }
+            }
+            return Month.of(Integer.parseInt(valueAsString));
+        } catch (Exception e) {
+            throw new JSONException(reader.info("Failed to read json: expected a string or integer number"));
+        }
     }
 }

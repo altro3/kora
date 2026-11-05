@@ -1,11 +1,11 @@
 package io.koraframework.json.common.writer;
 
-import io.koraframework.json.common.JsonWriter;
-import io.koraframework.json.common.RawJson;
-import org.jspecify.annotations.Nullable;
-import tools.jackson.core.JsonGenerator;
+import com.alibaba.fastjson2.*;
+import io.koraframework.json.common.*;
+import org.jspecify.annotations.*;
+import tools.jackson.core.*;
 
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.*;
 
 public class RawJsonWriter implements JsonWriter<RawJson> {
     @Override
@@ -23,5 +23,14 @@ public class RawJsonWriter implements JsonWriter<RawJson> {
             return "null".getBytes(StandardCharsets.ISO_8859_1);
         }
         return object.value;
+    }
+
+    @Override
+    public void write(JSONWriter writer, @Nullable RawJson object) {
+        if (object == null) {
+            writer.writeNull();
+        } else {
+            writer.writeRaw(object.value);
+        }
     }
 }

@@ -1,5 +1,6 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
 import tools.jackson.core.exc.*;
@@ -9,6 +10,7 @@ import java.math.*;
 import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class BigDecimalJsonReader implements JsonReader<BigDecimal> {
+
     @Override
     public BigDecimal read(JsonParser parser) throws JacksonException {
         JsonToken t = parser.currentToken();
@@ -19,5 +21,17 @@ public class BigDecimalJsonReader implements JsonReader<BigDecimal> {
             return null;
         }
         throw new StreamReadException(parser, "Failed to read json: expected a number, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public BigDecimal read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            return reader.readBigDecimal();
+        } catch (JSONException e) {
+            throw new JSONException(reader.info("Failed to read json: expected a decimal number"));
+        }
     }
 }

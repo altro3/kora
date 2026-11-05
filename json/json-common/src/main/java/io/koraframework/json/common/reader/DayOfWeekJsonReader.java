@@ -1,10 +1,12 @@
 package io.koraframework.json.common.reader;
 
+import com.alibaba.fastjson2.*;
 import io.koraframework.json.common.*;
 import tools.jackson.core.*;
-import tools.jackson.core.exc.StreamReadException;
+import tools.jackson.core.exc.*;
 
-import java.time.DayOfWeek;
+import java.time.*;
+
 import static io.koraframework.json.common.util.JsonModuleUtil.*;
 
 public class DayOfWeekJsonReader implements JsonReader<DayOfWeek> {
@@ -27,5 +29,26 @@ public class DayOfWeekJsonReader implements JsonReader<DayOfWeek> {
             return DayOfWeek.of(parser.getValueAsInt());
         }
         throw new StreamReadException(parser, "Failed to read json: expected a string or integer number, but got " + actualValue(parser) + " (at " + jsonPath(parser) + ")");
+    }
+
+    @Override
+    public DayOfWeek read(JSONReader reader) {
+        if (reader.wasNull()) {
+            return null;
+        }
+        try {
+            if (reader.isInt()) {
+                return DayOfWeek.of(reader.readInt32Value());
+            }
+            String valueAsString = reader.readString();
+            for (DayOfWeek dayOfWeek : KoraDateTimeFormatters.KORA_DAY_OF_WEEKS) {
+                if (dayOfWeek.name().equalsIgnoreCase(valueAsString)) {
+                    return dayOfWeek;
+                }
+            }
+            return DayOfWeek.of(Integer.parseInt(valueAsString));
+        } catch (Exception e) {
+            throw new JSONException(reader.info("Failed to read json: expected a string or integer number"));
+        }
     }
 }
