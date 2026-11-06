@@ -100,7 +100,7 @@ public class GraphFileGenerator {
                 }
             }
 
-            currentClass.addField(FieldSpec.builder(ParameterizedTypeName.get(CommonClassNames.node, componentTypeName), component.fieldName(), Modifier.PRIVATE, Modifier.FINAL).build());
+            currentClass.addField(FieldSpec.builder(ParameterizedTypeName.get(CommonClassNames.node, componentTypeName), component.fieldName(), Modifier.PUBLIC, Modifier.FINAL).build());
             currentConstructor.addStatement("var _type_of_$L = map.get($S)", component.fieldName(), component.fieldName());
             var statement = this.generateComponentStatement(graphTypeName, component);
             currentConstructor.addStatement(statement);
@@ -112,7 +112,7 @@ public class GraphFileGenerator {
             }
             currentClass.addMethod(currentConstructor.build());
             classBuilder.addType(currentClass.build());
-            classBuilder.addField(graphTypeName.nestedClass("ComponentHolder" + lastComponentNumber), "holder" + lastComponentNumber, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL);
+            classBuilder.addField(graphTypeName.nestedClass("ComponentHolder" + lastComponentNumber), "holder" + lastComponentNumber, Modifier.PUBLIC, Modifier.STATIC, Modifier.FINAL);
         }
 
 
