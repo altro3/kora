@@ -2,7 +2,7 @@ package io.koraframework.http.common.body;
 
 import org.jspecify.annotations.Nullable;
 
-import java.io.Closeable;
+import java.io.*;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
@@ -20,6 +20,25 @@ import java.nio.charset.StandardCharsets;
  * </pre>
  */
 public interface HttpBody extends Closeable {
+
+    record ReadResult(byte[] bytes, int length) {}
+
+    default ReadResult readAllBytes(byte[] initialBuffer) throws IOException {
+        try (var is = ((HttpBodyInput) this).asInputStream()) {
+            byte[] buf = initialBuffer;
+            int offset = 0;
+            int read;
+            while ((read = is.read(buf, offset, buf.length - offset)) != -1) {
+                offset += read;
+                if (offset == buf.length) {
+                    byte[] newBuf = new byte[buf.length * 2];
+                    System.arraycopy(buf, 0, newBuf, 0, offset);
+                    buf = newBuf;
+                }
+            }
+            return new ReadResult(buf, offset);
+        }
+    }
 
     /**
      * @return <b>Русский</b>: Возвращает длину тела запроса

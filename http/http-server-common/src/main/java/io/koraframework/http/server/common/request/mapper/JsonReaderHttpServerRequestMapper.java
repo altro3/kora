@@ -1,11 +1,11 @@
 package io.koraframework.http.server.common.request.mapper;
 
-import io.koraframework.common.util.ByteBufferInputStream;
-import io.koraframework.http.server.common.request.HttpServerRequest;
-import io.koraframework.http.server.common.request.HttpServerRequestMapper;
-import io.koraframework.json.common.JsonReader;
+import com.alibaba.fastjson2.*;
+import io.koraframework.http.server.common.request.*;
+import io.koraframework.http.server.common.response.*;
+import io.koraframework.json.common.*;
 
-import java.io.IOException;
+import java.io.*;
 
 public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerRequestMapper<T> {
     private final JsonReader<T> reader;
@@ -20,14 +20,38 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
             var fullContent = body.getFullContentIfAvailable();
             if (fullContent != null) {
                 if (fullContent.hasArray()) {
-                    return this.reader.read(fullContent.array(), fullContent.arrayOffset(), fullContent.remaining());
+                    return this.reader.read(fullContent.array(), fullContent.arrayOffset() + fullContent.position(), fullContent.remaining());
                 } else {
-                    return this.reader.read(new ByteBufferInputStream(fullContent));
+                    byte[] buf = JsonPools.borrowThreadLocal();
+                    try {
+                        int remaining = fullContent.remaining();
+                        if (remaining > buf.length) {
+                            buf = new byte[remaining];
+                        }
+                        fullContent.get(buf, 0, remaining);
+                        return this.reader.read(buf, 0, remaining);
+                    } finally {
+                        JsonPools.returnThreadLocal(buf);
+                    }
                 }
             }
-            try (var is = body.asInputStream()) {
-                return this.reader.read(is);
+
+            byte[] initialBuf = JsonPools.borrowThreadLocal();
+            byte[] finalBuf = initialBuf;
+            try {
+                var result = body.readAllBytes(initialBuf);
+                finalBuf = result.bytes();
+
+                if (result.length() == 0) {
+                    return null;
+                }
+
+                return this.reader.read(finalBuf, 0, result.length());
+            } finally {
+                JsonPools.returnThreadLocal(finalBuf);
             }
+        } catch (JSONException e) {
+            throw HttpServerResponseException.of(400, e);
         }
     }
 }

@@ -4,6 +4,7 @@ import com.alibaba.fastjson2.*;
 import com.alibaba.fastjson2.reader.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
+import io.koraframework.json.common.JsonPools;
 
 import java.io.*;
 import java.lang.reflect.*;
@@ -25,14 +26,21 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
                 return parseFromByteBuffer(fullContent);
             }
 
-            try (var is = body.asInputStream()) {
-                byte[] readBytes = is.readAllBytes();
-                if (readBytes.length == 0) {
+            byte[] initialBuf = JsonPools.borrowThreadLocal();
+            byte[] finalBuf = initialBuf;
+            try {
+                var result = body.readAllBytes(initialBuf);
+                finalBuf = result.bytes();
+
+                if (result.length() == 0) {
                     return null;
                 }
-                try (var reader = JSONReader.of(readBytes, 0, readBytes.length)) {
-                    return this.objectReader.readObject(reader, null, null, 0);
+
+                try (var reader = JSONReader.of(finalBuf, 0, result.length())) {
+                    return objectReader.readObject(reader, null, null, 0);
                 }
+            } finally {
+                JsonPools.returnThreadLocal(finalBuf);
             }
         } catch (JSONException e) {
             throw HttpServerResponseException.of(400, e);
