@@ -6,13 +6,13 @@ import org.jspecify.annotations.Nullable;
 
 public record UndertowContext(HttpServerExchange exchange) {
 
-    public static final KoraContext.Key<UndertowContext> KEY = KoraContext.Key.create();
+    public static final KoraContext.Key<UndertowContext> UNDERTOW_KEY = KoraContext.Key.create();
 
     @Nullable
     public static UndertowContext get() {
         KoraContext current = KoraContext.current();
         if (current != null) {
-            return current.get(KEY);
+            return current.get(UNDERTOW_KEY);
         }
         return null;
     }
@@ -21,7 +21,7 @@ public record UndertowContext(HttpServerExchange exchange) {
     public static HttpServerExchange getExchange() {
         KoraContext current = KoraContext.current();
         if (current != null) {
-            UndertowContext undertowCtx = current.get(KEY);
+            UndertowContext undertowCtx = current.get(UNDERTOW_KEY);
             if (undertowCtx != null) {
                 return undertowCtx.exchange;
             }
