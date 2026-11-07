@@ -27,13 +27,13 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         if (bytes == null || bytes.length == 0) {
             return null;
         }
-        JSONReader.Context context = JsonPools.borrowContext();
+        JSONReader.Context context = JsonPools.borrowReaderContext();
         try (var reader = JSONReader.of(bytes, 0, bytes.length, context)) {
             return this.read(reader);
         } catch (JSONException e) {
             throw new RuntimeException("Fastjson2 processing failed", e);
         } finally {
-            JsonPools.returnContext(context);
+            JsonPools.returnReaderContext(context);
         }
     }
 
@@ -42,13 +42,13 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         if (bytes == null || length == 0) {
             return null;
         }
-        JSONReader.Context context = JsonPools.borrowContext();
+        JSONReader.Context context = JsonPools.borrowReaderContext();
         try (var reader = JSONReader.of(bytes, offset, length, context)) {
             return this.read(reader);
         } catch (JSONException e) {
             throw new RuntimeException("Fastjson2 processing failed", e);
         } finally {
-            JsonPools.returnContext(context);
+            JsonPools.returnReaderContext(context);
         }
     }
 
@@ -57,13 +57,13 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         if (str == null || str.isEmpty()) {
             return null;
         }
-        JSONReader.Context context = JsonPools.borrowContext();
+        JSONReader.Context context = JsonPools.borrowReaderContext();
         try (var reader = JSONReader.of(str, context)) {
             return this.read(reader);
         } catch (JSONException e) {
             throw new RuntimeException("Fastjson2 processing failed", e);
         } finally {
-            JsonPools.returnContext(context);
+            JsonPools.returnReaderContext(context);
         }
     }
 
@@ -73,7 +73,7 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
             return null;
         }
         byte[] buf = JsonPools.borrowBuffer();
-        JSONReader.Context context = JsonPools.borrowContext();
+        JSONReader.Context context = JsonPools.borrowReaderContext();
         try {
             int offset = 0;
             while (true) {
@@ -93,7 +93,7 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         } catch (IOException | JSONException e) {
             throw new RuntimeException("Fastjson2 processing failed", e);
         } finally {
-            JsonPools.returnContext(context);
+            JsonPools.returnReaderContext(context);
             JsonPools.returnBuffer(buf);
         }
     }

@@ -2,12 +2,14 @@ package io.koraframework.json.common;
 
 import com.alibaba.fastjson2.JSONFactory;
 import com.alibaba.fastjson2.JSONReader;
+import com.alibaba.fastjson2.JSONWriter;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class JsonPools {
     private static final int BUFFER_SIZE = 8 * 1024;
     private static final ConcurrentLinkedQueue<byte[]> BYTE_BUF_POOL = new ConcurrentLinkedQueue<>();
-    private static final ConcurrentLinkedQueue<JSONReader.Context> CONTEXT_POOL = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<JSONReader.Context> READER_CONTEXT_POOL = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<JSONWriter.Context> WRITER_CONTEXT_POOL = new ConcurrentLinkedQueue<>();
 
     public static byte[] borrowBuffer() {
         byte[] buf = BYTE_BUF_POOL.poll();
@@ -25,17 +27,31 @@ public final class JsonPools {
         }
     }
 
-    public static JSONReader.Context borrowContext() {
-        JSONReader.Context context = CONTEXT_POOL.poll();
+    public static JSONReader.Context borrowReaderContext() {
+        JSONReader.Context context = READER_CONTEXT_POOL.poll();
         if (context == null) {
             return new JSONReader.Context(JSONFactory.getDefaultObjectReaderProvider());
         }
         return context;
     }
 
-    public static void returnContext(JSONReader.Context context) {
-        if (context != null && CONTEXT_POOL.size() < 1024) {
-            CONTEXT_POOL.offer(context);
+    public static void returnReaderContext(JSONReader.Context context) {
+        if (context != null && READER_CONTEXT_POOL.size() < 1024) {
+            READER_CONTEXT_POOL.offer(context);
+        }
+    }
+
+    public static JSONWriter.Context borrowWriterContext() {
+        JSONWriter.Context context = WRITER_CONTEXT_POOL.poll();
+        if (context == null) {
+            return new JSONWriter.Context(JSONFactory.getDefaultObjectWriterProvider());
+        }
+        return context;
+    }
+
+    public static void returnWriterContext(JSONWriter.Context context) {
+        if (context != null && WRITER_CONTEXT_POOL.size() < 1024) {
+            WRITER_CONTEXT_POOL.offer(context);
         }
     }
 }

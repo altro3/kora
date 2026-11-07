@@ -27,7 +27,7 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
             }
             final byte[] initialBuf = JsonPools.borrowBuffer();
             byte[] finalBuf;
-            JSONReader.Context context = JsonPools.borrowContext();
+            JSONReader.Context context = JsonPools.borrowReaderContext();
             try {
                 var result = body.readAllBytes(initialBuf);
                 finalBuf = result.bytes();
@@ -40,7 +40,7 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
                     return objectReader.readObject(reader, null, null, 0);
                 }
             } finally {
-                JsonPools.returnContext(context);
+                JsonPools.returnReaderContext(context);
                 JsonPools.returnBuffer(initialBuf);
             }
         } catch (JSONException e) {
@@ -51,7 +51,7 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
     private T parseFromByteBuffer(ByteBuffer buffer) {
         JSONReader jsonReader;
         byte[] heapBytes = null;
-        JSONReader.Context context = JsonPools.borrowContext();
+        JSONReader.Context context = JsonPools.borrowReaderContext();
 
         if (buffer.hasArray()) {
             jsonReader = JSONReader.of(
@@ -76,7 +76,7 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
         try (jsonReader) {
             return this.objectReader.readObject(jsonReader, null, null, 0);
         } finally {
-            JsonPools.returnContext(context);
+            JsonPools.returnReaderContext(context);
             if (heapBytes != null) {
                 JsonPools.returnBuffer(heapBytes);
             }
