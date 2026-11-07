@@ -1,5 +1,6 @@
 package io.koraframework.logging.common;
 
+import io.koraframework.common.context.*;
 import io.koraframework.logging.common.arg.*;
 import tools.jackson.core.*;
 
@@ -9,7 +10,7 @@ public class MDC {
 
     private volatile Map<String, StructuredArgumentWriter> values;
 
-    public static final ScopedValue<MDC> VALUE = ScopedValue.newInstance();
+    public static final KoraContext.Key<MDC> MDC_KEY = KoraContext.Key.create();
 
     public MDC() {
         this.values = Map.of();
@@ -86,43 +87,53 @@ public class MDC {
     }
 
     public static MDC get() {
-        return VALUE.get();
+        KoraContext current = KoraContext.current();
+        return current != null ? current.get(MDC_KEY) : null;
     }
 
     public static void put(String key, String value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, Integer value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, int value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, Long value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, long value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, Boolean value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, boolean value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void put(String key, StructuredArgumentWriter value) {
-        get().put0(key, value);
+        MDC mdc = get();
+        if (mdc != null) mdc.put0(key, value);
     }
 
     public static void remove(String key) {
-        get().remove0(key);
+        MDC mdc = get();
+        if (mdc != null) mdc.remove0(key);
     }
 
     public static final class NullStructuredArgumentWriter implements StructuredArgumentWriter {

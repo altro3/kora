@@ -1,14 +1,12 @@
 package io.koraframework.common.telemetry;
 
-import io.opentelemetry.context.Context;
-import io.opentelemetry.context.ContextKey;
-import io.opentelemetry.context.Scope;
+import io.koraframework.common.context.*;
+import io.opentelemetry.context.*;
 
-import java.util.concurrent.Callable;
+import java.util.concurrent.*;
 import java.util.function.*;
 
 public class OpentelemetryContext implements Context {
-    public static final ScopedValue<Context> VALUE = ScopedValue.newInstance();
 
     private final Context delegate;
 
@@ -18,7 +16,7 @@ public class OpentelemetryContext implements Context {
 
     @Override
     public Scope makeCurrent() {
-        throw new IllegalStateException();
+        throw new IllegalStateException("makeCurrent() is not supported in ScopedValue environments");
     }
 
     @Override
@@ -26,11 +24,6 @@ public class OpentelemetryContext implements Context {
         return delegate.get(key);
     }
 
-    /**
-     * The derived context has to stay a Kora one: this class carries the only {@link ScopedValue}-based
-     * implementation of {@code wrap(...)}. A bare delegate falls back to the default {@code wrap(...)},
-     * which calls {@code makeCurrent()} and therefore {@code ContextStorage.attach(...)} -- unsupported here.
-     */
     @Override
     public <V> Context with(ContextKey<V> k1, V v1) {
         return new OpentelemetryContext(delegate.with(k1, v1));
@@ -71,6 +64,14 @@ public class OpentelemetryContext implements Context {
         return new WrappedSupplier<>(this, supplier);
     }
 
+    private static KoraContext createUpdatedContext(OpentelemetryContext ctx) {
+        KoraContext current = KoraContext.current();
+        if (current == null) {
+            return KoraContext.empty().with(OpentelemetryContextStorage.OPENTELEMETRY_KEY, ctx);
+        }
+        return current.with(OpentelemetryContextStorage.OPENTELEMETRY_KEY, ctx);
+    }
+
     private static final class WrappedRunnable implements Runnable {
         private final OpentelemetryContext ctx;
         private final Runnable delegate;
@@ -82,7 +83,21 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public void run() {
-            ScopedValue.where(VALUE, ctx).run(delegate);
+            KoraContext.runWith(createUpdatedContext(ctx), new RunnableRunner(delegate));
+        }
+    }
+
+    private static final class RunnableRunner implements Supplier<Void> {
+        private final Runnable runnable;
+
+        RunnableRunner(Runnable runnable) {
+            this.runnable = runnable;
+        }
+
+        @Override
+        public Void get() {
+            runnable.run();
+            return null;
         }
     }
 
@@ -97,27 +112,30 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public T call() throws Exception {
-            // Оборачиваем в CallableOp, так как оригинальный delegate может кидать Exception
-            return ScopedValue.where(VALUE, ctx).call(new CallableRunner<>(delegate));
+            try {
+                return KoraContext.runWith(createUpdatedContext(ctx), new CallableRunner<>(delegate));
+            } catch (RuntimeException e) {
+                if (e.getCause() instanceof Exception ex) {
+                    throw ex;
+                }
+                throw e;
+            }
+        }
+    }
+
+    private static final class CallableRunner<T> implements Supplier<T> {
+        private final Callable<T> callable;
+
+        CallableRunner(Callable<T> callable) {
+            this.callable = callable;
         }
 
-        private static final class CallableRunner<T> implements ScopedValue.CallableOp<T, RuntimeException> {
-            private final Callable<T> callable;
-
-            CallableRunner(Callable<T> callable) {
-                this.callable = callable;
-            }
-
-            @Override
-            public T call() {
-                try {
-                    return callable.call();
-                } catch (Exception e) {
-                    if (e instanceof RuntimeException re) {
-                        throw re;
-                    }
-                    throw new RuntimeException(e);
-                }
+        @Override
+        public T get() {
+            try {
+                return callable.call();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
             }
         }
     }
@@ -133,22 +151,22 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public U apply(T t) {
-            return ScopedValue.where(VALUE, ctx).call(new FunctionRunner<>(delegate, t));
+            return KoraContext.runWith(createUpdatedContext(ctx), new FunctionRunner<>(delegate, t));
+        }
+    }
+
+    private static final class FunctionRunner<T, U> implements Supplier<U> {
+        private final Function<T, U> function;
+        private final T arg;
+
+        FunctionRunner(Function<T, U> function, T arg) {
+            this.function = function;
+            this.arg = arg;
         }
 
-        private static final class FunctionRunner<T, U> implements ScopedValue.CallableOp<U, RuntimeException> {
-            private final Function<T, U> function;
-            private final T arg;
-
-            FunctionRunner(Function<T, U> function, T arg) {
-                this.function = function;
-                this.arg = arg;
-            }
-
-            @Override
-            public U call() {
-                return function.apply(arg);
-            }
+        @Override
+        public U get() {
+            return function.apply(arg);
         }
     }
 
@@ -163,24 +181,24 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public V apply(T t, U u) {
-            return ScopedValue.where(VALUE, ctx).call(new BiFunctionRunner<>(delegate, t, u));
+            return KoraContext.runWith(createUpdatedContext(ctx), new BiFunctionRunner<>(delegate, t, u));
+        }
+    }
+
+    private static final class BiFunctionRunner<T, U, V> implements Supplier<V> {
+        private final BiFunction<T, U, V> function;
+        private final T arg1;
+        private final U arg2;
+
+        BiFunctionRunner(BiFunction<T, U, V> function, T arg1, U arg2) {
+            this.function = function;
+            this.arg1 = arg1;
+            this.arg2 = arg2;
         }
 
-        private static final class BiFunctionRunner<T, U, V> implements ScopedValue.CallableOp<V, RuntimeException> {
-            private final BiFunction<T, U, V> function;
-            private final T arg1;
-            private final U arg2;
-
-            BiFunctionRunner(BiFunction<T, U, V> function, T arg1, U arg2) {
-                this.function = function;
-                this.arg1 = arg1;
-                this.arg2 = arg2;
-            }
-
-            @Override
-            public V call() {
-                return function.apply(arg1, arg2);
-            }
+        @Override
+        public V get() {
+            return function.apply(arg1, arg2);
         }
     }
 
@@ -195,22 +213,23 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public void accept(T t) {
-            ScopedValue.where(VALUE, ctx).run(new ConsumerRunner<>(delegate, t));
+            KoraContext.runWith(createUpdatedContext(ctx), new ConsumerRunner<>(delegate, t));
+        }
+    }
+
+    private static final class ConsumerRunner<T> implements Supplier<Void> {
+        private final Consumer<T> consumer;
+        private final T arg;
+
+        ConsumerRunner(Consumer<T> consumer, T arg) {
+            this.consumer = consumer;
+            this.arg = arg;
         }
 
-        private static final class ConsumerRunner<T> implements Runnable {
-            private final Consumer<T> consumer;
-            private final T arg;
-
-            ConsumerRunner(Consumer<T> consumer, T arg) {
-                this.consumer = consumer;
-                this.arg = arg;
-            }
-
-            @Override
-            public void run() {
-                consumer.accept(arg);
-            }
+        @Override
+        public Void get() {
+            consumer.accept(arg);
+            return null;
         }
     }
 
@@ -225,24 +244,25 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public void accept(T t, U u) {
-            ScopedValue.where(VALUE, ctx).run(new BiConsumerRunner<>(delegate, t, u));
+            KoraContext.runWith(createUpdatedContext(ctx), new BiConsumerRunner<>(delegate, t, u));
+        }
+    }
+
+    private static final class BiConsumerRunner<T, U> implements Supplier<Void> {
+        private final BiConsumer<T, U> consumer;
+        private final T arg1;
+        private final U arg2;
+
+        BiConsumerRunner(BiConsumer<T, U> consumer, T arg1, U arg2) {
+            this.consumer = consumer;
+            this.arg1 = arg1;
+            this.arg2 = arg2;
         }
 
-        private static final class BiConsumerRunner<T, U> implements Runnable {
-            private final BiConsumer<T, U> consumer;
-            private final T arg1;
-            private final U arg2;
-
-            BiConsumerRunner(BiConsumer<T, U> consumer, T arg1, U arg2) {
-                this.consumer = consumer;
-                this.arg1 = arg1;
-                this.arg2 = arg2;
-            }
-
-            @Override
-            public void run() {
-                consumer.accept(arg1, arg2);
-            }
+        @Override
+        public Void get() {
+            consumer.accept(arg1, arg2);
+            return null;
         }
     }
 
@@ -257,20 +277,20 @@ public class OpentelemetryContext implements Context {
 
         @Override
         public T get() {
-            return ScopedValue.where(VALUE, ctx).call(new SupplierRunner<>(delegate));
+            return KoraContext.runWith(createUpdatedContext(ctx), new WrappedSupplierRunner<>(delegate));
+        }
+    }
+
+    private static final class WrappedSupplierRunner<T> implements Supplier<T> {
+        private final Supplier<T> supplier;
+
+        WrappedSupplierRunner(Supplier<T> supplier) {
+            this.supplier = supplier;
         }
 
-        private static final class SupplierRunner<T> implements ScopedValue.CallableOp<T, RuntimeException> {
-            private final Supplier<T> supplier;
-
-            SupplierRunner(Supplier<T> supplier) {
-                this.supplier = supplier;
-            }
-
-            @Override
-            public T call() {
-                return supplier.get();
-            }
+        @Override
+        public T get() {
+            return supplier.get();
         }
     }
 }

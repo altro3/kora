@@ -1,5 +1,6 @@
 package io.koraframework.database.jdbc;
 
+import io.koraframework.common.context.*;
 import io.koraframework.common.telemetry.*;
 import io.koraframework.database.common.*;
 import io.koraframework.database.common.telemetry.*;
@@ -11,6 +12,7 @@ import org.jspecify.annotations.*;
 
 import java.sql.*;
 import java.util.*;
+import java.util.function.Supplier;
 
 /**
  * <b>Русский</b>: Фабрика соединений JDBC которая позволяет выполнять запросы в ручном режиме и в рамках транзакции.
@@ -68,10 +70,10 @@ public interface JdbcExecutor {
      */
     default <T> T query(QueryContext queryContext, SqlFunction<PreparedStatement, T> callback) {
         var observation = this.telemetry().observe(queryContext);
+        KoraContext current = KoraContext.current();
+        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
         try {
-            return ScopedValue.where(Observation.VALUE, observation)
-                .where(OpentelemetryContext.VALUE, Context.current().with(observation.span()))
-                .call(new QueryContextCall<>(this, queryContext, callback, observation));
+            return KoraContext.runWith(updated, new QueryContextCall<>(this, queryContext, callback, observation));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -92,10 +94,10 @@ public interface JdbcExecutor {
     default <T> T query(JdbcQuery query, SqlFunction<PreparedStatement, T> callback) {
         var queryContext = new QueryContext(query.sourceSql(), query.sql());
         var observation = this.telemetry().observe(queryContext);
+        KoraContext current = KoraContext.current();
+        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
         try {
-            return ScopedValue.where(Observation.VALUE, observation)
-                .where(OpentelemetryContext.VALUE, Context.current().with(observation.span()))
-                .call(new JdbcQueryCall<>(this, query, callback, observation));
+            return KoraContext.runWith(updated, new JdbcQueryCall<>(this, query, callback, observation));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -104,9 +106,9 @@ public interface JdbcExecutor {
     }
 
     /**
-     * <b>Русский</b>: Выполняет готовый {@link JdbcQuery} и преобразует {@link java.sql.ResultSet} указанным маппером.
+     * <b>Русский</b>: Выполняет готовый {@link JdbcQuery} и преобразует {@link ResultSet} указанным маппером.
      * <hr>
-     * <b>English</b>: Executes a built {@link JdbcQuery} and maps {@link java.sql.ResultSet} with the provided mapper.
+     * <b>English</b>: Executes a built {@link JdbcQuery} and maps {@link ResultSet} with the provided mapper.
      *
      * @param query  готовый JDBC запрос / built JDBC query
      * @param mapper маппер результата / result mapper
@@ -195,10 +197,10 @@ public interface JdbcExecutor {
     default UpdateCount executeUpdateBatch(JdbcQuery.JdbcQueryBatch batch) {
         var queryContext = new QueryContext(batch.sourceSql(), batch.sql());
         var observation = this.telemetry().observe(queryContext);
+        KoraContext current = KoraContext.current();
+        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
         try {
-            return ScopedValue.where(Observation.VALUE, observation)
-                .where(OpentelemetryContext.VALUE, Context.current().with(observation.span()))
-                .call(new ExecuteUpdateBatchCall(this, batch, observation));
+            return KoraContext.runWith(updated, new ExecuteUpdateBatchCall(this, batch, observation));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -219,10 +221,10 @@ public interface JdbcExecutor {
     default <T> T executeUpdateBatch(JdbcQuery.JdbcQueryBatch batch, JdbcResultSetMapper<T> generatedKeysMapper) {
         var queryContext = new QueryContext(batch.sourceSql(), batch.sql());
         var observation = this.telemetry().observe(queryContext);
+        KoraContext current = KoraContext.current();
+        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
         try {
-            return ScopedValue.where(Observation.VALUE, observation)
-                .where(OpentelemetryContext.VALUE, Context.current().with(observation.span()))
-                .call(new ExecuteUpdateBatchMapperCall<>(this, batch, generatedKeysMapper, observation));
+            return KoraContext.runWith(updated, new ExecuteUpdateBatchMapperCall<>(this, batch, generatedKeysMapper, observation));
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
@@ -481,7 +483,7 @@ public interface JdbcExecutor {
         }
     }
 
-    class QueryContextCall<T> implements ScopedValue.CallableOp<T, RuntimeException> {
+    class QueryContextCall<T> implements Supplier<T> {
         private final JdbcExecutor executor;
         private final QueryContext queryContext;
         private final SqlFunction<PreparedStatement, T> callback;
@@ -495,7 +497,7 @@ public interface JdbcExecutor {
         }
 
         @Override
-        public T call() throws RuntimeException {
+        public T get() {
             try {
                 return executor.withConnection(new QueryContextConnectionCallback<>(queryContext, callback, observation));
             } catch (RuntimeException e) {
@@ -530,7 +532,7 @@ public interface JdbcExecutor {
         }
     }
 
-    class JdbcQueryCall<T> implements ScopedValue.CallableOp<T, RuntimeException> {
+    class JdbcQueryCall<T> implements Supplier<T> {
         private final JdbcExecutor executor;
         private final JdbcQuery query;
         private final SqlFunction<PreparedStatement, T> callback;
@@ -544,7 +546,7 @@ public interface JdbcExecutor {
         }
 
         @Override
-        public T call() throws RuntimeException {
+        public T get() throws RuntimeException {
             try {
                 return executor.withConnection(new JdbcQueryConnectionCallback<>(query, callback, observation));
             } catch (RuntimeException e) {
@@ -617,7 +619,7 @@ public interface JdbcExecutor {
         }
     }
 
-    class ExecuteUpdateBatchCall implements ScopedValue.CallableOp<UpdateCount, RuntimeException> {
+    class ExecuteUpdateBatchCall implements Supplier<UpdateCount> {
         private final JdbcExecutor executor;
         private final JdbcQuery.JdbcQueryBatch batch;
         private final Observation observation;
@@ -629,7 +631,7 @@ public interface JdbcExecutor {
         }
 
         @Override
-        public UpdateCount call() throws RuntimeException {
+        public UpdateCount get() throws RuntimeException {
             try {
                 return executor.withConnection(new ExecuteUpdateBatchConnectionCallback(batch, observation));
             } catch (RuntimeException e) {
@@ -674,7 +676,7 @@ public interface JdbcExecutor {
         }
     }
 
-    class ExecuteUpdateBatchMapperCall<T> implements ScopedValue.CallableOp<T, RuntimeException> {
+    class ExecuteUpdateBatchMapperCall<T> implements Supplier<T> {
         private final JdbcExecutor executor;
         private final JdbcQuery.JdbcQueryBatch batch;
         private final JdbcResultSetMapper<T> generatedKeysMapper;
@@ -688,7 +690,7 @@ public interface JdbcExecutor {
         }
 
         @Override
-        public T call() throws RuntimeException {
+        public T get() throws RuntimeException {
             try {
                 return executor.withConnection(new ExecuteUpdateBatchMapperConnectionCallback<>(batch, generatedKeysMapper, observation));
             } catch (RuntimeException e) {

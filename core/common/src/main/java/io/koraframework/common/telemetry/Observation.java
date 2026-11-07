@@ -1,24 +1,44 @@
 package io.koraframework.common.telemetry;
 
-import io.opentelemetry.api.trace.Span;
-import io.opentelemetry.context.Context;
+import io.koraframework.common.context.*;
+import io.opentelemetry.api.trace.*;
+import io.opentelemetry.context.*;
+import org.jspecify.annotations.*;
 
 public interface Observation {
-    ScopedValue<Observation> VALUE = ScopedValue.newInstance();
+
+    KoraContext.Key<Observation> OBSERVATION_KEY = KoraContext.Key.create();
 
     Span span();
 
-    static <T extends Observation> T current(Class<T> clazz) {
-        return clazz.cast(VALUE.get());
+    static <T extends Observation> @Nullable T current(Class<T> clazz) {
+        KoraContext current = KoraContext.current();
+        if (current == null) {
+            return null;
+        }
+        Observation obs = current.get(OBSERVATION_KEY);
+        return obs != null ? clazz.cast(obs) : null;
     }
 
     void end();
 
     void observeError(Throwable e);
 
-    static ScopedValue.Carrier scoped(Observation observation) {
-        return ScopedValue
-            .where(Observation.VALUE, observation)
-            .where(OpentelemetryContext.VALUE, observation.span().getSpanContext().isValid() ? Context.current().with(observation.span()) : Context.current());
+    /**
+     * Строит новый плоский KoraContext, лениво добавляя в него обсервацию
+     * и обновленный контекст трассировки OpenTelemetry.
+     */
+    static KoraContext attach(KoraContext current, Observation observation) {
+        var updated = current.with(OBSERVATION_KEY, observation);
+
+        if (observation.span().getSpanContext().isValid()) {
+            Context otelCtx = current.get(OpentelemetryContextStorage.OPENTELEMETRY_KEY);
+            if (otelCtx == null) {
+                otelCtx = Context.current();
+            }
+            return updated.with(OpentelemetryContextStorage.OPENTELEMETRY_KEY, otelCtx.with(observation.span()));
+        }
+
+        return updated;
     }
 }

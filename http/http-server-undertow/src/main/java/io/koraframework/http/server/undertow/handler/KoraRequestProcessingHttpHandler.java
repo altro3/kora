@@ -1,7 +1,7 @@
 package io.koraframework.http.server.undertow.handler;
 
 import io.koraframework.application.graph.*;
-import io.koraframework.common.telemetry.*;
+import io.koraframework.common.context.*;
 import io.koraframework.http.common.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.common.header.*;
@@ -27,12 +27,18 @@ import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
+import static io.koraframework.common.telemetry.Observation.*;
+import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
+import static io.koraframework.logging.common.MDC.*;
+
 public final class KoraRequestProcessingHttpHandler implements HttpHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(KoraRequestProcessingHttpHandler.class);
     private static final ByteBuffer BODY_EMPTY = ByteBuffer.allocate(0);
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
+
+    public static final KoraContext.Key<UndertowContext> UNDERTOW_KEY = KoraContext.Key.create();
 
     private final HttpServerConfig httpServerConfig;
     private final HttpServerTelemetry telemetry;
@@ -73,11 +79,78 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
         var rootCtx = contextPropagationEnabled
             ? PROPAGATOR.extract(Context.root(), exchange.getRequestHeaders(), HttpServerExchangeMapGetter.INSTANCE)
             : Context.root();
-        return ScopedValue
-            .where(UndertowContext.VALUE, new UndertowContext(exchange))
-            .where(io.koraframework.logging.common.MDC.VALUE, new io.koraframework.logging.common.MDC())
-            .where(OpentelemetryContext.VALUE, rootCtx)
-            .call(new RequestProcessingCallable(this, exchange, rootCtx));
+
+        var initialContext = KoraContext.empty()
+            .with(UNDERTOW_KEY, new UndertowContext(exchange))
+            .with(MDC_KEY, new io.koraframework.logging.common.MDC())
+            .with(OPENTELEMETRY_KEY, rootCtx);
+
+        return KoraContext.runWith(initialContext, new RequestProcessingRunner(this, exchange, rootCtx));
+    }
+
+    private static final class RequestProcessingRunner implements java.util.function.Supplier<ProcessedResponse> {
+        private final KoraRequestProcessingHttpHandler handler;
+        private final HttpServerExchange exchange;
+        private final Context rootCtx;
+
+        public RequestProcessingRunner(KoraRequestProcessingHttpHandler handler, HttpServerExchange exchange, Context rootCtx) {
+            this.handler = handler;
+            this.exchange = exchange;
+            this.rootCtx = rootCtx;
+        }
+
+        @Override
+        public ProcessedResponse get() {
+            try {
+                var request = new UndertowUnroutedHttpRequest(exchange);
+                var invocation = handler.httpServerRouter.route(request);
+                var observation = handler.telemetry.observe(invocation.routedRequest());
+                var ctx = rootCtx.with(observation.span());
+                var updatedContext = KoraContext.current()
+                    .with(OPENTELEMETRY_KEY, ctx)
+                    .with(OBSERVATION_KEY, observation);
+                return KoraContext.runWith(updatedContext, new ObservationProcessingRunner(handler, invocation, observation, exchange, ctx));
+            } finally {
+                org.slf4j.MDC.clear();
+            }
+        }
+    }
+
+    private static final class ObservationProcessingRunner implements java.util.function.Supplier<ProcessedResponse> {
+        private final KoraRequestProcessingHttpHandler handler;
+        private final io.koraframework.http.server.common.router.HttpServerInvocation invocation;
+        private final HttpServerObservation observation;
+        private final HttpServerExchange exchange;
+        private final Context ctx;
+
+        public ObservationProcessingRunner(KoraRequestProcessingHttpHandler handler,
+                                           io.koraframework.http.server.common.router.HttpServerInvocation invocation,
+                                           HttpServerObservation observation,
+                                           HttpServerExchange exchange,
+                                           Context ctx) {
+            this.handler = handler;
+            this.invocation = invocation;
+            this.observation = observation;
+            this.exchange = exchange;
+            this.ctx = ctx;
+        }
+
+        @Override
+        public ProcessedResponse get() {
+            HttpServerResponse response;
+            try {
+                var httpServerRequest = observation.observeRequest(invocation.routedRequest());
+                response = invocation.proceed(httpServerRequest);
+            } catch (Throwable e) {
+                observation.observeError(e);
+                if (e instanceof HttpServerResponse rs) {
+                    response = rs;
+                } else {
+                    return handler.errorResponse(exchange, observation, ctx, null, e);
+                }
+            }
+            return handler.prepareResponse(exchange, observation, ctx, response, exchange.getRequestMethod().equals(Methods.HEAD));
+        }
     }
 
     private static final class ProcessRequestRunnable implements Runnable {
@@ -92,72 +165,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
         @Override
         public void run() {
             handler.process(exchange);
-        }
-    }
-
-    private static final class RequestProcessingCallable implements ScopedValue.CallableOp<ProcessedResponse, RuntimeException> {
-        private final KoraRequestProcessingHttpHandler handler;
-        private final HttpServerExchange exchange;
-        private final Context rootCtx;
-
-        public RequestProcessingCallable(KoraRequestProcessingHttpHandler handler, HttpServerExchange exchange, Context rootCtx) {
-            this.handler = handler;
-            this.exchange = exchange;
-            this.rootCtx = rootCtx;
-        }
-
-        @Override
-        public ProcessedResponse call() {
-            try {
-                var request = new UndertowUnroutedHttpRequest(exchange);
-                var invocation = handler.httpServerRouter.route(request);
-                var observation = handler.telemetry.observe(invocation.routedRequest());
-                var ctx = rootCtx.with(observation.span());
-                return ScopedValue
-                    .where(OpentelemetryContext.VALUE, ctx)
-                    .where(Observation.VALUE, observation)
-                    .call(new ObservationProcessingCallable(handler, request, observation, exchange, ctx));
-            } finally {
-                MDC.clear();
-            }
-        }
-    }
-
-    private static final class ObservationProcessingCallable implements ScopedValue.CallableOp<ProcessedResponse, RuntimeException> {
-        private final KoraRequestProcessingHttpHandler handler;
-        private final UndertowUnroutedHttpRequest request;
-        private final HttpServerObservation observation;
-        private final HttpServerExchange exchange;
-        private final Context ctx;
-
-        public ObservationProcessingCallable(KoraRequestProcessingHttpHandler handler,
-                                             UndertowUnroutedHttpRequest request,
-                                             HttpServerObservation observation,
-                                             HttpServerExchange exchange,
-                                             Context ctx) {
-            this.handler = handler;
-            this.request = request;
-            this.observation = observation;
-            this.exchange = exchange;
-            this.ctx = ctx;
-        }
-
-        @Override
-        public ProcessedResponse call() {
-            HttpServerResponse response;
-            try {
-                var invocation = handler.httpServerRouter.route(request);
-                var httpServerRequest = observation.observeRequest(invocation.routedRequest());
-                response = invocation.proceed(httpServerRequest);
-            } catch (Throwable e) {
-                observation.observeError(e);
-                if (e instanceof HttpServerResponse rs) {
-                    response = rs;
-                } else {
-                    return handler.errorResponse(exchange, observation, ctx, null, e);
-                }
-            }
-            return handler.prepareResponse(exchange, observation, ctx, response, exchange.getRequestMethod().equals(Methods.HEAD));
         }
     }
 
@@ -184,8 +191,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
 
             var streamingResponse = new ProcessedResponse(this, exchange, observation, context, response.code(), response.headers(), contentType, null, declaredLength, body, null, true);
             output = new AdaptiveBodyOutputStream(this, exchange, streamingResponse, declaredLength);
-            // HttpBodyOutput.write() must flush whatever it wraps around this stream before returning: the buffer is
-            // read back as soon as write() returns and close() is never called on the writer's behalf.
             body.write(output);
             if (output.isStreaming()) {
                 output.completeStreaming();
@@ -197,8 +202,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
             return new ProcessedResponse(this, exchange, observation, context, response.code(), response.headers(), contentType, content, contentLength, body, null, false);
         } catch (Throwable e) {
             if (output != null && output.isStreaming()) {
-                // AsyncBodyPipe observes its own terminal failure. Once it has terminated, the next write() only
-                // fails because the pipe is already closed, so reporting it here would count the error twice.
                 output.failStreaming(e);
                 return output.streamingResponse();
             }
@@ -206,8 +209,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
             observation.observeError(e);
             if (output != null && output.size() > 0) {
                 var content = output.fullContent();
-                // deliberately one byte longer than what is actually sent: the client has to see the response as
-                // truncated, the connection is then closed by ProcessedResponse.onComplete()
                 var contentLength = declaredLength >= 0 ? declaredLength : content.remaining() + 1L;
                 return new ProcessedResponse(this, exchange, observation, context, response.code(), response.headers(), body.contentType(), content, contentLength, body, e, false);
             }
@@ -247,7 +248,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
                 return;
             }
             exchange.setResponseContentLength(response.contentLength());
-            // getResponseSender() reuses the sender cached on the exchange, ProcessedResponse is its own IoCallback
             exchange.getResponseSender().send(content, response);
         } catch (Throwable e) {
             observation.observeError(e);
@@ -290,6 +290,34 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
         setHeaders(responseHeaders, response.headers(), contentType);
         if (contentType != null) {
             responseHeaders.put(Headers.CONTENT_TYPE, contentType);
+        }
+    }
+
+    private void setHeaders(HeaderMap responseHeaders, HttpHeaders headers, @Nullable String contentType) {
+        if (httpServerConfig.headerServerNameEnabled()) {
+            responseHeaders.put(Headers.SERVER, "Kora");
+        }
+        for (var header : headers) {
+            var key = header.getKey();
+            if (isReservedHeader(key, contentType)) {
+                continue;
+            }
+            var name = HttpString.tryFromString(key);
+            if (name == null) {
+                logger.warn("HTTP response header with unsupported name was skipped: {}", key);
+                continue;
+            }
+            responseHeaders.addAll(name, header.getValue());
+        }
+    }
+
+    private static boolean isReservedHeader(String key, @Nullable String contentType) {
+        if ("server".equals(key) || "content-length".equals(key) || "transfer-encoding".equals(key)) {
+            return true;
+        } else if ("content-type".equals(key)) {
+            return contentType != null;
+        } else {
+            return false;
         }
     }
 
@@ -643,34 +671,6 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
             public void run() {
                 pipe.drain();
             }
-        }
-    }
-
-    private void setHeaders(HeaderMap responseHeaders, HttpHeaders headers, @Nullable String contentType) {
-        if (httpServerConfig.headerServerNameEnabled()) {
-            responseHeaders.put(Headers.SERVER, "Kora");
-        }
-        for (var header : headers) {
-            var key = header.getKey();
-            if (isReservedHeader(key, contentType)) {
-                continue;
-            }
-            var name = HttpString.tryFromString(key);
-            if (name == null) {
-                logger.warn("HTTP response header with unsupported name was skipped: {}", key);
-                continue;
-            }
-            responseHeaders.addAll(name, header.getValue());
-        }
-    }
-
-    private static boolean isReservedHeader(String key, @Nullable String contentType) {
-        if ("server".equals(key) || "content-length".equals(key) || "transfer-encoding".equals(key)) {
-            return true;
-        } else if ("content-type".equals(key)) {
-            return contentType != null;
-        } else {
-            return false;
         }
     }
 

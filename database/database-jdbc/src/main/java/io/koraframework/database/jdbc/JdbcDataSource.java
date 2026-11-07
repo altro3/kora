@@ -1,49 +1,30 @@
 package io.koraframework.database.jdbc;
 
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
-import io.koraframework.application.graph.Lifecycle;
-import io.koraframework.application.graph.Wrapped;
-import io.koraframework.common.Configurer;
-import io.koraframework.common.readiness.ReadinessProbe;
-import io.koraframework.common.readiness.ReadinessProbeFailure;
-import io.koraframework.common.util.TimeUtils;
-import io.koraframework.database.common.telemetry.DatabaseTelemetry;
-import io.koraframework.database.common.telemetry.DatabaseTelemetryFactory;
-import io.koraframework.database.jdbc.exception.UncheckedSqlException;
-import org.jspecify.annotations.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.zaxxer.hikari.*;
+import io.koraframework.application.graph.*;
+import io.koraframework.common.*;
+import io.koraframework.common.context.*;
+import io.koraframework.common.readiness.*;
+import io.koraframework.common.util.*;
+import io.koraframework.database.common.telemetry.*;
+import io.koraframework.database.jdbc.exception.*;
+import org.jspecify.annotations.*;
+import org.slf4j.*;
 
-import javax.sql.DataSource;
-import java.sql.Connection;
-import java.sql.SQLException;
-import java.util.Objects;
-import java.util.concurrent.*;
+import javax.sql.*;
+import java.sql.*;
+import java.util.*;
+import java.util.function.*;
 
 public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecutor, ReadinessProbe {
 
     private static final Logger logger = LoggerFactory.getLogger(JdbcDataSource.class);
 
-    static {
-        try {
-            Class.forName("org.postgresql.Driver");
-            Class.forName("com.zaxxer.hikari.pool.ProxyConnection");
-            Class.forName("com.zaxxer.hikari.pool.ProxyStatement");
-            Class.forName("com.zaxxer.hikari.pool.ProxyPreparedStatement");
-            Class.forName("com.zaxxer.hikari.pool.ProxyResultSet");
-            Class.forName("com.zaxxer.hikari.util.ConcurrentBag");
-            Class.forName("com.zaxxer.hikari.pool.HikariPool$PoolInitializationException");
-            Class.forName("java.util.concurrent.ScheduledThreadPoolExecutor");
-            Class.forName("java.util.concurrent.ThreadPoolExecutor$Worker");
-            java.util.logging.Logger.getLogger("org.postgresql");
-        } catch (ClassNotFoundException ignored) {
-        }
-    }
+    public static final KoraContext.Key<ConnectionContext> CONNECTION_CONTEXT_KEY = KoraContext.Key.create();
+
     private final JdbcDatabaseConfig databaseConfig;
     private final HikariDataSource dataSource;
     private final DatabaseTelemetry telemetry;
-    private final ScopedValue<ConnectionContext> connectionContext = ScopedValue.newInstance();
 
     public JdbcDataSource(JdbcDatabaseConfig config, DatabaseTelemetryFactory telemetryFactory, @Nullable Configurer<HikariConfig> configurer) {
         this.databaseConfig = Objects.requireNonNull(config);
@@ -103,41 +84,48 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
 
     @Nullable
     public Connection connectionCurrent() {
-        if (this.connectionContext.isBound()) {
-            return this.connectionContext.get().connection();
+        KoraContext current = KoraContext.current();
+        if (current != null) {
+            ConnectionContext ctx = current.get(CONNECTION_CONTEXT_KEY);
+            if (ctx != null) {
+                return ctx.connection();
+            }
         }
         return null;
     }
 
     @Nullable
     public ConnectionContext currentContext() {
-        if (this.connectionContext.isBound()) {
-            return this.connectionContext.get();
-        }
-        return null;
+        KoraContext current = KoraContext.current();
+        return current != null ? current.get(CONNECTION_CONTEXT_KEY) : null;
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public <T> T withContext(SqlFunction<ConnectionContext, T> callback) throws UncheckedSqlException {
-        if (this.connectionContext.isBound()) {
-            try {
-                return callback.apply(this.connectionContext.get());
-            } catch (SQLException e) {
-                throw new UncheckedSqlException(e);
+        KoraContext current = KoraContext.current();
+        if (current != null) {
+            ConnectionContext existingContext = current.get(CONNECTION_CONTEXT_KEY);
+            if (existingContext != null) {
+                try {
+                    return callback.apply(existingContext);
+                } catch (SQLException e) {
+                    throw new UncheckedSqlException(e);
+                }
             }
         }
 
         try (var connection = this.acquireConnection()) {
             var context = new ConnectionContext(connection);
-            var action = new ScopedValueCallAction(callback, context);
-            return (T) ScopedValue.where(this.connectionContext, context).call(action);
+            KoraContext baseContext = current != null ? current : KoraContext.empty();
+            KoraContext updatedContext = baseContext.with(CONNECTION_CONTEXT_KEY, context);
+
+            return (T) KoraContext.runWith(updatedContext, new KoraContextCallAction(callback, context));
         } catch (SQLException e) {
             throw new UncheckedSqlException(e);
+        } catch (RuntimeException re) {
+            throw re;
         } catch (Exception e) {
-            if (e instanceof RuntimeException re) {
-                throw re;
-            }
             throw new RuntimeException(e);
         }
     }
@@ -153,18 +141,22 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
     }
 
     @SuppressWarnings("rawtypes")
-    private static final class ScopedValueCallAction implements ScopedValue.CallableOp<Object, Exception> {
+    private static final class KoraContextCallAction implements Supplier<Object> {
         private final SqlFunction callback;
         private final ConnectionContext context;
 
-        private ScopedValueCallAction(SqlFunction callback, ConnectionContext context) {
+        private KoraContextCallAction(SqlFunction callback, ConnectionContext context) {
             this.callback = callback;
             this.context = context;
         }
 
         @Override
-        public Object call() throws Exception {
-            return callback.apply(context);
+        public Object get() {
+            try {
+                return callback.apply(context);
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 }
