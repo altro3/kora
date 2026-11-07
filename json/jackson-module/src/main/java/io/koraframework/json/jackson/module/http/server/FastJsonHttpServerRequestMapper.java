@@ -25,9 +25,9 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
             if (fullContent != null) {
                 return parseFromByteBuffer(fullContent);
             }
-
-            byte[] initialBuf = JsonPools.borrowThreadLocal();
-            byte[] finalBuf = initialBuf;
+            final byte[] initialBuf = JsonPools.borrowBuffer();
+            byte[] finalBuf;
+            JSONReader.Context context = JsonPools.borrowContext();
             try {
                 var result = body.readAllBytes(initialBuf);
                 finalBuf = result.bytes();
@@ -36,11 +36,12 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
                     return null;
                 }
 
-                try (var reader = JSONReader.of(finalBuf, 0, result.length())) {
+                try (var reader = JSONReader.of(finalBuf, 0, result.length(), context)) {
                     return objectReader.readObject(reader, null, null, 0);
                 }
             } finally {
-                JsonPools.returnThreadLocal(finalBuf);
+                JsonPools.returnContext(context);
+                JsonPools.returnBuffer(initialBuf);
             }
         } catch (JSONException e) {
             throw HttpServerResponseException.of(400, e);
@@ -49,22 +50,36 @@ public final class FastJsonHttpServerRequestMapper<T> implements HttpServerReque
 
     private T parseFromByteBuffer(ByteBuffer buffer) {
         JSONReader jsonReader;
+        byte[] heapBytes = null;
+        JSONReader.Context context = JsonPools.borrowContext();
 
         if (buffer.hasArray()) {
             jsonReader = JSONReader.of(
                 buffer.array(),
                 buffer.arrayOffset() + buffer.position(),
-                buffer.remaining()
+                buffer.remaining(),
+                context
             );
         } else {
             int remaining = buffer.remaining();
-            var bytes = new byte[remaining];
+            heapBytes = JsonPools.borrowBuffer();
+
+            if (heapBytes.length < remaining) {
+                heapBytes = new byte[remaining];
+            }
+
             ByteBuffer duplicate = buffer.duplicate();
-            duplicate.get(bytes);
-            jsonReader = JSONReader.of(bytes, 0, remaining);
+            duplicate.get(heapBytes, 0, remaining);
+            jsonReader = JSONReader.of(heapBytes, 0, remaining, context);
         }
+
         try (jsonReader) {
             return this.objectReader.readObject(jsonReader, null, null, 0);
+        } finally {
+            JsonPools.returnContext(context);
+            if (heapBytes != null) {
+                JsonPools.returnBuffer(heapBytes);
+            }
         }
     }
 }

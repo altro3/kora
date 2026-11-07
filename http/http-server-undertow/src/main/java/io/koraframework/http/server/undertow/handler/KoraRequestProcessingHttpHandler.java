@@ -26,6 +26,7 @@ import java.nio.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.*;
 
 import static io.koraframework.common.telemetry.Observation.*;
 import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
@@ -80,51 +81,67 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
             ? PROPAGATOR.extract(Context.root(), exchange.getRequestHeaders(), HttpServerExchangeMapGetter.INSTANCE)
             : Context.root();
 
-        var initialContext = KoraContext.empty()
+        var request = new UndertowUnroutedHttpRequest(exchange);
+        var invocation = httpServerRouter.route(request);
+        var observation = telemetry.observe(invocation.routedRequest());
+        var ctx = rootCtx.with(observation.span());
+
+        var finalContext = KoraContext.empty()
             .with(UNDERTOW_KEY, new UndertowContext(exchange))
             .with(MDC_KEY, new io.koraframework.logging.common.MDC())
-            .with(OPENTELEMETRY_KEY, rootCtx);
+            .with(OPENTELEMETRY_KEY, ctx)
+            .with(OBSERVATION_KEY, observation);
 
-        return KoraContext.runWith(initialContext, new RequestProcessingRunner(this, exchange, rootCtx));
+        return KoraContext.runWith(finalContext, new RequestProcessingRunner(this, exchange, ctx, invocation, observation));
     }
 
-    private static final class RequestProcessingRunner implements java.util.function.Supplier<ProcessedResponse> {
+    private static final class RequestProcessingRunner implements Supplier<ProcessedResponse> {
         private final KoraRequestProcessingHttpHandler handler;
         private final HttpServerExchange exchange;
-        private final Context rootCtx;
+        private final Context ctx;
+        private final HttpServerInvocation invocation;
+        private final HttpServerObservation observation;
 
-        public RequestProcessingRunner(KoraRequestProcessingHttpHandler handler, HttpServerExchange exchange, Context rootCtx) {
+        public RequestProcessingRunner(KoraRequestProcessingHttpHandler handler,
+                                       HttpServerExchange exchange,
+                                       Context ctx,
+                                       HttpServerInvocation invocation,
+                                       HttpServerObservation observation) {
             this.handler = handler;
             this.exchange = exchange;
-            this.rootCtx = rootCtx;
+            this.ctx = ctx;
+            this.invocation = invocation;
+            this.observation = observation;
         }
 
         @Override
         public ProcessedResponse get() {
             try {
-                var request = new UndertowUnroutedHttpRequest(exchange);
-                var invocation = handler.httpServerRouter.route(request);
-                var observation = handler.telemetry.observe(invocation.routedRequest());
-                var ctx = rootCtx.with(observation.span());
-                var updatedContext = KoraContext.current()
-                    .with(OPENTELEMETRY_KEY, ctx)
-                    .with(OBSERVATION_KEY, observation);
-                return KoraContext.runWith(updatedContext, new ObservationProcessingRunner(handler, invocation, observation, exchange, ctx));
+                var httpServerRequest = observation.observeRequest(invocation.routedRequest());
+                var response = invocation.proceed(httpServerRequest);
+                return handler.prepareResponse(exchange, observation, ctx, response, exchange.getRequestMethod().equals(Methods.HEAD));
+            } catch (Throwable e) {
+                observation.observeError(e);
+                if (e instanceof HttpServerResponse rs) {
+                    return handler.prepareResponse(exchange, observation, ctx, rs, exchange.getRequestMethod().equals(Methods.HEAD));
+                } else {
+                    return handler.errorResponse(exchange, observation, ctx, null, e);
+                }
             } finally {
                 org.slf4j.MDC.clear();
             }
         }
     }
 
-    private static final class ObservationProcessingRunner implements java.util.function.Supplier<ProcessedResponse> {
+    private static final class ObservationProcessingRunner implements Supplier<ProcessedResponse> {
         private final KoraRequestProcessingHttpHandler handler;
-        private final io.koraframework.http.server.common.router.HttpServerInvocation invocation;
+        private final HttpServerInvocation invocation;
         private final HttpServerObservation observation;
         private final HttpServerExchange exchange;
         private final Context ctx;
 
         public ObservationProcessingRunner(KoraRequestProcessingHttpHandler handler,
-                                           io.koraframework.http.server.common.router.HttpServerInvocation invocation,
+                                           HttpServerInvocation invocation,
                                            HttpServerObservation observation,
                                            HttpServerExchange exchange,
                                            Context ctx) {

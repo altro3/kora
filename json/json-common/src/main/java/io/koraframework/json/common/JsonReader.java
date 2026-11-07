@@ -64,7 +64,7 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         if (is == null) {
             return null;
         }
-        byte[] buf = JsonPools.borrowThreadLocal();
+        byte[] buf = JsonPools.borrowBuffer();
         try {
             int offset = 0;
             while (true) {
@@ -72,7 +72,7 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
                 if (read == -1) break;
                 offset += read;
                 if (offset == buf.length) {
-                    byte[] newBuf = new byte[buf.length * 2];
+                    var newBuf = new byte[buf.length * 2];
                     System.arraycopy(buf, 0, newBuf, 0, offset);
                     buf = newBuf;
                 }
@@ -84,7 +84,7 @@ public interface JsonReader<T> extends Mapping.MappingFunction {
         } catch (IOException | JSONException e) {
             throw new RuntimeException("Fastjson2 processing failed", e);
         } finally {
-            JsonPools.returnThreadLocal(buf);
+            JsonPools.returnBuffer(buf);
         }
     }
 }

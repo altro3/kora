@@ -1,36 +1,41 @@
 package io.koraframework.json.common;
 
-import com.alibaba.fastjson2.*;
-
-import java.lang.ref.SoftReference;
+import com.alibaba.fastjson2.JSONFactory;
+import com.alibaba.fastjson2.JSONReader;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class JsonPools {
     private static final int BUFFER_SIZE = 8 * 1024;
+    private static final ConcurrentLinkedQueue<byte[]> BYTE_BUF_POOL = new ConcurrentLinkedQueue<>();
+    private static final ConcurrentLinkedQueue<JSONReader.Context> CONTEXT_POOL = new ConcurrentLinkedQueue<>();
 
-    private static final ThreadLocal<SoftReference<byte[]>> THREAD_LOCAL_POOL = new ThreadLocal<>();
-
-    public static byte[] borrowThreadLocal() {
-        var ref = THREAD_LOCAL_POOL.get();
-        if (ref == null) {
-            var buf = new byte[BUFFER_SIZE];
-            THREAD_LOCAL_POOL.set(new SoftReference<>(buf));
-            return buf;
-        }
-
-        byte[] buf = ref.get();
+    public static byte[] borrowBuffer() {
+        byte[] buf = BYTE_BUF_POOL.poll();
         if (buf == null) {
-            buf = new byte[BUFFER_SIZE];
-            THREAD_LOCAL_POOL.set(new SoftReference<>(buf));
+            return new byte[BUFFER_SIZE];
         }
         return buf;
     }
 
-    public static void returnThreadLocal(byte[] buf) {
-        if (buf.length == BUFFER_SIZE) {
-            return;
+    public static void returnBuffer(byte[] buf) {
+        if (buf != null && buf.length == BUFFER_SIZE) {
+            if (BYTE_BUF_POOL.size() < 1024) {
+                BYTE_BUF_POOL.offer(buf);
+            }
         }
-        if (buf.length > BUFFER_SIZE) {
-            THREAD_LOCAL_POOL.set(new SoftReference<>(new byte[BUFFER_SIZE]));
+    }
+
+    public static JSONReader.Context borrowContext() {
+        JSONReader.Context context = CONTEXT_POOL.poll();
+        if (context == null) {
+            return new JSONReader.Context(JSONFactory.getDefaultObjectReaderProvider());
+        }
+        return context;
+    }
+
+    public static void returnContext(JSONReader.Context context) {
+        if (context != null && CONTEXT_POOL.size() < 1024) {
+            CONTEXT_POOL.offer(context);
         }
     }
 }
