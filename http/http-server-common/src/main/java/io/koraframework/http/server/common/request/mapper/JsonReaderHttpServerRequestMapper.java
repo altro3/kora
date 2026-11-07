@@ -8,9 +8,9 @@ import io.koraframework.json.common.*;
 import java.io.*;
 
 public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerRequestMapper<T> {
-    private final JsonReader<T> reader;
+    private final io.koraframework.json.common.JsonReader<T> reader;
 
-    public JsonReaderHttpServerRequestMapper(JsonReader<T> reader) {
+    public JsonReaderHttpServerRequestMapper(io.koraframework.json.common.JsonReader<T> reader) {
         this.reader = reader;
     }
 
@@ -22,7 +22,8 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
                 if (fullContent.hasArray()) {
                     return this.reader.read(fullContent.array(), fullContent.arrayOffset() + fullContent.position(), fullContent.remaining());
                 } else {
-                    byte[] buf = JsonPools.borrowThreadLocal();
+                    final byte[] initialBuf = JsonPools.borrowBuffer();
+                    byte[] buf = initialBuf;
                     try {
                         int remaining = fullContent.remaining();
                         if (remaining > buf.length) {
@@ -31,13 +32,13 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
                         fullContent.get(buf, 0, remaining);
                         return this.reader.read(buf, 0, remaining);
                     } finally {
-                        JsonPools.returnThreadLocal(buf);
+                        JsonPools.returnBuffer(initialBuf);
                     }
                 }
             }
 
-            byte[] initialBuf = JsonPools.borrowThreadLocal();
-            byte[] finalBuf = initialBuf;
+            final byte[] initialBuf = JsonPools.borrowBuffer();
+            byte[] finalBuf;
             try {
                 var result = body.readAllBytes(initialBuf);
                 finalBuf = result.bytes();
@@ -48,7 +49,7 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
 
                 return this.reader.read(finalBuf, 0, result.length());
             } finally {
-                JsonPools.returnThreadLocal(finalBuf);
+                JsonPools.returnBuffer(initialBuf);
             }
         } catch (JSONException e) {
             throw HttpServerResponseException.of(400, e);
