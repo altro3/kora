@@ -48,12 +48,18 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (msg instanceof NettyTelemetryHandler.RequestContainer container) {
-//            println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead before=" + ctx.channel().config().isAutoRead());
+        if (msg instanceof NettyTelemetryHandler.RequestContainer) {
+            var container = (NettyTelemetryHandler.RequestContainer) msg;
+
+//            println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri());
 
             if (shuttingDown) {
                 var nettyReq = container.nettyReq();
-                sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), false, container.telemetryContext(), new IllegalStateException("Server is shutting down"));
+                try {
+                    sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), false, container.telemetryContext(), new IllegalStateException("Server is shutting down"));
+                } finally {
+                    ReferenceCountUtil.safeRelease(nettyReq);
+                }
                 return;
             }
 
@@ -64,6 +70,11 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
             container.nettyReq().retain();
 
             Thread.startVirtualThread(new DispatchRunnable(this, ctx, container));
+            return;
+        }
+
+        if (msg instanceof FullHttpRequest) {
+            ReferenceCountUtil.safeRelease(msg);
             return;
         }
 
@@ -191,12 +202,16 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                     }
                 } else {
                     if (observation != null) {
-                        var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
+                        var errorResponse = HttpServerResponse.of(500);
                         observation.observeError(e);
                         observation.observeResponse(errorResponse);
                         observation.end();
                     }
-                    dispatcher.sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
+                    try {
+                        dispatcher.sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
+                    } finally {
+                        ReferenceCountUtil.safeRelease(nettyReq);
+                    }
                     return null;
                 }
             }

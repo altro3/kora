@@ -49,13 +49,21 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @DefaultComponent
     @Tag(Tag.Factory.class)
     public Configurer<ServerBootstrap> defaultNettyBootstrapConfigurer() {
-        return bootstrap -> {
+        return new DefaultNettyBootstrapConfigurer();
+    }
+
+    private static final class DefaultNettyBootstrapConfigurer implements Configurer<ServerBootstrap> {
+        @Override
+        public ServerBootstrap configure(ServerBootstrap bootstrap) {
+            int pageSize = 4096;
+            int maxOrder = 9;
+
             var allocator = new PooledByteBufAllocator(
                 !PlatformDependent.isOsx(),
                 PooledByteBufAllocator.defaultNumHeapArena(),
                 PooledByteBufAllocator.defaultNumDirectArena(),
-                PooledByteBufAllocator.defaultPageSize(),
-                PooledByteBufAllocator.defaultMaxOrder(),
+                pageSize,
+                maxOrder,
                 0,
                 0,
                 false
@@ -64,7 +72,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
             return bootstrap
                 .option(ChannelOption.ALLOCATOR, allocator)
                 .childOption(ChannelOption.ALLOCATOR, allocator);
-        };
+        }
     }
 
     @DefaultComponent

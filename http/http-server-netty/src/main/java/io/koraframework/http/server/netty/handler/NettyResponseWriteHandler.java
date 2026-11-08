@@ -17,6 +17,8 @@ import org.slf4j.*;
 import java.io.*;
 import java.nio.charset.*;
 
+import static io.netty.util.ReferenceCountUtil.*;
+
 @ChannelHandler.Sharable
 public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapter {
 
@@ -114,7 +116,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 observation.end();
             }
             closeBody(body);
-            ReferenceCountUtil.safeRelease(nettyReq);
+            safeRelease(nettyReq);
             ctx.close();
         }
     }
@@ -286,7 +288,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 output.complete();
 
                 if (nettyReq != null) {
-                    ReferenceCountUtil.safeRelease(nettyReq);
+                    safeRelease(nettyReq);
                 }
 
                 ctx.executor().execute(new DecrementDispatcherCountersRunnable(ctx));
@@ -297,6 +299,10 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
                 }
                 closeBody(body);
                 ctx.executor().execute(new ResetAutoReadRunnable(ctx));
+
+                if (nettyReq != null) {
+                    safeRelease(nettyReq);
+                }
 
                 if (output != null && !output.isStreamMode()) {
                     ctx.executor().execute(new SendStreamErrorResponseRunnable(handler, ctx, version, keepAlive, e));
@@ -340,7 +346,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             }
 
             if (nettyReq != null) {
-                ReferenceCountUtil.safeRelease(nettyReq);
+                safeRelease(nettyReq);
             }
 
             if (!future.isSuccess() || !keepAlive) {
