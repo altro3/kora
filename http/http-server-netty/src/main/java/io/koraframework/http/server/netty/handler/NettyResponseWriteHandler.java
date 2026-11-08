@@ -122,13 +122,12 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
         setupConnectionHeader(msg, version, keepAlive);
-        if (!ctx.channel().isWritable()) {
-            ctx.channel().config().setAutoRead(false);
-        } else if (keepAlive) {
+
+        if (keepAlive) {
             ctx.channel().config().setAutoRead(true);
         }
-
-        ctx.writeAndFlush(msg).addListener(new FinalizeWriteListener(ctx, body, observation, nettyReq, keepAlive));
+        ctx.write(msg).addListener(new FinalizeWriteListener(ctx, body, observation, nettyReq, keepAlive));
+        ctx.flush();
     }
 
     void writeHeaders(HttpHeaders nettyHeaders, io.koraframework.http.common.header.HttpHeaders koraHeaders, @Nullable String contentType) {

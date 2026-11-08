@@ -1,6 +1,7 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.common.body.*;
+import io.koraframework.http.server.common.response.HttpServerResponse;
 import io.koraframework.http.server.common.telemetry.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
@@ -9,7 +10,7 @@ import io.netty.util.*;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
 
 final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
@@ -49,20 +50,18 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         }
         ensureWritability();
 
-        ctx.write(responseHeader);
+        ctx.channel().write(responseHeader);
         if (buffer.isReadable()) {
-            var flushFuture = new java.util.concurrent.CompletableFuture<Void>();
-            ctx.writeAndFlush(new DefaultHttpContent(buffer)).addListener(f -> {
-                if (f.isSuccess()) flushFuture.complete(null);
-                else flushFuture.completeExceptionally(f.cause());
-            });
             try {
-                flushFuture.get();
+                ctx.channel().writeAndFlush(new DefaultHttpContent(buffer)).sync();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Streaming interrupted during initial flush", e);
             } catch (Exception e) {
                 throw new IOException("Failed to flush initial buffer", e);
             }
         } else {
-            ctx.writeAndFlush(Unpooled.EMPTY_BUFFER);
+            ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
             buffer.release();
         }
         buffer = null;
@@ -77,39 +76,42 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             return;
         }
 
-        var writabilityFuture = new CompletableFuture<Void>();
-        ctx.pipeline().addBefore(ctx.name(), "writability-handler", new ChannelInboundHandlerAdapter() {
+        var latch = new CountDownLatch(1);
+        var writabilityHandler = new ChannelInboundHandlerAdapter() {
             @Override
             public void channelWritabilityChanged(ChannelHandlerContext context) throws Exception {
                 if (context.channel().isWritable()) {
-                    writabilityFuture.complete(null);
                     context.pipeline().remove(this);
+                    latch.countDown();
                 }
                 context.fireChannelWritabilityChanged();
             }
 
             @Override
             public void channelInactive(ChannelHandlerContext context) throws Exception {
-                writabilityFuture.completeExceptionally(new IOException("Channel became inactive during backpressure"));
                 context.pipeline().remove(this);
+                latch.countDown();
                 context.fireChannelInactive();
             }
-        });
+        };
 
+        ctx.pipeline().addBefore(ctx.name(), "writability-handler", writabilityHandler);
         if (ctx.channel().isWritable()) {
             try {
-                ctx.pipeline().remove("writability-handler");
+                ctx.pipeline().remove(writabilityHandler);
             } catch (NoSuchElementException ignored) {}
             return;
         }
 
         try {
-            writabilityFuture.get();
+            latch.await();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Streaming interrupted during backpressure wait", e);
-        } catch (ExecutionException e) {
-            throw new IOException(e.getCause().getMessage(), e.getCause());
+        }
+
+        if (!ctx.channel().isActive()) {
+            throw new IOException("Channel became inactive during backpressure");
         }
     }
 
@@ -122,12 +124,12 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             }
         } catch (Throwable t) {
             if (observation != null) {
-                var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
+                var errorResponse = HttpServerResponse.of(500);
                 observation.observeError(t);
                 observation.observeResponse(errorResponse);
                 observation.end();
             }
-            throw t; // Пробрасываем наверх хендлеру для закрытия сокета
+            throw t;
         }
     }
 
@@ -147,89 +149,66 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             ensureWritability();
 
             ByteBuf chunk = ctx.alloc().directBuffer(len).writeBytes(b, off, len);
-
-            var writeFuture = new CompletableFuture<Void>();
-            ctx.writeAndFlush(new DefaultHttpContent(chunk)).addListener(future -> {
-                if (future.isSuccess()) {
-                    writeFuture.complete(null);
-                } else {
-                    writeFuture.completeExceptionally(future.cause());
-                }
-            });
-
             try {
-                writeFuture.get();
+                ctx.channel().writeAndFlush(new DefaultHttpContent(chunk)).sync();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IOException("Streaming interrupted during write", e);
-            } catch (ExecutionException e) {
-                throw new IOException("Connection broken during streaming", e.getCause());
+            } catch (Exception e) {
+                throw new IOException("Connection broken during streaming", e);
             }
         }
         this.writtenBytes += len;
     }
 
-    public void complete() {
-        ctx.executor().execute(() -> {
-            if (this.buffer != null) {
-                int finalSize = buffer.readableBytes();
-                String initialContentLengthStr = responseHeader.headers().get(HttpHeaderNames.CONTENT_LENGTH);
+    public void complete() throws IOException {
+        if (!isStreamMode && buffer != null) {
+            int finalSize = buffer.readableBytes();
 
-                if (initialContentLengthStr != null) {
-                    try {
-                        long expectedSize = Long.parseLong(initialContentLengthStr);
-                        if (expectedSize != finalSize) {
-                            ReferenceCountUtil.safeRelease(buffer);
-                            buffer = null;
-                            if (observation != null) {
-                                observation.observeError(new IOException("Response body truncated: expected " + expectedSize + " bytes, but wrote " + finalSize));
-                            }
-                            finalizeConnection(false);
-                            return;
-                        }
-                    } catch (NumberFormatException ignored) {}
+            var fullResponse = new DefaultFullHttpResponse(
+                responseHeader.protocolVersion(),
+                responseHeader.status(),
+                buffer
+            );
+
+            var nettyHeaders = fullResponse.headers();
+            for (var header : responseHeader.headers()) {
+                String key = header.getKey();
+                if (HttpHeaderNames.CONTENT_LENGTH.contentEqualsIgnoreCase(key)
+                    || HttpHeaderNames.TRANSFER_ENCODING.contentEqualsIgnoreCase(key)) {
+                    continue;
                 }
-
-                responseHeader.headers().set(HttpHeaderNames.CONTENT_LENGTH, finalSize);
-                responseHeader.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
-                var fullResponse = new DefaultFullHttpResponse(
-                    responseHeader.protocolVersion(),
-                    responseHeader.status(),
-                    buffer
-                );
-                fullResponse.headers().set(responseHeader.headers());
-
-                ctx.writeAndFlush(fullResponse).addListener(future -> finalizeConnection(future.isSuccess()));
-            } else {
-                String initialContentLengthStr = responseHeader.headers().get(HttpHeaderNames.CONTENT_LENGTH);
-                boolean isTruncated = false;
-                if (initialContentLengthStr != null) {
-                    try {
-                        long expectedSize = Long.parseLong(initialContentLengthStr);
-                        if (this.writtenBytes < expectedSize) {
-                            isTruncated = true;
-                        }
-                    } catch (NumberFormatException ignored) {}
-                }
-
-                if (isTruncated) {
-                    if (observation != null) {
-                        observation.observeError(new IOException("Response stream truncated: expected " + initialContentLengthStr + " bytes, but wrote " + this.writtenBytes));
-                    }
-                    finalizeConnection(false);
-                } else {
-                    ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT)
-                        .addListener(future -> finalizeConnection(future.isSuccess()));
-                }
+                nettyHeaders.add(key, header.getValue());
             }
-        });
-    }
 
-    private void triggerFinalize(boolean success) {
-        if (observation != null) {
-            observation.end();
+            nettyHeaders.set(HttpHeaderNames.CONTENT_LENGTH, finalSize);
+
+            buffer = null;
+            try {
+                ctx.channel().writeAndFlush(fullResponse).sync();
+                finalizeConnection(true);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted during final response flush", e);
+            } catch (Exception e) {
+                finalizeConnection(false);
+                throw new IOException("Failed to send final response", e);
+            }
+            return;
         }
-        finalizeConnection(success);
+
+        if (isStreamMode) {
+            try {
+                ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).sync();
+                finalizeConnection(true);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted during EMPTY_LAST_CONTENT flush", e);
+            } catch (Exception e) {
+                finalizeConnection(false);
+                throw new IOException("Failed to flush EMPTY_LAST_CONTENT", e);
+            }
+        }
     }
 
     private void finalizeConnection(boolean success) {

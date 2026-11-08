@@ -13,6 +13,7 @@ import io.koraframework.logging.common.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
+import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.*;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
@@ -33,7 +34,7 @@ import static io.netty.util.ReferenceCountUtil.*;
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
-
+    private static final AttributeKey<Boolean> PROCESSING_KEY = AttributeKey.valueOf("kora.netty.request.processing");
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final boolean contextPropagationEnabled;
     private final AtomicInteger activeRequests = new AtomicInteger(0);
@@ -57,37 +58,37 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (msg instanceof NettyTelemetryHandler.RequestContainer) {
-            var container = (NettyTelemetryHandler.RequestContainer) msg;
+        if (!(msg instanceof NettyTelemetryHandler.RequestContainer)) {
+            ctx.fireChannelRead(msg);
+            return;
+        }
 
-//            println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri());
+        var container = (NettyTelemetryHandler.RequestContainer) msg;
 
-            if (shuttingDown) {
-                var nettyReq = container.nettyReq();
-                try {
-                    sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), false, container.telemetryContext(), new IllegalStateException("Server is shutting down"));
-                } finally {
-                    safeRelease(nettyReq);
-                }
-                return;
+        if (shuttingDown) {
+            var nettyReq = container.nettyReq();
+            try {
+                sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), false, container.telemetryContext(), new IllegalStateException("Server is shutting down"));
+            } finally {
+                safeRelease(nettyReq);
             }
+            return;
+        }
 
+        if (Boolean.TRUE.equals(ctx.channel().attr(PROCESSING_KEY).get())) {
             ctx.channel().config().setAutoRead(false);
-
-            activeRequests.incrementAndGet();
-            phaser.register();
-            container.nettyReq().retain();
-
-            Thread.startVirtualThread(new DispatchRunnable(this, ctx, container));
+            safeRelease(container.nettyReq());
             return;
         }
 
-        if (msg instanceof FullHttpRequest) {
-            safeRelease(msg);
-            return;
-        }
+        ctx.channel().attr(PROCESSING_KEY).set(Boolean.TRUE);
+        ctx.channel().config().setAutoRead(false);
 
-        ctx.fireChannelRead(msg);
+        activeRequests.incrementAndGet();
+        phaser.register();
+        container.nettyReq().retain();
+
+        Thread.startVirtualThread(new DispatchRunnable(this, ctx, container));
     }
 
     @Override
@@ -171,9 +172,11 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
             try {
                 dispatcher.dispatch(ctx, container);
             } finally {
+                ctx.channel().attr(PROCESSING_KEY).set(Boolean.FALSE);
                 safeRelease(container.nettyReq());
                 dispatcher.activeRequests.decrementAndGet();
                 dispatcher.phaser.arriveAndDeregister();
+                ctx.read();
             }
         }
     }
