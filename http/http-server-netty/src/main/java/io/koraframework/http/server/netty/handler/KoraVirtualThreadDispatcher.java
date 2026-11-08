@@ -13,7 +13,6 @@ import io.koraframework.logging.common.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
-import io.netty.util.*;
 import io.netty.util.concurrent.*;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
@@ -24,11 +23,11 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 import java.util.function.*;
 
-import static io.koraframework.common.telemetry.Observation.OBSERVATION_KEY;
+import static io.koraframework.common.telemetry.Observation.*;
 import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
 import static io.koraframework.http.server.netty.NettyContext.*;
 import static io.koraframework.logging.common.MDC.*;
-import static java.lang.IO.*;
+import static io.netty.util.ReferenceCountUtil.*;
 
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
@@ -68,7 +67,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 try {
                     sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), false, container.telemetryContext(), new IllegalStateException("Server is shutting down"));
                 } finally {
-                    ReferenceCountUtil.safeRelease(nettyReq);
+                    safeRelease(nettyReq);
                 }
                 return;
             }
@@ -84,7 +83,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         }
 
         if (msg instanceof FullHttpRequest) {
-            ReferenceCountUtil.safeRelease(msg);
+            safeRelease(msg);
             return;
         }
 
@@ -172,7 +171,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
             try {
                 dispatcher.dispatch(ctx, container);
             } finally {
-                ReferenceCountUtil.release(container.nettyReq());
+                safeRelease(container.nettyReq());
                 dispatcher.activeRequests.decrementAndGet();
                 dispatcher.phaser.arriveAndDeregister();
             }
@@ -227,7 +226,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                     try {
                         dispatcher.sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
                     } finally {
-                        ReferenceCountUtil.safeRelease(nettyReq);
+                        safeRelease(nettyReq);
                     }
                     return null;
                 }

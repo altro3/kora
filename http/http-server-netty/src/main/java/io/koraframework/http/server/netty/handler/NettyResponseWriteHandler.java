@@ -342,12 +342,13 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
                 safeRelease(nettyReq);
             }
 
-            if (!future.isSuccess() || !keepAlive) {
+            if (future.isSuccess() && keepAlive) {
+                ctx.read();
+            } else {
                 ctx.close();
             }
         }
     }
-
 
     private static final class ResetAutoReadRunnable implements Runnable {
         private final ChannelHandlerContext ctx;

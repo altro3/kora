@@ -20,6 +20,7 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
 import io.netty.util.AttributeKey;
+import io.netty.util.ReferenceCountUtil;
 import io.opentelemetry.context.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
@@ -181,7 +182,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             this.config = config;
         }
 
-        @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
             if (msg instanceof HttpRequest req) {
                 if (req instanceof FullHttpRequest fullReq) {
@@ -201,7 +201,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
                 this.activeBody = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
                 ctx.channel().attr(AttributeKey.valueOf("kora.active.body")).set(activeBody);
-
+                ReferenceCountUtil.release(req);
                 ctx.fireChannelRead(fullReq);
                 return;
             }
