@@ -11,10 +11,11 @@ import io.netty.util.*;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
 
-@ChannelHandler.Sharable
-public final class NettyTelemetryHandler extends ChannelDuplexHandler {
+import static java.lang.IO.*;
 
-    public static final AttributeKey<HttpServerObservation> OBSERVATION_KEY = AttributeKey.valueOf("kora.http.observation");
+@ChannelHandler.Sharable
+public final class NettyTelemetryHandler extends ChannelInboundHandlerAdapter {
+
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
 
     private final HttpServerTelemetry telemetry;
@@ -32,31 +33,31 @@ public final class NettyTelemetryHandler extends ChannelDuplexHandler {
             return;
         }
 
-        var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
-        var koraReq = new NettyUnroutedHttpRequest(nettyReq);
-        var invocation = this.httpServerRouter.route(koraReq);
-        var observation = this.telemetry.observe(invocation.routedRequest());
+        HttpServerObservation observation = null;
+        try {
+            var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
+            var koraReq = new NettyUnroutedHttpRequest(nettyReq);
+            var invocation = httpServerRouter.route(koraReq);
+            observation = telemetry.observe(invocation.routedRequest());
 
-        var activeCtx = rootCtx.with(observation.span());
-        var httpServerRequest = observation.observeRequest(invocation.routedRequest());
+            var activeCtx = rootCtx.with(observation.span());
+            var httpServerRequest = observation.observeRequest(invocation.routedRequest());
 
-        var container = new RequestContainer(nettyReq, httpServerRequest, invocation, activeCtx, observation);
-        ctx.fireChannelRead(container);
-    }
-
-    @Override
-    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) {
-        ctx.write(msg, promise);
-    }
-
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) {
-        ctx.fireChannelInactive();
+            var container = new RequestContainer(nettyReq, httpServerRequest, invocation, activeCtx, observation);
+            ctx.fireChannelRead(container);
+        } catch (Throwable t) {
+            if (observation != null) {
+                observation.observeError(t);
+                observation.end();
+            }
+            ReferenceCountUtil.release(nettyReq);
+            ctx.fireExceptionCaught(t);
+        }
     }
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        System.out.println("[DEBUG EXCEPTION] Исключение в пайплайне Netty: " + cause.getMessage());
+        println("[DEBUG EXCEPTION] Exception in netty pipeline: " + cause.getMessage());
         ctx.fireExceptionCaught(cause);
     }
 

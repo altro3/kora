@@ -4,9 +4,11 @@ import io.koraframework.http.common.body.HttpBody;
 import io.koraframework.http.common.body.HttpBodyInput;
 import io.koraframework.http.common.header.HttpHeaders;
 import io.koraframework.http.server.common.router.UnroutedHttpRequest;
+import io.koraframework.http.server.netty.NettyContext;
 import io.netty.handler.codec.http.FullHttpRequest;
 import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.QueryStringDecoder;
+import io.netty.util.AttributeKey;
 import org.jspecify.annotations.Nullable;
 
 import java.io.IOException;
@@ -17,10 +19,6 @@ import java.util.Locale;
 import java.util.Map;
 
 public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
-
-    private static final String DEFAULT_HOST = "localhost";
-    private static final String SCHEME_HTTP = "http";
-    private static final String HEADER_X_FORWARDED_PROTO = "X-Forwarded-Proto";
 
     protected final FullHttpRequest nettyRequest;
     private final String method;
@@ -36,7 +34,7 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         this.method = nettyRequest.method().name();
         this.startTime = System.nanoTime();
 
-        QueryStringDecoder decoder = new QueryStringDecoder(nettyRequest.uri());
+        var decoder = new QueryStringDecoder(nettyRequest.uri());
         this.path = decoder.path();
         this.queryParams = Collections.unmodifiableMap(decoder.parameters());
         this.headers = new NettyHttpHeaders(nettyRequest.headers());
@@ -55,13 +53,13 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     @Override
     public String host() {
         String host = nettyRequest.headers().get(HttpHeaderNames.HOST);
-        return host != null ? host : DEFAULT_HOST;
+        return host != null ? host : "localhost";
     }
 
     @Override
     public String scheme() {
-        String forwardedProto = nettyRequest.headers().get(HEADER_X_FORWARDED_PROTO);
-        return forwardedProto != null ? forwardedProto.toLowerCase(Locale.ROOT) : SCHEME_HTTP;
+        String forwardedProto = nettyRequest.headers().get("X-Forwarded-Proto");
+        return forwardedProto != null ? forwardedProto.toLowerCase(Locale.ROOT) : "http";
     }
 
     @Override
@@ -103,8 +101,8 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     }
 
     private HttpBodyInput getContent() throws IOException {
-        var attrKey = io.netty.util.AttributeKey.valueOf("kora.active.body");
-        var nettyContext = io.koraframework.http.server.netty.NettyContext.get();
+        var attrKey = AttributeKey.valueOf("kora.active.body");
+        var nettyContext = NettyContext.get();
         if (nettyContext != null) {
             var streamingBody = (NettyRequestHttpBody) nettyContext.channelContext().channel().attr(attrKey).getAndSet(null);
             if (streamingBody != null) {

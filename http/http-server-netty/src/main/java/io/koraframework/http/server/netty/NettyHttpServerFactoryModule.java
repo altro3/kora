@@ -9,6 +9,9 @@ import io.koraframework.http.server.common.telemetry.*;
 import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
 import io.netty.bootstrap.*;
+import io.netty.buffer.*;
+import io.netty.channel.*;
+import io.netty.util.internal.*;
 import org.jspecify.annotations.*;
 
 public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
@@ -41,6 +44,27 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
             telemetryHandler,
             configurer
         );
+    }
+
+    @DefaultComponent
+    @Tag(Tag.Factory.class)
+    public Configurer<ServerBootstrap> defaultNettyBootstrapConfigurer() {
+        return bootstrap -> {
+            var allocator = new PooledByteBufAllocator(
+                !PlatformDependent.isOsx(),
+                PooledByteBufAllocator.defaultNumHeapArena(),
+                PooledByteBufAllocator.defaultNumDirectArena(),
+                PooledByteBufAllocator.defaultPageSize(),
+                PooledByteBufAllocator.defaultMaxOrder(),
+                0,
+                0,
+                false
+            );
+
+            return bootstrap
+                .option(ChannelOption.ALLOCATOR, allocator)
+                .childOption(ChannelOption.ALLOCATOR, allocator);
+        };
     }
 
     @DefaultComponent

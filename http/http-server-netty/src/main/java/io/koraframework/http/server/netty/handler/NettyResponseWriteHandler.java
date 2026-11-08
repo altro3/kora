@@ -10,12 +10,12 @@ import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import io.netty.util.*;
+import io.netty.util.concurrent.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
 import java.io.*;
-
-import static io.koraframework.http.server.netty.handler.NettyTelemetryHandler.OBSERVATION_KEY;
+import java.nio.charset.*;
 
 @ChannelHandler.Sharable
 public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapter {
@@ -31,11 +31,12 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
 
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (!(msg instanceof ResponseContainer container)) {
+        if (!(msg instanceof ResponseContainer)) {
             ctx.fireChannelRead(msg);
             return;
         }
 
+        var container = (ResponseContainer) msg;
         var nettyReq = container.nettyReq();
         var version = nettyReq.protocolVersion();
         var keepAlive = HttpUtil.isKeepAlive(nettyReq);
@@ -50,67 +51,15 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
             if (ctx.executor().inEventLoop()) {
                 prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
             } else {
-                ctx.executor().execute(() -> prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation));
+                ctx.executor().execute(new PrepareAndSendRunnable(this, ctx, nettyReq, version, keepAlive, response, isHead, observation));
             }
             return;
         }
 
-        ctx.executor().execute(() -> {
-            Thread.startVirtualThread(() -> {
-                var status = HttpResponseStatus.valueOf(response.code());
-                var nettyResp = new DefaultHttpResponse(version, status);
-                writeHeaders(nettyResp.headers(), response.headers(), body.contentType());
-
-                if (body.contentLength() >= 0) {
-                    nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.contentLength());
-                } else {
-                    nettyResp.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
-                }
-                setupConnectionHeader(nettyResp, version, keepAlive);
-
-                AdaptiveNettyBodyOutputStream output = null;
-                try {
-                    output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body, nettyReq, observation);
-                    output.writeBody();
-                    output.complete();
-
-                    if (nettyReq != null) {
-                        io.netty.util.ReferenceCountUtil.safeRelease(nettyReq);
-                    }
-
-                    var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
-                    if (dispatcher != null) {
-                        dispatcher.getActiveRequests().decrementAndGet();
-                        dispatcher.getPhaser().arriveAndDeregister();
-                    }
-
-                } catch (Throwable e) {
-                    if (output != null) {
-                        output.close();
-                    }
-                    closeBody(body);
-                    ctx.channel().config().setAutoRead(true);
-
-                    if (output != null && !output.isStreamMode() && ctx.channel().isActive()) {
-                        var message = e.getMessage() != null ? e.getMessage() : "Internal Server Error";
-                        var bytes = message.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                        var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
-
-                        var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
-                        errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
-                        errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
-
-                        setupConnectionHeader(errResp, version, keepAlive);
-                        ctx.writeAndFlush(errResp).addListener(_ -> ctx.close());
-                    } else {
-                        ctx.close();
-                    }
-                }
-            });
-        });
+        ctx.executor().execute(new StreamExecutionRunnable(this, ctx, container, version, keepAlive, response, body, isHead, observation, nettyReq));
     }
 
-    private void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
+    void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
 
@@ -171,43 +120,16 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
     }
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
-        var statusStr = (msg instanceof HttpResponse res) ? res.status().toString() : "unknown";
-
         setupConnectionHeader(msg, version, keepAlive);
 
         if (keepAlive) {
             ctx.channel().config().setAutoRead(true);
         }
 
-        ctx.writeAndFlush(msg).addListener(future -> {
-            closeBody(body);
-
-            var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
-            if (dispatcher != null) {
-                dispatcher.getActiveRequests().decrementAndGet();
-                dispatcher.getPhaser().arriveAndDeregister();
-            }
-
-
-            if (observation != null) {
-                if (!future.isSuccess()) {
-                    observation.observeError(future.cause());
-                }
-                observation.end();
-            }
-
-            if (nettyReq != null) {
-                ReferenceCountUtil.safeRelease(nettyReq);
-            }
-
-            // Если запись провалилась или это не Keep-Alive, только тогда принудительно закрываем
-            if (!future.isSuccess() || !keepAlive) {
-                ctx.close();
-            }
-        });
+        ctx.writeAndFlush(msg).addListener(new FinalizeWriteListener(ctx, body, observation, nettyReq, keepAlive));
     }
 
-    private void writeHeaders(HttpHeaders nettyHeaders, io.koraframework.http.common.header.HttpHeaders koraHeaders, @Nullable String contentType) {
+    void writeHeaders(HttpHeaders nettyHeaders, io.koraframework.http.common.header.HttpHeaders koraHeaders, @Nullable String contentType) {
         if (this.httpServerConfig.get().headerServerNameEnabled()) {
             nettyHeaders.set(HttpHeaderNames.SERVER, HEADER_SERVER_VALUE);
         }
@@ -232,7 +154,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
         return HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null;
     }
 
-    private void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
+    void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
         boolean keepAliveAllowed = keepAlive && this.httpServerConfig.get().headerKeepAliveEnabled();
         if (keepAliveAllowed) {
             if (!version.isKeepAliveDefault()) {
@@ -245,7 +167,7 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
         }
     }
 
-    private static void closeBody(@Nullable HttpBodyOutput body) {
+    static void closeBody(@Nullable HttpBodyOutput body) {
         if (body != null) {
             try {
                 body.close();
@@ -259,5 +181,261 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Netty pipeline exception caught", cause);
         ctx.close();
+    }
+
+    private static final class PrepareAndSendRunnable implements Runnable {
+        private final NettyResponseWriteHandler handler;
+        private final ChannelHandlerContext ctx;
+        private final FullHttpRequest nettyReq;
+        private final HttpVersion version;
+        private final boolean keepAlive;
+        private final HttpServerResponse response;
+        private final boolean isHead;
+        private final HttpServerObservation observation;
+
+        public PrepareAndSendRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
+            this.handler = handler;
+            this.ctx = ctx;
+            this.nettyReq = nettyReq;
+            this.version = version;
+            this.keepAlive = keepAlive;
+            this.response = response;
+            this.isHead = isHead;
+            this.observation = observation;
+        }
+
+        @Override
+        public void run() {
+            handler.prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
+        }
+    }
+
+    private static final class StreamExecutionRunnable implements Runnable {
+        private final NettyResponseWriteHandler handler;
+        private final ChannelHandlerContext ctx;
+        private final ResponseContainer container;
+        private final HttpVersion version;
+        private final boolean keepAlive;
+        private final HttpServerResponse response;
+        private final HttpBodyOutput body;
+        private final boolean isHead;
+        private final HttpServerObservation observation;
+        private final FullHttpRequest nettyReq;
+
+        public StreamExecutionRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, ResponseContainer container, HttpVersion version, boolean keepAlive, HttpServerResponse response, HttpBodyOutput body, boolean isHead, HttpServerObservation observation, FullHttpRequest nettyReq) {
+            this.handler = handler;
+            this.ctx = ctx;
+            this.container = container;
+            this.version = version;
+            this.keepAlive = keepAlive;
+            this.response = response;
+            this.body = body;
+            this.isHead = isHead;
+            this.observation = observation;
+            this.nettyReq = nettyReq;
+        }
+
+        @Override
+        public void run() {
+            Thread.startVirtualThread(new AsyncStreamTask(handler, ctx, container, version, keepAlive, response, body, isHead, observation, nettyReq));
+        }
+    }
+
+    private static final class AsyncStreamTask implements Runnable {
+        private final NettyResponseWriteHandler handler;
+        private final ChannelHandlerContext ctx;
+        private final ResponseContainer container;
+        private final HttpVersion version;
+        private final boolean keepAlive;
+        private final HttpServerResponse response;
+        private final HttpBodyOutput body;
+        private final boolean isHead;
+        private final HttpServerObservation observation;
+        private final FullHttpRequest nettyReq;
+
+        public AsyncStreamTask(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, ResponseContainer container, HttpVersion version, boolean keepAlive, HttpServerResponse response, HttpBodyOutput body, boolean isHead, HttpServerObservation observation, FullHttpRequest nettyReq) {
+            this.handler = handler;
+            this.ctx = ctx;
+            this.container = container;
+            this.version = version;
+            this.keepAlive = keepAlive;
+            this.response = response;
+            this.body = body;
+            this.isHead = isHead;
+            this.observation = observation;
+            this.nettyReq = nettyReq;
+        }
+
+        @Override
+        public void run() {
+            var status = HttpResponseStatus.valueOf(response.code());
+            var nettyResp = new DefaultHttpResponse(version, status);
+            handler.writeHeaders(nettyResp.headers(), response.headers(), body.contentType());
+
+            if (body.contentLength() >= 0) {
+                nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.contentLength());
+            } else {
+                nettyResp.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+            }
+            handler.setupConnectionHeader(nettyResp, version, keepAlive);
+
+            AdaptiveNettyBodyOutputStream output = null;
+            try {
+                output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body, nettyReq, observation);
+                output.writeBody();
+                output.complete();
+
+                if (nettyReq != null) {
+                    ReferenceCountUtil.safeRelease(nettyReq);
+                }
+
+                ctx.executor().execute(new DecrementDispatcherCountersRunnable(ctx));
+
+            } catch (Throwable e) {
+                if (output != null) {
+                    output.close();
+                }
+                closeBody(body);
+                ctx.executor().execute(new ResetAutoReadRunnable(ctx));
+
+                if (output != null && !output.isStreamMode()) {
+                    ctx.executor().execute(new SendStreamErrorResponseRunnable(handler, ctx, version, keepAlive, e));
+                } else {
+                    ctx.executor().execute(new CloseChannelRunnable(ctx));
+                }
+            }
+        }
+    }
+
+    private static final class FinalizeWriteListener implements GenericFutureListener<ChannelFuture> {
+        private final ChannelHandlerContext ctx;
+        private final HttpBodyOutput body;
+        private final HttpServerObservation observation;
+        private final FullHttpRequest nettyReq;
+        private final boolean keepAlive;
+
+        public FinalizeWriteListener(ChannelHandlerContext ctx, HttpBodyOutput body, HttpServerObservation observation, FullHttpRequest nettyReq, boolean keepAlive) {
+            this.ctx = ctx;
+            this.body = body;
+            this.observation = observation;
+            this.nettyReq = nettyReq;
+            this.keepAlive = keepAlive;
+        }
+
+        @Override
+        public void operationComplete(ChannelFuture future) {
+            closeBody(body);
+
+            var dispatcher = future.channel().pipeline().get(KoraVirtualThreadDispatcher.class);
+            if (dispatcher != null) {
+                dispatcher.getActiveRequests().decrementAndGet();
+                dispatcher.getPhaser().arriveAndDeregister();
+            }
+
+            if (observation != null) {
+                if (!future.isSuccess()) {
+                    observation.observeError(future.cause());
+                }
+                observation.end();
+            }
+
+            if (nettyReq != null) {
+                ReferenceCountUtil.safeRelease(nettyReq);
+            }
+
+            if (!future.isSuccess() || !keepAlive) {
+                ctx.close();
+            }
+        }
+    }
+
+    private static final class DecrementDispatcherCountersRunnable implements Runnable {
+        private final ChannelHandlerContext ctx;
+
+        public DecrementDispatcherCountersRunnable(ChannelHandlerContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void run() {
+            var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
+            if (dispatcher != null) {
+                dispatcher.getActiveRequests().decrementAndGet();
+                dispatcher.getPhaser().arriveAndDeregister();
+            }
+        }
+    }
+
+    private static final class ResetAutoReadRunnable implements Runnable {
+        private final ChannelHandlerContext ctx;
+
+        public ResetAutoReadRunnable(ChannelHandlerContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void run() {
+            ctx.channel().config().setAutoRead(true);
+        }
+    }
+
+    private static final class CloseChannelRunnable implements Runnable {
+        private final ChannelHandlerContext ctx;
+
+        public CloseChannelRunnable(ChannelHandlerContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void run() {
+            ctx.close();
+        }
+    }
+
+    private static final class SendStreamErrorResponseRunnable implements Runnable {
+        private final NettyResponseWriteHandler handler;
+        private final ChannelHandlerContext ctx;
+        private final HttpVersion version;
+        private final boolean keepAlive;
+        private final Throwable exception;
+
+        public SendStreamErrorResponseRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, Throwable exception) {
+            this.handler = handler;
+            this.ctx = ctx;
+            this.version = version;
+            this.keepAlive = keepAlive;
+            this.exception = exception;
+        }
+
+        @Override
+        public void run() {
+            if (ctx.channel().isActive()) {
+                var message = exception.getMessage() != null ? exception.getMessage() : "Internal Server Error";
+                var bytes = message.getBytes(StandardCharsets.UTF_8);
+                var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
+
+                var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
+                errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
+                errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
+
+                handler.setupConnectionHeader(errResp, version, keepAlive);
+                ctx.writeAndFlush(errResp).addListener(new CloseFutureListener(ctx));
+            } else {
+                ctx.close();
+            }
+        }
+    }
+
+    private static final class CloseFutureListener implements GenericFutureListener<ChannelFuture> {
+        private final ChannelHandlerContext ctx;
+
+        public CloseFutureListener(ChannelHandlerContext ctx) {
+            this.ctx = ctx;
+        }
+
+        @Override
+        public void operationComplete(ChannelFuture future) {
+            ctx.close();
+        }
     }
 }
