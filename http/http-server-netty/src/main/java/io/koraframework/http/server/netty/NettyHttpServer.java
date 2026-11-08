@@ -13,6 +13,7 @@ import io.koraframework.http.server.netty.request.NettyRequestHttpBody;
 import io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
@@ -103,6 +104,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
+                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
                 .childHandler(new ServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
@@ -147,10 +149,18 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
         @Override
         protected void initChannel(SocketChannel ch) {
-            ChannelPipeline p = ch.pipeline();
             var telemetry = telemetryValue != null ? telemetryValue.get() : null;
 
-            p.addLast(new HttpServerCodec());
+            var decoderConfig = new HttpDecoderConfig()
+                .setHeadersFactory(KoraCachedHeadersFactory.build())
+                .setValidateHeaders(false)
+                .setMaxInitialLineLength(4096)
+                .setMaxHeaderSize(8192);
+
+            ChannelPipeline p = ch.pipeline();
+            p.addLast(new HttpServerCodec(decoderConfig));
+            p.addLast(KoraHeaderInternerHandler.INSTANCE);
+            p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
             p.addLast(new ChunkedWriteHandler());
 
             var readTimeout = config.socketReadTimeout();
@@ -163,7 +173,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
 
             p.addLast(writeHandlerValue.get());
-            p.addLast(new RequestAggregationHandler(config));
+//            p.addLast(new RequestAggregationHandler(config));
 
             if (telemetry != null) {
                 p.addLast(telemetry);
@@ -339,4 +349,3 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         INIT, RUN, SHUTDOWN
     }
 }
-

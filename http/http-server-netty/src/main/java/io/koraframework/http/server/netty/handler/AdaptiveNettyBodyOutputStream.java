@@ -10,7 +10,7 @@ import io.netty.util.*;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.locks.LockSupport;
 
 final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
@@ -37,6 +37,21 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         this.buffer = ctx.alloc().compositeBuffer();
     }
 
+    private static void awaitNonBlocking(io.netty.util.concurrent.Future<?> nettyFuture) throws IOException {
+        if (nettyFuture.isDone()) {
+            if (!nettyFuture.isSuccess()) throw new IOException(nettyFuture.cause());
+            return;
+        }
+        var currentThread = Thread.currentThread();
+        nettyFuture.addListener(_ -> LockSupport.unpark(currentThread));
+        while (!nettyFuture.isDone()) {
+            LockSupport.park();
+        }
+        if (!nettyFuture.isSuccess()) {
+            throw new IOException(nettyFuture.cause());
+        }
+    }
+
     @Override
     public void write(int b) throws IOException {
         write(new byte[] {(byte) b}, 0, 1);
@@ -53,10 +68,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         ctx.channel().write(responseHeader);
         if (buffer.isReadable()) {
             try {
-                ctx.channel().writeAndFlush(new DefaultHttpContent(buffer)).sync();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Streaming interrupted during initial flush", e);
+                awaitNonBlocking(ctx.channel().writeAndFlush(new DefaultHttpContent(buffer)));
             } catch (Exception e) {
                 throw new IOException("Failed to flush initial buffer", e);
             }
@@ -76,13 +88,13 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             return;
         }
 
-        var latch = new CountDownLatch(1);
+        Thread currentThread = Thread.currentThread();
         var writabilityHandler = new ChannelInboundHandlerAdapter() {
             @Override
             public void channelWritabilityChanged(ChannelHandlerContext context) throws Exception {
                 if (context.channel().isWritable()) {
                     context.pipeline().remove(this);
-                    latch.countDown();
+                    LockSupport.unpark(currentThread);
                 }
                 context.fireChannelWritabilityChanged();
             }
@@ -90,7 +102,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             @Override
             public void channelInactive(ChannelHandlerContext context) throws Exception {
                 context.pipeline().remove(this);
-                latch.countDown();
+                LockSupport.unpark(currentThread);
                 context.fireChannelInactive();
             }
         };
@@ -103,11 +115,8 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             return;
         }
 
-        try {
-            latch.await();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Streaming interrupted during backpressure wait", e);
+        while (!ctx.channel().isWritable() && ctx.channel().isActive()) {
+            LockSupport.park();
         }
 
         if (!ctx.channel().isActive()) {
@@ -150,10 +159,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
             ByteBuf chunk = ctx.alloc().directBuffer(len).writeBytes(b, off, len);
             try {
-                ctx.channel().writeAndFlush(new DefaultHttpContent(chunk)).sync();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Streaming interrupted during write", e);
+                awaitNonBlocking(ctx.channel().writeAndFlush(new DefaultHttpContent(chunk)));
             } catch (Exception e) {
                 throw new IOException("Connection broken during streaming", e);
             }
@@ -185,11 +191,8 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
             buffer = null;
             try {
-                ctx.channel().writeAndFlush(fullResponse).sync();
+                awaitNonBlocking(ctx.channel().writeAndFlush(fullResponse));
                 finalizeConnection(true);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted during final response flush", e);
             } catch (Exception e) {
                 finalizeConnection(false);
                 throw new IOException("Failed to send final response", e);
@@ -199,11 +202,8 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
         if (isStreamMode) {
             try {
-                ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).sync();
+                awaitNonBlocking(ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT));
                 finalizeConnection(true);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new IOException("Interrupted during EMPTY_LAST_CONTENT flush", e);
             } catch (Exception e) {
                 finalizeConnection(false);
                 throw new IOException("Failed to flush EMPTY_LAST_CONTENT", e);

@@ -15,6 +15,7 @@ import io.netty.channel.socket.nio.NioServerDomainSocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.channel.uring.*;
+import io.netty.util.*;
 import io.netty.util.concurrent.DefaultThreadFactory;
 import org.jspecify.annotations.Nullable;
 
@@ -39,10 +40,8 @@ public interface NettyModule {
     @DefaultComponent
     default NettyEventLoopFactory nettyEventLoopBossFactory(@Tag(EventLoopBoss.class) @Nullable ThreadFactory threadFactory,
                                                             NettyTransportConfig config) {
-        var tf = (threadFactory == null)
-            ? new DefaultThreadFactory("netty-kora-boss", true)
-            : threadFactory;
-        return getNettyEventLoopFactory(tf, config);
+        var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-boss", true) : threadFactory;
+        return getNettyEventLoopFactory(1, tf, config);
     }
 
     @Tag(EventLoopBoss.class)
@@ -62,12 +61,13 @@ public interface NettyModule {
     @DefaultComponent
     default NettyEventLoopFactory nettyEventLoopWorkerFactory(@Tag(EventLoopWorker.class) @Nullable ThreadFactory threadFactory,
                                                               NettyTransportConfig config) {
-        var tf = (threadFactory == null)
-            ? new DefaultThreadFactory("netty-kora-worker", true)
-            : threadFactory;
-        return getNettyEventLoopFactory(tf, config);
-    }
+        var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-worker", true) : threadFactory;
+        int nThreads = (config.transport() == EventLoopType.NIO || config.transport() == null)
+            ? NettyRuntime.availableProcessors()
+            : config.threads();
 
+        return getNettyEventLoopFactory(nThreads, tf, config);
+    }
     @Tag(EventLoopWorker.class)
     @DefaultComponent
     default LifecycleWrapper<EventLoopGroup> nettyEventLoopWorkerGroup(@Tag(EventLoopWorker.class) NettyEventLoopFactory nettyEventLoopFactory) {
@@ -105,9 +105,9 @@ public interface NettyModule {
         }
     }
 
-    private static NettyEventLoopFactory getNettyEventLoopFactory(ThreadFactory threadFactory,
+    private static NettyEventLoopFactory getNettyEventLoopFactory(int nThreads,
+                                                                  ThreadFactory threadFactory,
                                                                   NettyTransportConfig config) {
-        int nThreads = config.threads();
         var transport = config.transport();
         if (transport != null) {
             if (transport == EventLoopType.URING && isUringAvailable()) {

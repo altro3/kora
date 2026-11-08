@@ -34,7 +34,7 @@ import static io.netty.util.ReferenceCountUtil.*;
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
-    private static final AttributeKey<Boolean> PROCESSING_KEY = AttributeKey.valueOf("kora.netty.request.processing");
+//    private static final AttributeKey<Boolean> PROCESSING_KEY = AttributeKey.valueOf("kora.netty.request.processing");
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final boolean contextPropagationEnabled;
     private final AtomicInteger activeRequests = new AtomicInteger(0);
@@ -75,6 +75,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
             return;
         }
 
+/*
         if (Boolean.TRUE.equals(ctx.channel().attr(PROCESSING_KEY).get())) {
             ctx.channel().config().setAutoRead(false);
             safeRelease(container.nettyReq());
@@ -83,6 +84,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
         ctx.channel().attr(PROCESSING_KEY).set(Boolean.TRUE);
         ctx.channel().config().setAutoRead(false);
+*/
 
         activeRequests.incrementAndGet();
         phaser.register();
@@ -172,8 +174,8 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
             try {
                 dispatcher.dispatch(ctx, container);
             } finally {
-                ctx.channel().attr(PROCESSING_KEY).set(Boolean.FALSE);
-                safeRelease(container.nettyReq());
+                // ctx.channel().attr(PROCESSING_KEY).set(Boolean.FALSE); // убрали ранее
+                // safeRelease(container.nettyReq());
                 dispatcher.activeRequests.decrementAndGet();
                 dispatcher.phaser.arriveAndDeregister();
                 ctx.read();
@@ -235,7 +237,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 }
             }
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
-            ctx.writeAndFlush(responseContainer);
+            ctx.executor().execute(() -> ctx.writeAndFlush(responseContainer));
             return null;
         }
     }
