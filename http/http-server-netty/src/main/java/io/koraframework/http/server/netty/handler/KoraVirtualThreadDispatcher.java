@@ -238,21 +238,6 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         }
     }
 
-    private static final class FireReadRunnable implements Runnable {
-        private final ChannelHandlerContext ctx;
-        private final ResponseContainer responseContainer;
-
-        public FireReadRunnable(ChannelHandlerContext ctx, ResponseContainer responseContainer) {
-            this.ctx = ctx;
-            this.responseContainer = responseContainer;
-        }
-
-        @Override
-        public void run() {
-            ctx.fireChannelRead(responseContainer);
-        }
-    }
-
     private static final class CloseOrAutoReadListener implements GenericFutureListener<ChannelFuture> {
         private final ChannelHandlerContext ctx;
         private final boolean keepAlive;

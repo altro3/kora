@@ -122,7 +122,7 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
         setupConnectionHeader(msg, version, keepAlive);
-   if (!ctx.channel().isWritable()) {
+        if (!ctx.channel().isWritable()) {
             ctx.channel().config().setAutoRead(false);
         } else if (keepAlive) {
             ctx.channel().config().setAutoRead(true);
@@ -292,8 +292,6 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
                     safeRelease(nettyReq);
                 }
 
-                ctx.executor().execute(new DecrementDispatcherCountersRunnable(ctx));
-
             } catch (Throwable e) {
                 if (output != null) {
                     output.close();
@@ -333,12 +331,6 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
         public void operationComplete(ChannelFuture future) {
             closeBody(body);
 
-            var dispatcher = future.channel().pipeline().get(KoraVirtualThreadDispatcher.class);
-            if (dispatcher != null) {
-                dispatcher.getActiveRequests().decrementAndGet();
-                dispatcher.getPhaser().arriveAndDeregister();
-            }
-
             if (observation != null) {
                 if (!future.isSuccess()) {
                     observation.observeError(future.cause());
@@ -356,22 +348,6 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
         }
     }
 
-    private static final class DecrementDispatcherCountersRunnable implements Runnable {
-        private final ChannelHandlerContext ctx;
-
-        public DecrementDispatcherCountersRunnable(ChannelHandlerContext ctx) {
-            this.ctx = ctx;
-        }
-
-        @Override
-        public void run() {
-            var dispatcher = ctx.pipeline().get(KoraVirtualThreadDispatcher.class);
-            if (dispatcher != null) {
-                dispatcher.getActiveRequests().decrementAndGet();
-                dispatcher.getPhaser().arriveAndDeregister();
-            }
-        }
-    }
 
     private static final class ResetAutoReadRunnable implements Runnable {
         private final ChannelHandlerContext ctx;

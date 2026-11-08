@@ -55,20 +55,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     private static final class DefaultNettyBootstrapConfigurer implements Configurer<ServerBootstrap> {
         @Override
         public ServerBootstrap configure(ServerBootstrap bootstrap) {
-            int pageSize = 4096;
-            int maxOrder = 9;
-
-            var allocator = new PooledByteBufAllocator(
-                true,
-                PooledByteBufAllocator.defaultNumHeapArena(),
-                PooledByteBufAllocator.defaultNumDirectArena(),
-                PooledByteBufAllocator.defaultPageSize(),
-                PooledByteBufAllocator.defaultMaxOrder(),
-                PooledByteBufAllocator.defaultSmallCacheSize(),
-                PooledByteBufAllocator.defaultNormalCacheSize(),
-                false
-            );
-
+            var allocator = UnpooledByteBufAllocator.DEFAULT;
             return bootstrap
                 .option(ChannelOption.ALLOCATOR, allocator)
                 .childOption(ChannelOption.ALLOCATOR, allocator);

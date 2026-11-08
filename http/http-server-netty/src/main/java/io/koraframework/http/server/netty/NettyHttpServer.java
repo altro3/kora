@@ -9,17 +9,22 @@ import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
 import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
+import io.koraframework.http.server.netty.request.NettyRequestHttpBody;
+import io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
+import io.netty.util.AttributeKey;
 import io.opentelemetry.context.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
+import java.io.IOException;
 import java.net.*;
 import java.time.*;
 import java.util.concurrent.*;
@@ -79,6 +84,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
             var config = this.httpServerConfig.get();
             var bootstrap = new ServerBootstrap();
+            var recvAllocator = new FixedRecvByteBufAllocator(4096);
+
             bootstrap.group(resources.bossGroup(), resources.workerGroup())
                 .channel(resources.channelClass())
                 .option(ChannelOption.SO_BACKLOG, 1024);
@@ -96,6 +103,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
+                .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
                 .childHandler(new ServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
 
             int port = config.port();
@@ -115,6 +123,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
         }
     }
+
 
     private static final class ServerChannelInitializer extends ChannelInitializer<SocketChannel> {
         private final NettyHttpServer server;
@@ -166,7 +175,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     private static final class RequestAggregationHandler extends ChannelInboundHandlerAdapter {
         private final HttpServerConfig config;
-        private io.koraframework.http.server.netty.request.NettyRequestHttpBody activeBody;
+        private NettyRequestHttpBody activeBody;
 
         public RequestAggregationHandler(HttpServerConfig config) {
             this.config = config;
@@ -185,13 +194,13 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                     req.protocolVersion(),
                     req.method(),
                     req.uri(),
-                    io.netty.buffer.Unpooled.EMPTY_BUFFER,
+                    Unpooled.EMPTY_BUFFER,
                     req.headers(),
-                    io.netty.handler.codec.http.EmptyHttpHeaders.INSTANCE
+                    EmptyHttpHeaders.INSTANCE
                 );
 
-                this.activeBody = new io.koraframework.http.server.netty.request.NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
-                ctx.channel().attr(io.netty.util.AttributeKey.valueOf("kora.active.body")).set(activeBody);
+                this.activeBody = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
+                ctx.channel().attr(AttributeKey.valueOf("kora.active.body")).set(activeBody);
 
                 ctx.fireChannelRead(fullReq);
                 return;
@@ -215,7 +224,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
             if (activeBody != null) {
-                activeBody.setException(new java.io.IOException("Connection closed prematurely"));
+                activeBody.setException(new IOException("Connection closed prematurely"));
                 this.activeBody = null;
             }
             ctx.fireChannelInactive();
@@ -223,9 +232,9 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
+            if (evt instanceof ReadTimeoutException) {
                 if (activeBody != null) {
-                    activeBody.setException(new java.net.SocketTimeoutException("Read timeout"));
+                    activeBody.setException(new SocketTimeoutException("Read timeout"));
                     this.activeBody = null;
                 }
                 ctx.close();
@@ -245,7 +254,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) {
             if (msg instanceof FullHttpRequest nettyReq) {
-                var koraReq = new io.koraframework.http.server.netty.request.NettyUnroutedHttpRequest(nettyReq);
+                var koraReq = new NettyUnroutedHttpRequest(nettyReq);
                 var invocation = currentRouter.route(koraReq);
                 var container = new RequestContainer(
                     nettyReq,
