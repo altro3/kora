@@ -90,9 +90,9 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
         @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
         HttpServerTelemetryFactory telemetryFactory
     ) {
-        if (!httpServerConfig.telemetry().logging().enabled() && !httpServerConfig.telemetry().metrics().enabled() && !httpServerConfig.telemetry().tracing().enabled()) {
-            return null;
-        }
+//        if (!httpServerConfig.telemetry().logging().enabled() && !httpServerConfig.telemetry().metrics().enabled() && !httpServerConfig.telemetry().tracing().enabled()) {
+//            return null;
+//        }
         var telemetry = telemetryFactory.get(this.name, httpServerConfig.port(), httpServerConfig.telemetry());
         return new NettyTelemetryHandler(telemetry, httpServerRouter);
     }

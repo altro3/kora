@@ -9,23 +9,18 @@ import io.koraframework.config.common.Config;
 import io.koraframework.config.common.mapper.ConfigValueMapper;
 import io.koraframework.http.server.common.system.SystemApi;
 import io.koraframework.http.server.common.system.SystemHttpServerModule;
-import io.koraframework.netty.common.NettyChannelFactory;
+import io.koraframework.netty.common.*;
 import io.koraframework.netty.common.NettyModule.EventLoopBoss;
 import io.koraframework.netty.common.NettyModule.EventLoopWorker;
-import io.koraframework.netty.common.NettyTransportConfig;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 
-public interface NettySystemHttpServerModule extends SystemHttpServerModule {
+public interface NettySystemHttpServerModule extends SystemHttpServerModule, NettyModule {
 
     @FactoryModule
     @SystemApi
     default NettyHttpServerFactoryModule nettySystemHttpApi() {
         return new NettyHttpServerFactoryModule("kora-netty-system", "httpServer.system");
-    }
-
-    default NettyTransportConfig nettyTransportConfig(Config config, ConfigValueMapper<NettyTransportConfig> mapper) {
-        return mapper.mapOrThrow(config.get("netty"));
     }
 
     @DefaultComponent
@@ -34,10 +29,7 @@ public interface NettySystemHttpServerModule extends SystemHttpServerModule {
         @Tag(EventLoopWorker.class) LifecycleWrapper<EventLoopGroup> workerGroup,
         NettyChannelFactory channelFactory
     ) {
-        var serverChannelFactory = channelFactory.buildServer(false);
-        var temporaryChannel = serverChannelFactory.newChannel();
-        var channelClass = temporaryChannel.getClass();
-        temporaryChannel.close();
+        var channelClass = channelFactory.buildServer(false).newChannel().getClass();
         var resources = new NettyResources(bossGroup.value(), workerGroup.value(), channelClass);
         return () -> resources;
     }

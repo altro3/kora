@@ -49,7 +49,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof NettyTelemetryHandler.RequestContainer container) {
-            println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead before=" + ctx.channel().config().isAutoRead());
+//            println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead before=" + ctx.channel().config().isAutoRead());
 
             if (shuttingDown) {
                 var nettyReq = container.nettyReq();

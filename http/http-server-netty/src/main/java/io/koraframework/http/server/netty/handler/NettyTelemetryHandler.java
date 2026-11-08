@@ -57,7 +57,7 @@ public final class NettyTelemetryHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        println("[DEBUG EXCEPTION] Exception in netty pipeline: " + cause.getMessage());
+//        println("[DEBUG EXCEPTION] Exception in netty pipeline: " + cause.getMessage());
         ctx.fireExceptionCaught(cause);
     }
 
