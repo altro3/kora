@@ -152,6 +152,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 p.addLast(new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
             }
 
+            p.addLast(writeHandlerValue.get());
             p.addLast(new RequestAggregationHandler(config));
 
             if (telemetry != null) {
@@ -160,7 +161,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 p.addLast(new DefaultRoutingFallbackHandler(currentRouter));
             }
             p.addLast(dispatcherValue.get());
-            p.addLast(writeHandlerValue.get());
         }
     }
 

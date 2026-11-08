@@ -20,7 +20,7 @@ import java.nio.charset.*;
 import static io.netty.util.ReferenceCountUtil.*;
 
 @ChannelHandler.Sharable
-public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapter {
+public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(NettyResponseWriteHandler.class);
     private static final AsciiString HEADER_SERVER_VALUE = AsciiString.cached("Kora");
@@ -32,13 +32,12 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
     }
 
     @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) {
-        if (!(msg instanceof ResponseContainer)) {
-            ctx.fireChannelRead(msg);
+    public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
+        if (!(msg instanceof ResponseContainer container)) {
+            ctx.write(msg, promise);
             return;
         }
 
-        var container = (ResponseContainer) msg;
         var nettyReq = container.nettyReq();
         var version = nettyReq.protocolVersion();
         var keepAlive = HttpUtil.isKeepAlive(nettyReq);
@@ -123,8 +122,9 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
         setupConnectionHeader(msg, version, keepAlive);
-
-        if (keepAlive) {
+   if (!ctx.channel().isWritable()) {
+            ctx.channel().config().setAutoRead(false);
+        } else if (keepAlive) {
             ctx.channel().config().setAutoRead(true);
         }
 
@@ -181,8 +181,9 @@ public final class NettyResponseWriteHandler extends ChannelInboundHandlerAdapte
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("Netty pipeline exception caught", cause);
-        ctx.close();
+        if (ctx.channel().isActive()) {
+            ctx.close();
+        }
     }
 
     private static final class PrepareAndSendRunnable implements Runnable {

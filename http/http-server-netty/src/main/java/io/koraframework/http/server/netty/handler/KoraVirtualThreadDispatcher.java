@@ -47,6 +47,16 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     }
 
     @Override
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        boolean writable = ctx.channel().isWritable();
+        ctx.channel().config().setAutoRead(writable);
+        if (writable) {
+            ctx.read();
+        }
+        ctx.fireChannelWritabilityChanged();
+    }
+
+    @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof NettyTelemetryHandler.RequestContainer) {
             var container = (NettyTelemetryHandler.RequestContainer) msg;
@@ -79,6 +89,13 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         }
 
         ctx.fireChannelRead(msg);
+    }
+
+    @Override
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        if (ctx.channel().isActive()) {
+            ctx.close();
+        }
     }
 
     private void dispatch(ChannelHandlerContext ctx, RequestContainer container) {
@@ -216,7 +233,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 }
             }
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
-            ctx.executor().execute(new FireReadRunnable(ctx, responseContainer));
+            ctx.writeAndFlush(responseContainer);
             return null;
         }
     }

@@ -59,13 +59,13 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
             int maxOrder = 9;
 
             var allocator = new PooledByteBufAllocator(
-                !PlatformDependent.isOsx(),
+                true,
                 PooledByteBufAllocator.defaultNumHeapArena(),
                 PooledByteBufAllocator.defaultNumDirectArena(),
-                pageSize,
-                maxOrder,
-                0,
-                0,
+                PooledByteBufAllocator.defaultPageSize(),
+                PooledByteBufAllocator.defaultMaxOrder(),
+                PooledByteBufAllocator.defaultSmallCacheSize(),
+                PooledByteBufAllocator.defaultNormalCacheSize(),
                 false
             );
 
