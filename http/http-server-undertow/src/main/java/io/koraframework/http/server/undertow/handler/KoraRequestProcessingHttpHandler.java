@@ -76,24 +76,24 @@ public final class KoraRequestProcessingHttpHandler implements HttpHandler {
         }
     }
 
-    private ProcessedResponse processRequest(HttpServerExchange exchange) {
-        var rootCtx = contextPropagationEnabled
-            ? PROPAGATOR.extract(Context.root(), exchange.getRequestHeaders(), HttpServerExchangeMapGetter.INSTANCE)
-            : Context.root();
+private ProcessedResponse processRequest(HttpServerExchange exchange) {
+var rootCtx = contextPropagationEnabled
+? PROPAGATOR.extract(Context.root(), exchange.getRequestHeaders(), HttpServerExchangeMapGetter.INSTANCE)
+: Context.root();
 
-        var request = new UndertowUnroutedHttpRequest(exchange);
-        var invocation = httpServerRouter.route(request);
-        var observation = telemetry.observe(invocation.routedRequest());
-        var ctx = rootCtx.with(observation.span());
+var request = new UndertowUnroutedHttpRequest(exchange);
+var invocation = httpServerRouter.route(request);
+var observation = telemetry.observe(invocation.routedRequest());
+var ctx = rootCtx.with(observation.span());
 
-        var finalContext = KoraContext.empty()
-            .with(UNDERTOW_KEY, new UndertowContext(exchange))
-            .with(MDC_KEY, new io.koraframework.logging.common.MDC())
-            .with(OPENTELEMETRY_KEY, ctx)
-            .with(OBSERVATION_KEY, observation);
+var finalContext = KoraContext.empty()
+.with(UNDERTOW_KEY, new UndertowContext(exchange))
+.with(MDC_KEY, new io.koraframework.logging.common.MDC())
+.with(OPENTELEMETRY_KEY, ctx)
+.with(OBSERVATION_KEY, observation);
 
-        return KoraContext.runWith(finalContext, new RequestProcessingRunner(this, exchange, ctx, invocation, observation));
-    }
+return KoraContext.runWith(finalContext, new RequestProcessingRunner(this, exchange, ctx, invocation, observation));
+}
 
     private static final class RequestProcessingRunner implements Supplier<ProcessedResponse> {
         private final KoraRequestProcessingHttpHandler handler;

@@ -279,7 +279,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     @Nullable
     @Override
     public ReadinessProbeFailure probe() {
-        return switch (this.state.get()) {
+        return switch (state.get()) {
             case INIT -> new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) init");
             case RUN -> null;
             case SHUTDOWN -> new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) shutdown");

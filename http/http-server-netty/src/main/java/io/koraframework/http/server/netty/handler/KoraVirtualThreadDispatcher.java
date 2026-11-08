@@ -1,7 +1,7 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.application.graph.*;
-import io.koraframework.common.telemetry.*;
+import io.koraframework.common.context.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.netty.*;
@@ -18,6 +18,11 @@ import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+
+import static io.koraframework.common.telemetry.Observation.OBSERVATION_KEY;
+import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
+import static io.koraframework.http.server.netty.NettyContext.*;
+import static io.koraframework.logging.common.MDC.*;
 
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
@@ -38,7 +43,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof NettyTelemetryHandler.RequestContainer container) {
-            System.out.println("[DEBUG DISPATCHER] Входящий запрос: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead до=" + ctx.channel().config().isAutoRead());
+            System.out.println("[DEBUG DISPATCHER] Request: " + container.nettyReq().method() + " " + container.nettyReq().uri() + ", autoRead before=" + ctx.channel().config().isAutoRead());
         }
         if (!(msg instanceof NettyTelemetryHandler.RequestContainer container)) {
             ctx.fireChannelRead(msg);
@@ -75,37 +80,41 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         var httpServerRequest = container.httpServerRequest();
         var observation = container.observation();
 
-        ScopedValue.where(NettyContext.VALUE, new NettyContext(nettyReq, ctx))
-            .where(MDC.VALUE, new MDC())
-            .where(OpentelemetryContext.VALUE, rootCtx)
-            .run(() -> {
-                HttpServerResponse response;
-                try {
-                    response = invocation.proceed(httpServerRequest);
+        var finalContext = KoraContext.empty()
+            .with(NETTY_KEY, new NettyContext(nettyReq, ctx))
+            .with(MDC_KEY, new MDC())
+            .with(OPENTELEMETRY_KEY, rootCtx)
+            .with(OBSERVATION_KEY, observation);
+
+        KoraContext.runWith(finalContext, () -> {
+            HttpServerResponse response;
+            try {
+                response = invocation.proceed(httpServerRequest);
+                if (observation != null) {
+                    observation.observeResponse(response);
+                }
+            } catch (Throwable e) {
+                if (e instanceof HttpServerResponse rs) {
+                    response = rs;
                     if (observation != null) {
+                        observation.observeError(e);
                         observation.observeResponse(response);
                     }
-                } catch (Throwable e) {
-                    if (e instanceof HttpServerResponse rs) {
-                        response = rs;
-                        if (observation != null) {
-                            observation.observeError(e);
-                            observation.observeResponse(response);
-                        }
-                    } else {
-                        if (observation != null) {
-                            var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
-                            observation.observeError(e);
-                            observation.observeResponse(errorResponse);
-                            observation.end();
-                        }
-                        sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
-                        return;
+                } else {
+                    if (observation != null) {
+                        var errorResponse = io.koraframework.http.server.common.response.HttpServerResponse.of(500);
+                        observation.observeError(e);
+                        observation.observeResponse(errorResponse);
+                        observation.end();
                     }
+                    sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
+                    return null;
                 }
-                var responseContainer = new ResponseContainer(nettyReq, response, observation);
-                ctx.executor().execute(() -> ctx.fireChannelRead(responseContainer));
-            });
+            }
+            var responseContainer = new ResponseContainer(nettyReq, response, observation);
+            ctx.executor().execute(() -> ctx.fireChannelRead(responseContainer));
+            return null;
+        });
     }
 
     private void sendStaticErrorResponse(ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, Context context, Throwable t) {

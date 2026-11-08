@@ -1,40 +1,47 @@
 package io.koraframework.http.server.netty;
 
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.handler.codec.http.FullHttpRequest;
-import org.jspecify.annotations.Nullable;
+import io.koraframework.common.context.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import org.jspecify.annotations.*;
 
 public record NettyContext(
     FullHttpRequest request,
     ChannelHandlerContext channelContext
 ) {
 
-    public static final ScopedValue<NettyContext> VALUE = ScopedValue.newInstance();
+    public static final KoraContext.Key<NettyContext> NETTY_KEY = KoraContext.Key.create();
 
     @Nullable
     public static NettyContext get() {
-        if (VALUE.isBound()) {
-            return VALUE.get();
-        } else {
-            return null;
+        KoraContext current = KoraContext.current();
+        if (current != null) {
+            return current.get(NETTY_KEY);
         }
+        return null;
     }
 
     @Nullable
     public static FullHttpRequest getRequest() {
-        if (VALUE.isBound()) {
-            return VALUE.get().request;
-        } else {
-            return null;
+        KoraContext current = KoraContext.current();
+        if (current != null) {
+            NettyContext nettyCtx = current.get(NETTY_KEY);
+            if (nettyCtx != null) {
+                return nettyCtx.request;
+            }
         }
+        return null;
     }
 
     @Nullable
     public static ChannelHandlerContext getChannelContext() {
-        if (VALUE.isBound()) {
-            return VALUE.get().channelContext;
-        } else {
-            return null;
+        KoraContext current = KoraContext.current();
+        if (current != null) {
+            NettyContext nettyCtx = current.get(NETTY_KEY);
+            if (nettyCtx != null) {
+                return nettyCtx.channelContext;
+            }
         }
+        return null;
     }
 }
