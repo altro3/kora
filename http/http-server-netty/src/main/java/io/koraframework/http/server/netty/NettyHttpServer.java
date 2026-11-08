@@ -90,7 +90,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
             bootstrap.group(resources.bossGroup(), resources.workerGroup())
                 .channel(resources.channelClass())
-                .option(ChannelOption.SO_BACKLOG, 1024);
+                .option(ChannelOption.SO_BACKLOG, 4096);
 
             if (this.configurer != null) {
                 bootstrap = this.configurer.configure(bootstrap.clone());
@@ -152,14 +152,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             var telemetry = telemetryValue != null ? telemetryValue.get() : null;
 
             var decoderConfig = new HttpDecoderConfig()
-                .setHeadersFactory(KoraCachedHeadersFactory.build())
-                .setValidateHeaders(false)
                 .setMaxInitialLineLength(4096)
                 .setMaxHeaderSize(8192);
 
             ChannelPipeline p = ch.pipeline();
             p.addLast(new HttpServerCodec(decoderConfig));
-            p.addLast(KoraHeaderInternerHandler.INSTANCE);
             p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
             p.addLast(new ChunkedWriteHandler());
 
