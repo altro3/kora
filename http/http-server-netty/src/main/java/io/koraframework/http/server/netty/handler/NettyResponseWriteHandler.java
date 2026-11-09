@@ -10,12 +10,10 @@ import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import io.netty.util.*;
-import io.netty.util.concurrent.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
 import java.io.*;
-import java.nio.charset.*;
 
 import static io.netty.util.ReferenceCountUtil.*;
 
@@ -45,22 +43,11 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
         var observation = container.observation();
         boolean isHead = nettyReq.method() == HttpMethod.HEAD;
 
-        var body = response.body();
-        var content = body != null ? body.getFullContentIfAvailable() : null;
-
-        if (body == null || isHead || content != null) {
-            if (ctx.executor().inEventLoop()) {
-                prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
-            } else {
-                ctx.executor().execute(new PrepareAndSendRunnable(this, ctx, nettyReq, version, keepAlive, response, isHead, observation));
-            }
-            return;
-        }
-
-        ctx.executor().execute(new StreamExecutionRunnable(this, ctx, container, version, keepAlive, response, body, isHead, observation, nettyReq));
+        prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
     }
 
-    void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
+    void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version,
+                                boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
 
@@ -120,14 +107,16 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
         }
     }
 
-    private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg, HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body, @Nullable HttpServerObservation observation) {
+    private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpMessage msg,
+                                  HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body,
+                                  @Nullable HttpServerObservation observation) {
         setupConnectionHeader(msg, version, keepAlive);
 
         if (keepAlive) {
             ctx.channel().config().setAutoRead(true);
         }
+
         ctx.write(msg).addListener(new FinalizeWriteListener(ctx, body, observation, nettyReq, keepAlive));
-        ctx.flush();
     }
 
     void writeHeaders(HttpHeaders nettyHeaders, io.koraframework.http.common.header.HttpHeaders koraHeaders, @Nullable String contentType) {
@@ -147,12 +136,10 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
     }
 
     private static boolean isReservedHeader(String key, @Nullable String contentType) {
-        if (HttpHeaderNames.SERVER.contentEqualsIgnoreCase(key)
+        return HttpHeaderNames.SERVER.contentEqualsIgnoreCase(key)
             || HttpHeaderNames.CONTENT_LENGTH.contentEqualsIgnoreCase(key)
-            || HttpHeaderNames.TRANSFER_ENCODING.contentEqualsIgnoreCase(key)) {
-            return true;
-        }
-        return HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null;
+            || HttpHeaderNames.TRANSFER_ENCODING.contentEqualsIgnoreCase(key)
+            || (HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null);
     }
 
     void setupConnectionHeader(HttpMessage response, HttpVersion version, boolean keepAlive) {
@@ -185,140 +172,15 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
         }
     }
 
-    private static final class PrepareAndSendRunnable implements Runnable {
-        private final NettyResponseWriteHandler handler;
-        private final ChannelHandlerContext ctx;
-        private final FullHttpRequest nettyReq;
-        private final HttpVersion version;
-        private final boolean keepAlive;
-        private final HttpServerResponse response;
-        private final boolean isHead;
-        private final HttpServerObservation observation;
-
-        public PrepareAndSendRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version, boolean keepAlive, HttpServerResponse response, boolean isHead, HttpServerObservation observation) {
-            this.handler = handler;
-            this.ctx = ctx;
-            this.nettyReq = nettyReq;
-            this.version = version;
-            this.keepAlive = keepAlive;
-            this.response = response;
-            this.isHead = isHead;
-            this.observation = observation;
-        }
-
-        @Override
-        public void run() {
-            handler.prepareAndSendResponse(ctx, nettyReq, version, keepAlive, response, isHead, observation);
-        }
-    }
-
-    private static final class StreamExecutionRunnable implements Runnable {
-        private final NettyResponseWriteHandler handler;
-        private final ChannelHandlerContext ctx;
-        private final ResponseContainer container;
-        private final HttpVersion version;
-        private final boolean keepAlive;
-        private final HttpServerResponse response;
-        private final HttpBodyOutput body;
-        private final boolean isHead;
-        private final HttpServerObservation observation;
-        private final FullHttpRequest nettyReq;
-
-        public StreamExecutionRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, ResponseContainer container, HttpVersion version, boolean keepAlive, HttpServerResponse response, HttpBodyOutput body, boolean isHead, HttpServerObservation observation, FullHttpRequest nettyReq) {
-            this.handler = handler;
-            this.ctx = ctx;
-            this.container = container;
-            this.version = version;
-            this.keepAlive = keepAlive;
-            this.response = response;
-            this.body = body;
-            this.isHead = isHead;
-            this.observation = observation;
-            this.nettyReq = nettyReq;
-        }
-
-        @Override
-        public void run() {
-            Thread.startVirtualThread(new AsyncStreamTask(handler, ctx, container, version, keepAlive, response, body, isHead, observation, nettyReq));
-        }
-    }
-
-    private static final class AsyncStreamTask implements Runnable {
-        private final NettyResponseWriteHandler handler;
-        private final ChannelHandlerContext ctx;
-        private final ResponseContainer container;
-        private final HttpVersion version;
-        private final boolean keepAlive;
-        private final HttpServerResponse response;
-        private final HttpBodyOutput body;
-        private final boolean isHead;
-        private final HttpServerObservation observation;
-        private final FullHttpRequest nettyReq;
-
-        public AsyncStreamTask(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, ResponseContainer container, HttpVersion version, boolean keepAlive, HttpServerResponse response, HttpBodyOutput body, boolean isHead, HttpServerObservation observation, FullHttpRequest nettyReq) {
-            this.handler = handler;
-            this.ctx = ctx;
-            this.container = container;
-            this.version = version;
-            this.keepAlive = keepAlive;
-            this.response = response;
-            this.body = body;
-            this.isHead = isHead;
-            this.observation = observation;
-            this.nettyReq = nettyReq;
-        }
-
-        @Override
-        public void run() {
-            var status = HttpResponseStatus.valueOf(response.code());
-            var nettyResp = new DefaultHttpResponse(version, status);
-            handler.writeHeaders(nettyResp.headers(), response.headers(), body.contentType());
-
-            if (body.contentLength() >= 0) {
-                nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.contentLength());
-            } else {
-                nettyResp.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
-            }
-            handler.setupConnectionHeader(nettyResp, version, keepAlive);
-
-            AdaptiveNettyBodyOutputStream output = null;
-            try {
-                output = new AdaptiveNettyBodyOutputStream(ctx, nettyResp, keepAlive, body, nettyReq, observation);
-                output.writeBody();
-                output.complete();
-
-                if (nettyReq != null) {
-                    safeRelease(nettyReq);
-                }
-
-            } catch (Throwable e) {
-                if (output != null) {
-                    output.close();
-                }
-                closeBody(body);
-                ctx.executor().execute(new ResetAutoReadRunnable(ctx));
-
-                if (nettyReq != null) {
-                    safeRelease(nettyReq);
-                }
-
-                if (output != null && !output.isStreamMode()) {
-                    ctx.executor().execute(new SendStreamErrorResponseRunnable(handler, ctx, version, keepAlive, e));
-                } else {
-                    ctx.executor().execute(new CloseChannelRunnable(ctx));
-                }
-            }
-        }
-    }
-
-    private static final class FinalizeWriteListener implements GenericFutureListener<ChannelFuture> {
+    private static final class FinalizeWriteListener implements ChannelFutureListener {
         private final ChannelHandlerContext ctx;
         private final HttpBodyOutput body;
         private final HttpServerObservation observation;
         private final FullHttpRequest nettyReq;
         private final boolean keepAlive;
 
-        public FinalizeWriteListener(ChannelHandlerContext ctx, HttpBodyOutput body, HttpServerObservation observation, FullHttpRequest nettyReq, boolean keepAlive) {
+        public FinalizeWriteListener(ChannelHandlerContext ctx, HttpBodyOutput body,
+                                     HttpServerObservation observation, FullHttpRequest nettyReq, boolean keepAlive) {
             this.ctx = ctx;
             this.body = body;
             this.observation = observation;
@@ -341,84 +203,15 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
                 safeRelease(nettyReq);
             }
 
-            if (future.isSuccess() && keepAlive) {
-                ctx.read();
+            if (future.isSuccess()) {
+                if (keepAlive) {
+                    ctx.read();
+                } else {
+                    ctx.close();
+                }
             } else {
                 ctx.close();
             }
-        }
-    }
-
-    private static final class ResetAutoReadRunnable implements Runnable {
-        private final ChannelHandlerContext ctx;
-
-        public ResetAutoReadRunnable(ChannelHandlerContext ctx) {
-            this.ctx = ctx;
-        }
-
-        @Override
-        public void run() {
-            ctx.channel().config().setAutoRead(true);
-        }
-    }
-
-    private static final class CloseChannelRunnable implements Runnable {
-        private final ChannelHandlerContext ctx;
-
-        public CloseChannelRunnable(ChannelHandlerContext ctx) {
-            this.ctx = ctx;
-        }
-
-        @Override
-        public void run() {
-            ctx.close();
-        }
-    }
-
-    private static final class SendStreamErrorResponseRunnable implements Runnable {
-        private final NettyResponseWriteHandler handler;
-        private final ChannelHandlerContext ctx;
-        private final HttpVersion version;
-        private final boolean keepAlive;
-        private final Throwable exception;
-
-        public SendStreamErrorResponseRunnable(NettyResponseWriteHandler handler, ChannelHandlerContext ctx, HttpVersion version, boolean keepAlive, Throwable exception) {
-            this.handler = handler;
-            this.ctx = ctx;
-            this.version = version;
-            this.keepAlive = keepAlive;
-            this.exception = exception;
-        }
-
-        @Override
-        public void run() {
-            if (ctx.channel().isActive()) {
-                var message = exception.getMessage() != null ? exception.getMessage() : "Internal Server Error";
-                var bytes = message.getBytes(StandardCharsets.UTF_8);
-                var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
-
-                var errResp = new DefaultFullHttpResponse(version, HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
-                errResp.headers().set(HttpHeaderNames.CONTENT_TYPE, HttpHeaderValues.TEXT_PLAIN);
-                errResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, buffer.readableBytes());
-
-                handler.setupConnectionHeader(errResp, version, keepAlive);
-                ctx.writeAndFlush(errResp).addListener(new CloseFutureListener(ctx));
-            } else {
-                ctx.close();
-            }
-        }
-    }
-
-    private static final class CloseFutureListener implements GenericFutureListener<ChannelFuture> {
-        private final ChannelHandlerContext ctx;
-
-        public CloseFutureListener(ChannelHandlerContext ctx) {
-            this.ctx = ctx;
-        }
-
-        @Override
-        public void operationComplete(ChannelFuture future) {
-            ctx.close();
         }
     }
 }

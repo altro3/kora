@@ -1,7 +1,7 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.common.body.*;
-import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.telemetry.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
@@ -10,10 +10,11 @@ import io.netty.util.*;
 
 import java.io.*;
 import java.util.*;
-import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.*;
 
 final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
+    private static final int INITIAL_BUFFER_SIZE = 4096;
     private static final int MAX_BUFFER_SIZE = 64 * 1024;
 
     private final ChannelHandlerContext ctx;
@@ -23,9 +24,10 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
     private final FullHttpRequest nettyReq;
     private final HttpServerObservation observation;
 
-    private CompositeByteBuf buffer;
+    private ByteBuf buffer;
     private boolean isStreamMode = false;
     private long writtenBytes = 0;
+    private volatile Thread waitingThread = null;
 
     public AdaptiveNettyBodyOutputStream(ChannelHandlerContext ctx, HttpResponse responseHeader, boolean keepAlive, HttpBodyOutput body, FullHttpRequest nettyReq, HttpServerObservation observation) {
         this.ctx = ctx;
@@ -34,7 +36,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         this.body = body;
         this.nettyReq = nettyReq;
         this.observation = observation;
-        this.buffer = ctx.alloc().compositeBuffer();
+        this.buffer = ctx.alloc().directBuffer(INITIAL_BUFFER_SIZE, MAX_BUFFER_SIZE + 8192);
     }
 
     private static void awaitNonBlocking(io.netty.util.concurrent.Future<?> nettyFuture) throws IOException {
@@ -54,7 +56,25 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
     @Override
     public void write(int b) throws IOException {
-        write(new byte[] {(byte) b}, 0, 1);
+        if (buffer == null && isStreamMode) {
+            throw new IOException("Stream closed");
+        }
+
+        if (!isStreamMode) {
+            buffer.writeByte(b);
+            if (buffer.readableBytes() > MAX_BUFFER_SIZE) {
+                switchToStreamMode();
+            }
+        } else {
+            ensureWritability();
+            ByteBuf chunk = ctx.alloc().directBuffer(1).writeByte(b);
+            try {
+                awaitNonBlocking(ctx.writeAndFlush(new DefaultHttpContent(chunk)));
+            } catch (Exception e) {
+                throw new IOException("Connection broken during streaming", e);
+            }
+        }
+        this.writtenBytes++;
     }
 
     private void switchToStreamMode() throws IOException {
@@ -65,16 +85,16 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         }
         ensureWritability();
 
-        ctx.channel().write(responseHeader);
-        if (buffer.isReadable()) {
+        ctx.write(responseHeader);
+        if (buffer != null && buffer.isReadable()) {
             try {
-                awaitNonBlocking(ctx.channel().writeAndFlush(new DefaultHttpContent(buffer)));
+                awaitNonBlocking(ctx.writeAndFlush(new DefaultHttpContent(buffer)));
             } catch (Exception e) {
                 throw new IOException("Failed to flush initial buffer", e);
             }
         } else {
-            ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
-            buffer.release();
+            ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
+            if (buffer != null) buffer.release();
         }
         buffer = null;
     }
@@ -88,39 +108,24 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
             return;
         }
 
-        Thread currentThread = Thread.currentThread();
-        var writabilityHandler = new ChannelInboundHandlerAdapter() {
-            @Override
-            public void channelWritabilityChanged(ChannelHandlerContext context) throws Exception {
-                if (context.channel().isWritable()) {
-                    context.pipeline().remove(this);
-                    LockSupport.unpark(currentThread);
-                }
-                context.fireChannelWritabilityChanged();
+        this.waitingThread = Thread.currentThread();
+        try {
+            while (!ctx.channel().isWritable() && ctx.channel().isActive()) {
+                LockSupport.parkNanos(1_000_000);
             }
-
-            @Override
-            public void channelInactive(ChannelHandlerContext context) throws Exception {
-                context.pipeline().remove(this);
-                LockSupport.unpark(currentThread);
-                context.fireChannelInactive();
-            }
-        };
-
-        ctx.pipeline().addBefore(ctx.name(), "writability-handler", writabilityHandler);
-        if (ctx.channel().isWritable()) {
-            try {
-                ctx.pipeline().remove(writabilityHandler);
-            } catch (NoSuchElementException ignored) {}
-            return;
-        }
-
-        while (!ctx.channel().isWritable() && ctx.channel().isActive()) {
-            LockSupport.park();
+        } finally {
+            this.waitingThread = null;
         }
 
         if (!ctx.channel().isActive()) {
             throw new IOException("Channel became inactive during backpressure");
+        }
+    }
+
+    public void wakeup() {
+        Thread thread = this.waitingThread;
+        if (thread != null) {
+            LockSupport.unpark(thread);
         }
     }
 
@@ -148,8 +153,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
         if (len <= 0) return;
 
         if (!isStreamMode) {
-            ByteBuf chunk = ctx.alloc().directBuffer(len).writeBytes(b, off, len);
-            buffer.addComponent(true, chunk);
+            buffer.writeBytes(b, off, len);
 
             if (buffer.readableBytes() > MAX_BUFFER_SIZE) {
                 switchToStreamMode();
@@ -159,7 +163,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
             ByteBuf chunk = ctx.alloc().directBuffer(len).writeBytes(b, off, len);
             try {
-                awaitNonBlocking(ctx.channel().writeAndFlush(new DefaultHttpContent(chunk)));
+                awaitNonBlocking(ctx.writeAndFlush(new DefaultHttpContent(chunk)));
             } catch (Exception e) {
                 throw new IOException("Connection broken during streaming", e);
             }
@@ -191,7 +195,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
             buffer = null;
             try {
-                awaitNonBlocking(ctx.channel().writeAndFlush(fullResponse));
+                awaitNonBlocking(ctx.writeAndFlush(fullResponse));
                 finalizeConnection(true);
             } catch (Exception e) {
                 finalizeConnection(false);
@@ -202,7 +206,7 @@ final class AdaptiveNettyBodyOutputStream extends OutputStream {
 
         if (isStreamMode) {
             try {
-                awaitNonBlocking(ctx.channel().writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT));
+                awaitNonBlocking(ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT));
                 finalizeConnection(true);
             } catch (Exception e) {
                 finalizeConnection(false);

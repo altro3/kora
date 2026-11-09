@@ -55,7 +55,8 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     private static final class DefaultNettyBootstrapConfigurer implements Configurer<ServerBootstrap> {
         @Override
         public ServerBootstrap configure(ServerBootstrap bootstrap) {
-            var allocator = UnpooledByteBufAllocator.DEFAULT;
+            var allocator = PooledByteBufAllocator.DEFAULT;
+
             return bootstrap
                 .option(ChannelOption.ALLOCATOR, allocator)
                 .childOption(ChannelOption.ALLOCATOR, allocator);
