@@ -18,6 +18,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import static io.koraframework.http.server.netty.handler.NettyRequestStreamingHandler.ACTIVE_BODY_KEY;
+
 public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     protected final FullHttpRequest nettyRequest;
@@ -101,10 +103,9 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     }
 
     private HttpBodyInput getContent() throws IOException {
-        var attrKey = AttributeKey.valueOf("kora.active.body");
         var nettyContext = NettyContext.get();
         if (nettyContext != null) {
-            var streamingBody = (NettyRequestHttpBody) nettyContext.channelContext().channel().attr(attrKey).getAndSet(null);
+            var streamingBody = nettyContext.channelContext().channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
             if (streamingBody != null) {
                 return streamingBody;
             }

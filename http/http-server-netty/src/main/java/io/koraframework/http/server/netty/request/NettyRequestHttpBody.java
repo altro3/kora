@@ -19,8 +19,7 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
     private final ConcurrentLinkedQueue<Object> queue = new ConcurrentLinkedQueue<>();
     private volatile Thread waitingThread = null;
 
-    private @Nullable
-    volatile InputStream inputStream;
+    private @Nullable volatile InputStream inputStream;
     private boolean released = false;
     private boolean streamClosed = false;
     private ByteBuf currentBuf = null;
