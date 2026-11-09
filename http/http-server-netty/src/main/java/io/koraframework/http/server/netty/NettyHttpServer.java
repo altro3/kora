@@ -107,7 +107,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new ServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
+                .childHandler(new NettyServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
 
             int port = config.port();
             ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
@@ -124,60 +124,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             } else {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': %s; check server config, handler initialization, and network binding".formatted(name, httpServerConfig.get().port(), e.getMessage()), e);
             }
-        }
-    }
-
-
-    private static final class ServerChannelInitializer extends ChannelInitializer<SocketChannel> {
-        private final NettyHttpServer server;
-        private final HttpServerConfig config;
-        private final ValueOf<NettyTelemetryHandler> telemetryValue;
-        private final HttpServerRouter currentRouter;
-        private final ValueOf<KoraVirtualThreadDispatcher> dispatcherValue;
-        private final ValueOf<NettyResponseWriteHandler> writeHandlerValue;
-
-        public ServerChannelInitializer(NettyHttpServer server, HttpServerConfig config,
-                                        ValueOf<NettyTelemetryHandler> telemetryValue, HttpServerRouter currentRouter,
-                                        ValueOf<KoraVirtualThreadDispatcher> dispatcherValue, ValueOf<NettyResponseWriteHandler> writeHandlerValue) {
-            this.server = server;
-            this.config = config;
-            this.telemetryValue = telemetryValue;
-            this.currentRouter = currentRouter;
-            this.dispatcherValue = dispatcherValue;
-            this.writeHandlerValue = writeHandlerValue;
-        }
-
-        @Override
-        protected void initChannel(SocketChannel ch) {
-            var telemetry = telemetryValue != null ? telemetryValue.get() : null;
-
-            var decoderConfig = new HttpDecoderConfig()
-                .setMaxInitialLineLength(4096)
-                .setMaxHeaderSize(8192);
-
-            ChannelPipeline p = ch.pipeline();
-            p.addLast(new HttpServerCodec(decoderConfig));
-            p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
-            p.addLast(new ChunkedWriteHandler());
-
-            var readTimeout = config.socketReadTimeout();
-            if (!readTimeout.isZero()) {
-                p.addLast("readTimeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
-            }
-            var writeTimeout = config.socketWriteTimeout();
-            if (!writeTimeout.isZero()) {
-                p.addLast(new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
-            }
-
-            p.addLast(writeHandlerValue.get());
-//            p.addLast(new RequestAggregationHandler(config));
-
-            if (telemetry != null) {
-                p.addLast(telemetry);
-            } else {
-                p.addLast(new DefaultRoutingFallbackHandler(currentRouter));
-            }
-            p.addLast(dispatcherValue.get());
         }
     }
 
@@ -248,32 +194,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 return;
             }
             ctx.fireUserEventTriggered(evt);
-        }
-    }
-
-    private static final class DefaultRoutingFallbackHandler extends ChannelInboundHandlerAdapter {
-        private final HttpServerRouter currentRouter;
-
-        public DefaultRoutingFallbackHandler(HttpServerRouter currentRouter) {
-            this.currentRouter = currentRouter;
-        }
-
-        @Override
-        public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            if (msg instanceof FullHttpRequest nettyReq) {
-                var koraReq = new NettyUnroutedHttpRequest(nettyReq);
-                var invocation = currentRouter.route(koraReq);
-                var container = new RequestContainer(
-                    nettyReq,
-                    invocation.routedRequest(),
-                    invocation,
-                    Context.root(),
-                    null
-                );
-                ctx.fireChannelRead(container);
-            } else {
-                ctx.fireChannelRead(msg);
-            }
         }
     }
 
