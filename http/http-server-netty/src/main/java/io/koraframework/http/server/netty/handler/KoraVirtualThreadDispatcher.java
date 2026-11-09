@@ -222,7 +222,10 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 }
             }
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
-            ctx.executor().execute(() -> ctx.write(responseContainer));
+            ctx.executor().execute(() -> {
+                ctx.write(responseContainer);
+                ctx.flush();
+            });
             return null;
         }
     }
