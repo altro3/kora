@@ -2,6 +2,7 @@ package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.application.graph.*;
 import io.koraframework.common.context.*;
+import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
@@ -27,6 +28,7 @@ import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
 import static io.koraframework.http.server.netty.NettyContext.*;
 import static io.koraframework.logging.common.MDC.*;
 import static io.netty.util.ReferenceCountUtil.*;
+import static java.lang.IO.println;
 
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdapter {
@@ -221,6 +223,28 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                     return null;
                 }
             }
+
+            HttpBodyOutput body = response.body();
+            if (body != null) {
+                java.nio.ByteBuffer availableContent = body.getFullContentIfAvailable();
+                if (availableContent != null) {
+                    response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(availableContent, body.contentType()));
+                } else {
+                    long contentLength = body.contentLength();
+                    if (contentLength <= 64 * 1024) {
+                        int initialCapacity = contentLength > 0 ? (int) contentLength : 1024;
+                        try (var baos = new java.io.ByteArrayOutputStream(initialCapacity)) {
+                            body.write(baos);
+                            byte[] bytes = baos.toByteArray();
+                            java.nio.ByteBuffer nioBuffer = java.nio.ByteBuffer.wrap(bytes);
+                            response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(nioBuffer, body.contentType()));
+                        } catch (Throwable t) {
+                            println("Fast-path serialization failed" + Arrays.toString(t.getStackTrace()));
+                        }
+                    }
+                }
+            }
+
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
             ctx.executor().execute(() -> {
                 ctx.write(responseContainer);
