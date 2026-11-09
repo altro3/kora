@@ -30,7 +30,7 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        if (!(msg instanceof KoraVirtualThreadDispatcher.ResponseContainer container)) {
+        if (!(msg instanceof ResponseContainer container)) {
             ctx.write(msg, promise);
             return;
         }

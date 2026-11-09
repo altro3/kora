@@ -247,12 +247,6 @@ public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandl
         }
     }
 
-    public record ResponseContainer(
-        FullHttpRequest nettyReq,
-        HttpServerResponse koraResponse,
-        HttpServerObservation observation
-    ) {}
-
     private static final class CloseOrAutoReadListener implements ChannelFutureListener {
         private final ChannelHandlerContext ctx;
         private final boolean keepAlive;
