@@ -15,6 +15,7 @@ import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.*;
+import io.netty.util.concurrent.Future;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
 
@@ -38,6 +39,8 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     private final boolean contextPropagationEnabled;
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final Phaser phaser = new Phaser(1);
+private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
     private volatile boolean shuttingDown = false;
 
     public KoraVirtualThreadDispatcher(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled) {
@@ -77,8 +80,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
         activeRequests.incrementAndGet();
         phaser.register();
         container.nettyReq().retain();
-
-        Thread.startVirtualThread(new DispatchRunnable(this, ctx, container));
+        vtExecutor.execute(new DispatchRunnable(this, ctx, container));
     }
 
     @Override
@@ -223,12 +225,15 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
                 }
             }
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
-            ctx.executor().execute(() -> ctx.writeAndFlush(responseContainer));
+            ctx.executor().execute(() -> {
+                ctx.write(responseContainer);
+                ctx.flush();
+            });
             return null;
         }
     }
 
-    private static final class CloseOrAutoReadListener implements GenericFutureListener<ChannelFuture> {
+    private static final class CloseOrAutoReadListener implements ChannelFutureListener {
         private final ChannelHandlerContext ctx;
         private final boolean keepAlive;
 
@@ -239,6 +244,11 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
 
         @Override
         public void operationComplete(ChannelFuture future) {
+            if (!future.isSuccess()) {
+                ctx.close();
+                return;
+            }
+
             if (!keepAlive) {
                 ctx.close();
             } else {

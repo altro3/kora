@@ -8,6 +8,7 @@ import io.koraframework.http.server.netty.request.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
 import io.opentelemetry.context.*;
@@ -62,6 +63,7 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
         } else {
             p.addLast(new DefaultRoutingFallbackHandler(currentRouter));
         }
+        p.addLast(new FlushConsolidationHandler(256, true));
         p.addLast(dispatcherValue.get());
     }
 

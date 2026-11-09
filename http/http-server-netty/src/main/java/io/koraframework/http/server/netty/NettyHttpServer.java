@@ -35,234 +35,234 @@ import java.util.concurrent.atomic.*;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
 
-    private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
+private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
 
-    private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
-    private final String name;
-    private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final HttpServerRouter httpServerRouter;
-    private final ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher;
-    private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
-    private final @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler;
-    private final @Nullable Configurer<ServerBootstrap> configurer;
-    private final boolean manageResources;
-    private volatile NettyResources resources;
-    private volatile @Nullable Channel serverChannel;
+private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
+private final String name;
+private final ValueOf<HttpServerConfig> httpServerConfig;
+private final HttpServerRouter httpServerRouter;
+private final ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher;
+private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
+private final @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler;
+private final @Nullable Configurer<ServerBootstrap> configurer;
+private final boolean manageResources;
+private volatile NettyResources resources;
+private volatile @Nullable Channel serverChannel;
 
-    public NettyHttpServer(
-        String name,
-        @Nullable NettyResources resources,
-        ValueOf<HttpServerConfig> httpServerConfig,
-        HttpServerRouter httpServerRouter,
-        ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
-        ValueOf<NettyResponseWriteHandler> responseWriteHandler,
-        @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler,
-        @Nullable Configurer<ServerBootstrap> configurer
-    ) {
-        this.name = name;
-        this.httpServerConfig = httpServerConfig;
-        this.httpServerRouter = httpServerRouter;
-        this.virtualThreadDispatcher = virtualThreadDispatcher;
-        this.responseWriteHandler = responseWriteHandler;
-        this.telemetryHandler = telemetryHandler;
-        this.configurer = configurer;
-        if (resources != null) {
-            this.resources = resources;
-            this.manageResources = false;
-        } else {
-            this.manageResources = true;
-        }
-    }
+public NettyHttpServer(
+String name,
+@Nullable NettyResources resources,
+ValueOf<HttpServerConfig> httpServerConfig,
+HttpServerRouter httpServerRouter,
+ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
+ValueOf<NettyResponseWriteHandler> responseWriteHandler,
+@Nullable ValueOf<NettyTelemetryHandler> telemetryHandler,
+@Nullable Configurer<ServerBootstrap> configurer
+) {
+this.name = name;
+this.httpServerConfig = httpServerConfig;
+this.httpServerRouter = httpServerRouter;
+this.virtualThreadDispatcher = virtualThreadDispatcher;
+this.responseWriteHandler = responseWriteHandler;
+this.telemetryHandler = telemetryHandler;
+this.configurer = configurer;
+if (resources != null) {
+this.resources = resources;
+this.manageResources = false;
+} else {
+this.manageResources = true;
+}
+}
 
-    @Override
-    public void init() {
-        try {
-            log.debug("HTTP Server {} (Netty) starting...", name);
-            final long started = TimeUtils.started();
+@Override
+public void init() {
+try {
+log.debug("HTTP Server {} (Netty) starting...", name);
+final long started = TimeUtils.started();
 
-            if (this.manageResources) {
-                throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported. Use external NettyResources from netty-common.");
-            }
+if (this.manageResources) {
+throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported. Use external NettyResources from netty-common.");
+}
 
-            var config = this.httpServerConfig.get();
-            var bootstrap = new ServerBootstrap();
-            var recvAllocator = new FixedRecvByteBufAllocator(4096);
+var config = this.httpServerConfig.get();
+var bootstrap = new ServerBootstrap();
+var recvAllocator = new FixedRecvByteBufAllocator(4096);
 
-            bootstrap.group(resources.bossGroup(), resources.workerGroup())
-                .channel(resources.channelClass())
-                .option(ChannelOption.SO_BACKLOG, 4096);
+bootstrap.group(resources.bossGroup(), resources.workerGroup())
+.channel(resources.channelClass())
+.option(ChannelOption.SO_BACKLOG, 4096);
 
-            if (this.configurer != null) {
-                bootstrap = this.configurer.configure(bootstrap.clone());
-            }
+if (this.configurer != null) {
+bootstrap = this.configurer.configure(bootstrap.clone());
+}
 
-            var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
-            var telemetryValue = this.telemetryHandler;
-            var currentRouter = this.httpServerRouter;
-            var dispatcherValue = this.virtualThreadDispatcher;
-            var writeHandlerValue = this.responseWriteHandler;
+var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
+var telemetryValue = this.telemetryHandler;
+var currentRouter = this.httpServerRouter;
+var dispatcherValue = this.virtualThreadDispatcher;
+var writeHandlerValue = this.responseWriteHandler;
 
-            bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
-                .childOption(ChannelOption.TCP_NODELAY, true)
-                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
-                .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new NettyServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
+bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
+.childOption(ChannelOption.TCP_NODELAY, true)
+.childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+.childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
+.childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
+.childHandler(new NettyServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
 
-            int port = config.port();
-            ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
-            if (!bindFuture.isSuccess()) {
-                throw bindFuture.cause();
-            }
-            this.serverChannel = bindFuture.channel();
-            this.state.set(HttpServerState.RUN);
-            var data = StructuredArgument.marker("port", this.port());
-            log.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
-        } catch (Throwable e) {
-            if (e instanceof BindException || e.getCause() instanceof BindException) {
-                throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': port is already in use; stop the other process or configure a different port".formatted(name, httpServerConfig.get().port()), e);
-            } else {
-                throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': %s; check server config, handler initialization, and network binding".formatted(name, httpServerConfig.get().port(), e.getMessage()), e);
-            }
-        }
-    }
+int port = config.port();
+ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
+if (!bindFuture.isSuccess()) {
+throw bindFuture.cause();
+}
+this.serverChannel = bindFuture.channel();
+this.state.set(HttpServerState.RUN);
+var data = StructuredArgument.marker("port", this.port());
+log.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
+} catch (Throwable e) {
+if (e instanceof BindException || e.getCause() instanceof BindException) {
+throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': port is already in use; stop the other process or configure a different port".formatted(name, httpServerConfig.get().port()), e);
+} else {
+throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': %s; check server config, handler initialization, and network binding".formatted(name, httpServerConfig.get().port(), e.getMessage()), e);
+}
+}
+}
 
-    private static final class RequestAggregationHandler extends ChannelInboundHandlerAdapter {
-        private final HttpServerConfig config;
-        private NettyRequestHttpBody activeBody;
+private static final class RequestAggregationHandler extends ChannelInboundHandlerAdapter {
+private final HttpServerConfig config;
+private NettyRequestHttpBody activeBody;
 
-        public RequestAggregationHandler(HttpServerConfig config) {
-            this.config = config;
-        }
+public RequestAggregationHandler(HttpServerConfig config) {
+this.config = config;
+}
 
-        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            if (msg instanceof HttpRequest req) {
-                if (req instanceof FullHttpRequest fullReq) {
-                    this.activeBody = null;
-                    ctx.fireChannelRead(fullReq);
-                    return;
-                }
+public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+if (msg instanceof HttpRequest req) {
+if (req instanceof FullHttpRequest fullReq) {
+this.activeBody = null;
+ctx.fireChannelRead(fullReq);
+return;
+}
 
-                var fullReq = new DefaultFullHttpRequest(
-                    req.protocolVersion(),
-                    req.method(),
-                    req.uri(),
-                    Unpooled.EMPTY_BUFFER,
-                    req.headers(),
-                    EmptyHttpHeaders.INSTANCE
-                );
+var fullReq = new DefaultFullHttpRequest(
+req.protocolVersion(),
+req.method(),
+req.uri(),
+Unpooled.EMPTY_BUFFER,
+req.headers(),
+EmptyHttpHeaders.INSTANCE
+);
 
-                this.activeBody = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
-                ctx.channel().attr(AttributeKey.valueOf("kora.active.body")).set(activeBody);
-                ReferenceCountUtil.release(req);
-                ctx.fireChannelRead(fullReq);
-                return;
-            }
+this.activeBody = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
+ctx.channel().attr(AttributeKey.valueOf("kora.active.body")).set(activeBody);
+ReferenceCountUtil.release(req);
+ctx.fireChannelRead(fullReq);
+return;
+}
 
-            if (msg instanceof HttpContent content) {
-                if (activeBody != null) {
-                    activeBody.addContent(content);
-                    if (content instanceof LastHttpContent) {
-                        this.activeBody = null;
-                    }
-                } else {
-                    ctx.fireChannelRead(content);
-                }
-                return;
-            }
+if (msg instanceof HttpContent content) {
+if (activeBody != null) {
+activeBody.addContent(content);
+if (content instanceof LastHttpContent) {
+this.activeBody = null;
+}
+} else {
+ctx.fireChannelRead(content);
+}
+return;
+}
 
-            ctx.fireChannelRead(msg);
-        }
+ctx.fireChannelRead(msg);
+}
 
-        @Override
-        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            if (activeBody != null) {
-                activeBody.setException(new IOException("Connection closed prematurely"));
-                this.activeBody = null;
-            }
-            ctx.fireChannelInactive();
-        }
+@Override
+public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+if (activeBody != null) {
+activeBody.setException(new IOException("Connection closed prematurely"));
+this.activeBody = null;
+}
+ctx.fireChannelInactive();
+}
 
-        @Override
-        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            if (evt instanceof ReadTimeoutException) {
-                if (activeBody != null) {
-                    activeBody.setException(new SocketTimeoutException("Read timeout"));
-                    this.activeBody = null;
-                }
-                ctx.close();
-                return;
-            }
-            ctx.fireUserEventTriggered(evt);
-        }
-    }
+@Override
+public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+if (evt instanceof ReadTimeoutException) {
+if (activeBody != null) {
+activeBody.setException(new SocketTimeoutException("Read timeout"));
+this.activeBody = null;
+}
+ctx.close();
+return;
+}
+ctx.fireUserEventTriggered(evt);
+}
+}
 
-    @Override
-    public void release() {
-        log.debug("HTTP Server {} (Netty) stopping...", name);
-        this.state.set(HttpServerState.SHUTDOWN);
-        final long started = TimeUtils.started();
-        var dispatcher = this.virtualThreadDispatcher.get();
-        dispatcher.setShuttingDown(true);
-        try {
-            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
-            final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
-            dispatcher.getPhaser().awaitAdvanceInterruptibly(
-                dispatcher.getPhaser().arrive(),
-                shutdownAwait.toMillis(),
-                TimeUnit.MILLISECONDS
-            );
-        } catch (TimeoutException e) {
-            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, this.httpServerConfig.get().shutdownWait());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
-        }
-        var localChannel = this.serverChannel;
-        if (localChannel != null) {
-            try {
-                localChannel.close().await(this.httpServerConfig.get().shutdownWait().toMillis(), TimeUnit.MILLISECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        if (dispatcher.getActiveRequests().get() > 0) {
-            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, dispatcher.getActiveRequests().get());
-        } else {
-            log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
-        }
-    }
+@Override
+public void release() {
+log.debug("HTTP Server {} (Netty) stopping...", name);
+this.state.set(HttpServerState.SHUTDOWN);
+final long started = TimeUtils.started();
+var dispatcher = this.virtualThreadDispatcher.get();
+dispatcher.setShuttingDown(true);
+try {
+log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
+final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
+dispatcher.getPhaser().awaitAdvanceInterruptibly(
+dispatcher.getPhaser().arrive(),
+shutdownAwait.toMillis(),
+TimeUnit.MILLISECONDS
+);
+} catch (TimeoutException e) {
+log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, this.httpServerConfig.get().shutdownWait());
+} catch (InterruptedException e) {
+Thread.currentThread().interrupt();
+log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
+}
+var localChannel = this.serverChannel;
+if (localChannel != null) {
+try {
+localChannel.close().await(this.httpServerConfig.get().shutdownWait().toMillis(), TimeUnit.MILLISECONDS);
+} catch (InterruptedException e) {
+Thread.currentThread().interrupt();
+}
+}
+if (dispatcher.getActiveRequests().get() > 0) {
+log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, dispatcher.getActiveRequests().get());
+} else {
+log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
+}
+}
 
-    @Override
-    public int port() {
-        var localChannel = this.serverChannel;
-        if (localChannel == null) {
-            return -1;
-        }
-        var address = localChannel.localAddress();
-        if (address instanceof InetSocketAddress) {
-            return ((InetSocketAddress) address).getPort();
-        }
-        return -1;
-    }
+@Override
+public int port() {
+var localChannel = this.serverChannel;
+if (localChannel == null) {
+return -1;
+}
+var address = localChannel.localAddress();
+if (address instanceof InetSocketAddress) {
+return ((InetSocketAddress) address).getPort();
+}
+return -1;
+}
 
-    @Nullable
-    @Override
-    public ReadinessProbeFailure probe() {
-        HttpServerState currentState = state.get();
-        if (currentState == HttpServerState.INIT) {
-            return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) init");
-        }
-        if (currentState == HttpServerState.RUN) {
-            return null;
-        }
-        if (currentState == HttpServerState.SHUTDOWN) {
-            return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) shutdown");
-        }
-        return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) unknown state");
-    }
+@Nullable
+@Override
+public ReadinessProbeFailure probe() {
+HttpServerState currentState = state.get();
+if (currentState == HttpServerState.INIT) {
+return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) init");
+}
+if (currentState == HttpServerState.RUN) {
+return null;
+}
+if (currentState == HttpServerState.SHUTDOWN) {
+return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) shutdown");
+}
+return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) unknown state");
+}
 
-    private enum HttpServerState {
-        INIT, RUN, SHUTDOWN
-    }
+private enum HttpServerState {
+INIT, RUN, SHUTDOWN
+}
 }
