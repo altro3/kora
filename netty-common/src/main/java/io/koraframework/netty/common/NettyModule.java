@@ -62,12 +62,11 @@ public interface NettyModule {
     default NettyEventLoopFactory nettyEventLoopWorkerFactory(@Tag(EventLoopWorker.class) @Nullable ThreadFactory threadFactory,
                                                               NettyTransportConfig config) {
         var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-worker", true) : threadFactory;
-        int nThreads = (config.transport() == EventLoopType.NIO || config.transport() == null)
-            ? NettyRuntime.availableProcessors()
-            : config.threads();
+        int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors() * 2;
 
         return getNettyEventLoopFactory(nThreads, tf, config);
     }
+
     @Tag(EventLoopWorker.class)
     @DefaultComponent
     default LifecycleWrapper<EventLoopGroup> nettyEventLoopWorkerGroup(@Tag(EventLoopWorker.class) NettyEventLoopFactory nettyEventLoopFactory) {

@@ -11,7 +11,6 @@ import io.koraframework.http.server.netty.handler.*;
 import io.netty.bootstrap.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
-import io.netty.util.internal.*;
 import org.jspecify.annotations.*;
 
 public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
@@ -28,20 +27,16 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     public NettyHttpServer server(
         NettyResources resources,
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
-        HttpServerRouter httpServerRouter,
         @Tag(Tag.Factory.class) ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
         @Tag(Tag.Factory.class) ValueOf<NettyResponseWriteHandler> responseWriteHandler,
-        @Tag(Tag.Factory.class) @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler,
         @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer
     ) {
         return new NettyHttpServer(
             this.name,
             resources,
             httpServerConfig,
-            httpServerRouter,
             virtualThreadDispatcher,
             responseWriteHandler,
-            telemetryHandler,
             configurer
         );
     }
@@ -55,7 +50,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     private static final class DefaultNettyBootstrapConfigurer implements Configurer<ServerBootstrap> {
         @Override
         public ServerBootstrap configure(ServerBootstrap bootstrap) {
-            var allocator = PooledByteBufAllocator.DEFAULT;
+            var allocator = new UnpooledByteBufAllocator(false, true);
 
             return bootstrap
                 .option(ChannelOption.ALLOCATOR, allocator)
@@ -66,9 +61,12 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @DefaultComponent
     @Tag(Tag.Factory.class)
     public KoraVirtualThreadDispatcher virtualThreadDispatcher(
-        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig
+        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
+        HttpServerTelemetryFactory telemetryFactory
     ) {
-        return new KoraVirtualThreadDispatcher(httpServerConfig, httpServerConfig.get().telemetry().logging().enabled());
+        var telemetry = telemetryFactory.get(this.name, httpServerConfig.get().port(), httpServerConfig.get().telemetry());
+        return new KoraVirtualThreadDispatcher(httpServerConfig, httpServerConfig.get().telemetry().logging().enabled(), httpServerRouter, telemetry);
     }
 
     @DefaultComponent
@@ -77,19 +75,5 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig
     ) {
         return new NettyResponseWriteHandler(httpServerConfig);
-    }
-
-    @DefaultComponent
-    @Tag(Tag.Factory.class)
-    public @Nullable NettyTelemetryHandler telemetryHandler(
-        @Tag(Tag.Factory.class) HttpServerConfig httpServerConfig,
-        @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
-        HttpServerTelemetryFactory telemetryFactory
-    ) {
-//        if (!httpServerConfig.telemetry().logging().enabled() && !httpServerConfig.telemetry().metrics().enabled() && !httpServerConfig.telemetry().tracing().enabled()) {
-//            return null;
-//        }
-        var telemetry = telemetryFactory.get(this.name, httpServerConfig.port(), httpServerConfig.telemetry());
-        return new NettyTelemetryHandler(telemetry, httpServerRouter);
     }
 }

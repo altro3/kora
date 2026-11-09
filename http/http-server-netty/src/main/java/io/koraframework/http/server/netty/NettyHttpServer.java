@@ -5,25 +5,18 @@ import io.koraframework.common.*;
 import io.koraframework.common.readiness.*;
 import io.koraframework.common.util.*;
 import io.koraframework.http.server.common.*;
-import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
-import io.koraframework.http.server.netty.request.*;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
-import io.netty.handler.codec.http.*;
-import io.netty.handler.timeout.*;
-import io.netty.util.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
-import java.io.*;
 import java.net.*;
 import java.time.*;
 import java.util.concurrent.*;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.*;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
@@ -33,10 +26,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final String name;
     private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final HttpServerRouter httpServerRouter;
     private final ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher;
     private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
-    private final @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler;
     private final @Nullable Configurer<ServerBootstrap> configurer;
     private final boolean manageResources;
     private volatile NettyResources resources;
@@ -46,18 +37,14 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         String name,
         @Nullable NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
-        HttpServerRouter httpServerRouter,
         ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
         ValueOf<NettyResponseWriteHandler> responseWriteHandler,
-        @Nullable ValueOf<NettyTelemetryHandler> telemetryHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
         this.httpServerConfig = httpServerConfig;
-        this.httpServerRouter = httpServerRouter;
         this.virtualThreadDispatcher = virtualThreadDispatcher;
         this.responseWriteHandler = responseWriteHandler;
-        this.telemetryHandler = telemetryHandler;
         this.configurer = configurer;
         if (resources != null) {
             this.resources = resources;
@@ -89,18 +76,16 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 bootstrap = this.configurer.configure(bootstrap.clone());
             }
 
-            var waterMark = new WriteBufferWaterMark(32 * 1024, 64 * 1024);
-            var telemetryValue = this.telemetryHandler;
-            var currentRouter = this.httpServerRouter;
+            var waterMark = new WriteBufferWaterMark(1024 * 1024, 2 * 1024 * 1024);
             var dispatcherValue = this.virtualThreadDispatcher;
             var writeHandlerValue = this.responseWriteHandler;
 
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
-                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .childOption(ChannelOption.ALLOCATOR, new UnpooledByteBufAllocator(false, true))
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new NettyServerChannelInitializer(this, config, telemetryValue, currentRouter, dispatcherValue, writeHandlerValue));
+                .childHandler(new NettyServerChannelInitializer(this, config, dispatcherValue, writeHandlerValue));
 
             int port = config.port();
             ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
@@ -117,76 +102,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             } else {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': %s; check server config, handler initialization, and network binding".formatted(name, httpServerConfig.get().port(), e.getMessage()), e);
             }
-        }
-    }
-
-    private static final class RequestAggregationHandler extends ChannelInboundHandlerAdapter {
-        private final HttpServerConfig config;
-        private NettyRequestHttpBody activeBody;
-
-        public RequestAggregationHandler(HttpServerConfig config) {
-            this.config = config;
-        }
-
-        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            if (msg instanceof HttpRequest req) {
-                if (req instanceof FullHttpRequest fullReq) {
-                    this.activeBody = null;
-                    ctx.fireChannelRead(fullReq);
-                    return;
-                }
-
-                var fullReq = new DefaultFullHttpRequest(
-                    req.protocolVersion(),
-                    req.method(),
-                    req.uri(),
-                    Unpooled.EMPTY_BUFFER,
-                    req.headers(),
-                    EmptyHttpHeaders.INSTANCE
-                );
-
-                this.activeBody = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
-                ctx.channel().attr(AttributeKey.valueOf("kora.active.body")).set(activeBody);
-                ReferenceCountUtil.release(req);
-                ctx.fireChannelRead(fullReq);
-                return;
-            }
-
-            if (msg instanceof HttpContent content) {
-                if (activeBody != null) {
-                    activeBody.addContent(content);
-                    if (content instanceof LastHttpContent) {
-                        this.activeBody = null;
-                    }
-                } else {
-                    ctx.fireChannelRead(content);
-                }
-                return;
-            }
-
-            ctx.fireChannelRead(msg);
-        }
-
-        @Override
-        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
-            if (activeBody != null) {
-                activeBody.setException(new IOException("Connection closed prematurely"));
-                this.activeBody = null;
-            }
-            ctx.fireChannelInactive();
-        }
-
-        @Override
-        public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-            if (evt instanceof ReadTimeoutException) {
-                if (activeBody != null) {
-                    activeBody.setException(new SocketTimeoutException("Read timeout"));
-                    this.activeBody = null;
-                }
-                ctx.close();
-                return;
-            }
-            ctx.fireUserEventTriggered(evt);
         }
     }
 

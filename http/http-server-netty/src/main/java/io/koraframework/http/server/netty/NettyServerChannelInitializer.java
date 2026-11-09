@@ -2,16 +2,12 @@ package io.koraframework.http.server.netty;
 
 import io.koraframework.application.graph.*;
 import io.koraframework.http.server.common.*;
-import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.netty.handler.*;
-import io.koraframework.http.server.netty.request.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
-import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
-import io.opentelemetry.context.*;
 
 import java.util.concurrent.*;
 
@@ -23,31 +19,23 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
 
     private final NettyHttpServer server;
     private final HttpServerConfig config;
-    private final ValueOf<NettyTelemetryHandler> telemetryValue;
-    private final HttpServerRouter currentRouter;
     private final ValueOf<KoraVirtualThreadDispatcher> dispatcherValue;
     private final ValueOf<NettyResponseWriteHandler> writeHandlerValue;
 
     public NettyServerChannelInitializer(NettyHttpServer server, HttpServerConfig config,
-                                         ValueOf<NettyTelemetryHandler> telemetryValue, HttpServerRouter currentRouter,
                                          ValueOf<KoraVirtualThreadDispatcher> dispatcherValue, ValueOf<NettyResponseWriteHandler> writeHandlerValue) {
         this.server = server;
         this.config = config;
-        this.telemetryValue = telemetryValue;
-        this.currentRouter = currentRouter;
         this.dispatcherValue = dispatcherValue;
         this.writeHandlerValue = writeHandlerValue;
     }
 
     @Override
     protected void initChannel(SocketChannel ch) {
-        var telemetry = telemetryValue != null ? telemetryValue.get() : null;
         ChannelPipeline p = ch.pipeline();
 
         p.addLast("http-codec", new HttpServerCodec(DECODER_CONFIG));
-        p.addLast("flush-consolidation", new FlushConsolidationHandler(256, false));
         p.addLast("chunked-writer", new ChunkedWriteHandler());
-
         var readTimeout = config.socketReadTimeout();
         if (!readTimeout.isZero()) {
             p.addLast("read-timeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
@@ -56,41 +44,31 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
         if (!writeTimeout.isZero()) {
             p.addLast("write-timeout", new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
         }
-
         p.addLast("response-writer", writeHandlerValue.get());
         p.addLast("request-streaming", new NettyRequestStreamingHandler(config));
-
-        if (telemetry != null) {
-            p.addLast("telemetry-handler", telemetry);
-        } else {
-            p.addLast("routing-fallback", new DefaultRoutingFallbackHandler(currentRouter));
-        }
         p.addLast("virtual-thread-dispatcher", dispatcherValue.get());
-    }
 
-    private static final class DefaultRoutingFallbackHandler extends ChannelInboundHandlerAdapter {
-        private final HttpServerRouter currentRouter;
+        //        p.addLast("cpu-benchmark-pong", new ChannelInboundHandlerAdapter() {
+//            @Override
+//            public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+//                if (msg instanceof HttpRequest req) {
+//                    var content = io.netty.buffer.Unpooled.copiedBuffer("OK", java.nio.charset.StandardCharsets.UTF_8);
+//                    FullHttpResponse response = new DefaultFullHttpResponse(
+//                        HttpVersion.HTTP_1_1,
+//                        HttpResponseStatus.OK,
+//                        content
+//                    );
+//                    response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/plain");
+//                    response.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.readableBytes());
+//                    response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+//
+//                    ctx.writeAndFlush(response);
+//                    io.netty.util.ReferenceCountUtil.release(msg);
+//                } else {
+//                    io.netty.util.ReferenceCountUtil.release(msg);
+//                }
+//            }
+//        });
 
-        public DefaultRoutingFallbackHandler(HttpServerRouter currentRouter) {
-            this.currentRouter = currentRouter;
-        }
-
-        @Override
-        public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            if (msg instanceof FullHttpRequest nettyReq) {
-                var koraReq = new NettyUnroutedHttpRequest(nettyReq);
-                var invocation = currentRouter.route(koraReq);
-                var container = new NettyTelemetryHandler.RequestContainer(
-                    nettyReq,
-                    invocation.routedRequest(),
-                    invocation,
-                    Context.root(),
-                    null
-                );
-                ctx.fireChannelRead(container);
-            } else {
-                ctx.fireChannelRead(msg);
-            }
-        }
     }
 }

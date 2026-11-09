@@ -5,7 +5,6 @@ import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.telemetry.*;
-import io.koraframework.http.server.netty.handler.NettyTelemetryHandler.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
@@ -31,7 +30,7 @@ public final class NettyResponseWriteHandler extends ChannelOutboundHandlerAdapt
 
     @Override
     public void write(ChannelHandlerContext ctx, Object msg, ChannelPromise promise) throws Exception {
-        if (!(msg instanceof ResponseContainer container)) {
+        if (!(msg instanceof KoraVirtualThreadDispatcher.ResponseContainer container)) {
             ctx.write(msg, promise);
             return;
         }
