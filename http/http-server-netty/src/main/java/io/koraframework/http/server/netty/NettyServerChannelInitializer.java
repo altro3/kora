@@ -8,7 +8,7 @@ import io.koraframework.http.server.netty.request.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
-import io.netty.handler.flush.FlushConsolidationHandler;
+import io.netty.handler.flush.*;
 import io.netty.handler.stream.*;
 import io.netty.handler.timeout.*;
 import io.opentelemetry.context.*;
@@ -43,53 +43,27 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
             .setMaxHeaderSize(8192);
 
         ChannelPipeline p = ch.pipeline();
-        p.addLast(new HttpServerCodec(decoderConfig));
-        p.addLast(new ChunkedWriteHandler());
+        p.addLast("http-codec", new HttpServerCodec(decoderConfig));
+        p.addLast("flushConsolidation", new FlushConsolidationHandler(256, true));
+        p.addLast("chunked-writer", new ChunkedWriteHandler());
 
         var readTimeout = config.socketReadTimeout();
         if (!readTimeout.isZero()) {
-            p.addLast("readTimeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
+            p.addLast("read-timeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));
         }
         var writeTimeout = config.socketWriteTimeout();
         if (!writeTimeout.isZero()) {
-            p.addLast(new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
+            p.addLast("write-timeout", new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
         }
 
         p.addLast(writeHandlerValue.get());
-//            p.addLast(new RequestAggregationHandler(config));
+        p.addLast("request-streaming", new NettyRequestStreamingHandler(config));
 
         if (telemetry != null) {
-            p.addLast(telemetry);
+            p.addLast("telemetry-handler", telemetry);
         } else {
-            p.addLast(new DefaultRoutingFallbackHandler(currentRouter));
+            p.addLast("routing-fallback", new DefaultRoutingFallbackHandler(currentRouter));
         }
-        p.addLast(new FlushConsolidationHandler(256, true));
-        p.addLast(dispatcherValue.get());
-    }
-
-    private static final class DefaultRoutingFallbackHandler extends ChannelInboundHandlerAdapter {
-        private final HttpServerRouter currentRouter;
-
-        public DefaultRoutingFallbackHandler(HttpServerRouter currentRouter) {
-            this.currentRouter = currentRouter;
-        }
-
-        @Override
-        public void channelRead(ChannelHandlerContext ctx, Object msg) {
-            if (msg instanceof FullHttpRequest nettyReq) {
-                var koraReq = new NettyUnroutedHttpRequest(nettyReq);
-                var invocation = currentRouter.route(koraReq);
-                var container = new NettyTelemetryHandler.RequestContainer(
-                    nettyReq,
-                    invocation.routedRequest(),
-                    invocation,
-                    Context.root(),
-                    null
-                );
-                ctx.fireChannelRead(container);
-            } else {
-                ctx.fireChannelRead(msg);
-            }
-        }
+        p.addLast("virtual-thread-dispatcher", dispatcherValue.get());
     }
 }

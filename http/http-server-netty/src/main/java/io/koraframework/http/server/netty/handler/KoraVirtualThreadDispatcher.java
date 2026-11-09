@@ -13,9 +13,6 @@ import io.koraframework.logging.common.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
-import io.netty.util.AttributeKey;
-import io.netty.util.concurrent.*;
-import io.netty.util.concurrent.Future;
 import io.opentelemetry.api.trace.propagation.*;
 import io.opentelemetry.context.*;
 
@@ -39,7 +36,7 @@ public final class KoraVirtualThreadDispatcher extends ChannelInboundHandlerAdap
     private final boolean contextPropagationEnabled;
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final Phaser phaser = new Phaser(1);
-private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     private volatile boolean shuttingDown = false;
 
@@ -49,7 +46,7 @@ private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExec
     }
 
     @Override
-    public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+    public void channelWritabilityChanged(ChannelHandlerContext ctx) {
         boolean writable = ctx.channel().isWritable();
         ctx.channel().config().setAutoRead(writable);
         if (writable) {
@@ -225,10 +222,7 @@ private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExec
                 }
             }
             var responseContainer = new ResponseContainer(nettyReq, response, observation);
-            ctx.executor().execute(() -> {
-                ctx.write(responseContainer);
-                ctx.flush();
-            });
+            ctx.executor().execute(() -> ctx.write(responseContainer));
             return null;
         }
     }
