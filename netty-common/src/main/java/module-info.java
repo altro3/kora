@@ -16,6 +16,8 @@ module kora.netty.common {
 
     requires transitive kora.common;
     requires transitive kora.config.common;
+    requires jdk.jfr;
+    requires org.jctools.core;
 
     exports io.koraframework.netty.common;
 }

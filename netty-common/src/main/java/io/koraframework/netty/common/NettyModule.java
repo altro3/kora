@@ -1,26 +1,22 @@
 package io.koraframework.netty.common;
 
-import io.koraframework.application.graph.LifecycleWrapper;
-import io.koraframework.common.annotation.DefaultComponent;
-import io.koraframework.common.annotation.Tag;
-import io.koraframework.config.common.Config;
-import io.koraframework.config.common.mapper.ConfigValueMapper;
-import io.koraframework.netty.common.NettyTransportConfig.EventLoopType;
+import io.koraframework.application.graph.*;
+import io.koraframework.common.annotation.*;
+import io.koraframework.config.common.*;
+import io.koraframework.config.common.mapper.*;
+import io.koraframework.netty.common.NettyTransportConfig.*;
+import io.koraframework.netty.common.loom.*;
 import io.netty.channel.*;
 import io.netty.channel.epoll.*;
 import io.netty.channel.kqueue.*;
-import io.netty.channel.nio.NioIoHandler;
-import io.netty.channel.socket.nio.NioDomainSocketChannel;
-import io.netty.channel.socket.nio.NioServerDomainSocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.channel.nio.*;
+import io.netty.channel.socket.nio.*;
 import io.netty.channel.uring.*;
 import io.netty.util.*;
-import io.netty.util.concurrent.DefaultThreadFactory;
-import org.jspecify.annotations.Nullable;
+import io.netty.util.concurrent.*;
+import org.jspecify.annotations.*;
 
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public interface NettyModule {
 
@@ -34,6 +30,10 @@ public interface NettyModule {
 
     default NettyTransportConfig nettyTransportConfig(Config config, ConfigValueMapper<NettyTransportConfig> mapper) {
         return mapper.mapOrThrow(config.get("netty"));
+    }
+
+    default LoomCarrierConfig loomCarrierConfig(Config config, ConfigValueMapper<LoomCarrierConfig> mapper) {
+        return mapper.mapOrThrow(config.get("netty.loom"));
     }
 
     @Tag(EventLoopBoss.class)
@@ -57,13 +57,43 @@ public interface NettyModule {
         );
     }
 
+    @DefaultComponent
+    default ThreadFactory koraVirtualThreadFactory(
+        LoomCarrierConfig loomConfig,
+        EventLoopLoomFactory eventLoopLoomFactory) {
+
+        return eventLoopLoomFactory.createVirtualThreadFactory(
+            "kora-virtual-executor-",
+            true,
+            loomConfig.enabled()
+        );
+    }
+
+    @DefaultComponent
+    default EventLoopLoomFactory eventLoopLoomFactory(LoomCarrierConfig config) {
+        return new EventLoopLoomFactory(config.enabled());
+    }
+
+    @DefaultComponent
+    default EventLoopGroupFactory eventLoopGroupFactory(LoomCarrierConfig loomConfig, EventLoopLoomFactory eventLoopLoomFactory) {
+        return new EventLoopGroupFactory(loomConfig, eventLoopLoomFactory);
+    }
+
     @Tag(EventLoopWorker.class)
     @DefaultComponent
-    default NettyEventLoopFactory nettyEventLoopWorkerFactory(@Tag(EventLoopWorker.class) @Nullable ThreadFactory threadFactory,
-                                                              NettyTransportConfig config) {
-        var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-worker", true) : threadFactory;
-        int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors() * 2;
+    default NettyEventLoopFactory nettyEventLoopWorkerFactory(
+        @Tag(EventLoopWorker.class) @Nullable ThreadFactory threadFactory,
+        NettyTransportConfig config,
+        LoomCarrierConfig loomConfig,
+        EventLoopGroupFactory eventLoopGroupFactory) {
 
+        int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors() * 2;
+        var ioHandlerFactory = getIoHandlerFactory(config);
+        if (loomConfig.enabled()) {
+            return () -> eventLoopGroupFactory.createEventLoopGroup(nThreads, "netty-kora-worker", true, ioHandlerFactory);
+        }
+
+        var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-worker", true) : threadFactory;
         return getNettyEventLoopFactory(nThreads, tf, config);
     }
 
@@ -104,32 +134,37 @@ public interface NettyModule {
         }
     }
 
-    private static NettyEventLoopFactory getNettyEventLoopFactory(int nThreads,
-                                                                  ThreadFactory threadFactory,
-                                                                  NettyTransportConfig config) {
+    private static IoHandlerFactory getIoHandlerFactory(NettyTransportConfig config) {
         var transport = config.transport();
         if (transport != null) {
-            if (transport == EventLoopType.URING && isUringAvailable()) {
-                return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, IoUringIoHandler.newFactory());
-            } else if (transport == EventLoopType.EPOLL && isEpollAvailable()) {
-                return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, EpollIoHandler.newFactory());
-            } else if (transport == EventLoopType.KQUEUE && isKQueueAvailable()) {
-                return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, KQueueIoHandler.newFactory());
-            } else if (transport == EventLoopType.NIO) {
-                return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, NioIoHandler.newFactory());
+            if (transport == NettyTransportConfig.EventLoopType.URING && isUringAvailable()) {
+                return IoUringIoHandler.newFactory();
+            } else if (transport == NettyTransportConfig.EventLoopType.EPOLL && isEpollAvailable()) {
+                return EpollIoHandler.newFactory();
+            } else if (transport == NettyTransportConfig.EventLoopType.KQUEUE && isKQueueAvailable()) {
+                return KQueueIoHandler.newFactory();
+            } else if (transport == NettyTransportConfig.EventLoopType.NIO) {
+                return NioIoHandler.newFactory();
             }
         }
 
-        // default behavior
         if (isUringAvailable()) {
-            return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, IoUringIoHandler.newFactory());
+            return IoUringIoHandler.newFactory();
         } else if (isEpollAvailable()) {
-            return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, EpollIoHandler.newFactory());
+            return EpollIoHandler.newFactory();
         } else if (isKQueueAvailable()) {
-            return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, KQueueIoHandler.newFactory());
+            return KQueueIoHandler.newFactory();
         } else {
-            return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, NioIoHandler.newFactory());
+            return NioIoHandler.newFactory();
         }
+    }
+
+
+    private static NettyEventLoopFactory getNettyEventLoopFactory(int nThreads,
+                                                                  ThreadFactory threadFactory,
+                                                                  NettyTransportConfig config) {
+        var ioHandlerFactory = getIoHandlerFactory(config);
+        return () -> new MultiThreadIoEventLoopGroup(nThreads, threadFactory, ioHandlerFactory);
     }
 
     private static NettyChannelFactory getNioChannelFactory() {

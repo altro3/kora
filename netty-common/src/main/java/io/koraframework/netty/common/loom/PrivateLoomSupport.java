@@ -1,4 +1,4 @@
-package io.koraframework.http.server.netty.loom;
+package io.koraframework.netty.common.loom;
 
 import java.lang.invoke.*;
 import java.lang.reflect.*;

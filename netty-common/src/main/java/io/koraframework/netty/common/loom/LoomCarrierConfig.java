@@ -1,4 +1,4 @@
-package io.koraframework.http.server.netty.loom;
+package io.koraframework.netty.common.loom;
 
 import io.koraframework.config.common.annotation.*;
 
@@ -6,6 +6,10 @@ import java.time.*;
 
 @ConfigMapper
 public interface LoomCarrierConfig {
+
+    default boolean enabled() {
+        return true;
+    }
 
     default Duration timeSliceLatency() {
         return Duration.ofNanos(500_000);

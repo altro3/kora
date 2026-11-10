@@ -1,10 +1,10 @@
-package io.koraframework.http.server.netty.loom;
+package io.koraframework.netty.common.loom;
 
 import io.netty.channel.*;
 import io.netty.util.*;
 import io.netty.util.concurrent.*;
 import io.netty.util.internal.*;
-import io.netty.util.internal.shaded.org.jctools.queues.*;
+import org.jctools.queues.*;
 import jdk.jfr.*;
 import org.jspecify.annotations.*;
 

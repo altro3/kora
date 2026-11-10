@@ -1,4 +1,4 @@
-package io.koraframework.http.server.netty.loom;
+package io.koraframework.netty.common.loom;
 
 import io.netty.channel.IoHandle;
 import io.netty.channel.IoHandler;
