@@ -6,7 +6,7 @@ import io.netty.handler.codec.http.*;
 import org.jspecify.annotations.*;
 
 public record NettyContext(
-    FullHttpRequest request,
+    HttpRequest request,
     ChannelHandlerContext channelContext
 ) {
 
@@ -22,7 +22,7 @@ public record NettyContext(
     }
 
     @Nullable
-    public static FullHttpRequest getRequest() {
+    public static HttpRequest getRequest() {
         KoraContext current = KoraContext.current();
         if (current != null) {
             NettyContext nettyCtx = current.get(NETTY_KEY);

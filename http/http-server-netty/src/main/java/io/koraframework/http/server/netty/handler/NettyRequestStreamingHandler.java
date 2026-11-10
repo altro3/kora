@@ -2,20 +2,16 @@ package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.netty.request.*;
-import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
-import io.netty.handler.timeout.ReadTimeoutException;
+import io.netty.handler.timeout.*;
 import io.netty.util.*;
 
 import java.io.*;
-import java.net.SocketTimeoutException;
-import java.util.Set;
-import java.util.concurrent.*;
+import java.net.*;
 
 public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAdapter {
 
-    public static final Set<NettyRequestHttpBody> ACTIVE_BODIES = ConcurrentHashMap.newKeySet();
     public static final AttributeKey<NettyRequestHttpBody> ACTIVE_BODY_KEY = AttributeKey.valueOf("kora.active.body");
 
     private final HttpServerConfig config;
@@ -33,21 +29,9 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
                 return;
             }
 
-            var fullReq = new DefaultFullHttpRequest(
-                req.protocolVersion(),
-                req.method(),
-                req.uri(),
-                Unpooled.EMPTY_BUFFER,
-                req.headers(),
-                EmptyHttpHeaders.INSTANCE
-            );
-
-            var body = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
-            ACTIVE_BODIES.add(body);
+            var body = new NettyRequestHttpBody(req, ctx, config.maxRequestBodySize().toBytes());
             ctx.channel().attr(ACTIVE_BODY_KEY).set(body);
-
-            ReferenceCountUtil.release(req);
-            ctx.fireChannelRead(fullReq);
+            ctx.fireChannelRead(req);
             return;
         }
 
@@ -56,10 +40,8 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
             if (body != null) {
                 body.addContent(content);
                 if (content instanceof LastHttpContent) {
-                    var removed = ctx.channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
-                    if (removed != null) {
-                        ACTIVE_BODIES.remove(removed);
-                    }
+                    ctx.fireChannelRead(content);
+                    return;
                 }
                 ReferenceCountUtil.release(content);
             } else {
@@ -67,7 +49,6 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
             }
             return;
         }
-
         ctx.fireChannelRead(msg);
     }
 

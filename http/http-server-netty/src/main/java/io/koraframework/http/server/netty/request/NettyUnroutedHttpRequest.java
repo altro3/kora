@@ -10,7 +10,7 @@ import java.util.*;
 
 public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
-    protected final FullHttpRequest nettyRequest;
+    protected final HttpRequest nettyRequest;
     private final String method;
     private final String path;
     private final NettyHttpHeaders headers;
@@ -19,7 +19,7 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     @Nullable
     private final HttpBodyInput body;
 
-    public NettyUnroutedHttpRequest(FullHttpRequest nettyRequest, @Nullable NettyRequestHttpBody streamingBody) {
+    public NettyUnroutedHttpRequest(HttpRequest nettyRequest, @Nullable NettyRequestHttpBody streamingBody) {
         this.nettyRequest = nettyRequest;
         this.method = nettyRequest.method().name();
         this.startTime = System.nanoTime();
@@ -28,23 +28,30 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         this.path = decoder.path();
         this.queryParams = Collections.unmodifiableMap(decoder.parameters());
         this.headers = new NettyHttpHeaders(nettyRequest.headers());
-        this.body = streamingBody != null ? streamingBody : (nettyRequest.content().readableBytes() == 0 ? HttpBody.empty() : createFallbackBody(nettyRequest));
+
+        if (streamingBody != null) {
+            body = streamingBody;
+        } else if (nettyRequest instanceof FullHttpRequest fullReq) {
+            body = fullReq.content().readableBytes() == 0 ? HttpBody.empty() : createFallbackBody(fullReq);
+        } else {
+            body = HttpBody.empty();
+        }
     }
 
-    private static NettyRequestHttpBody createFallbackBody(FullHttpRequest nettyRequest) {
-        var nettyBody = new NettyRequestHttpBody(nettyRequest, null, 10 * 1024 * 1024);
+    private static NettyRequestHttpBody createFallbackBody(FullHttpRequest fullRequest) {
+        var nettyBody = new NettyRequestHttpBody(fullRequest, null, 10 * 1024 * 1024);
         nettyBody.prepare();
         return nettyBody;
     }
 
     @Override
     public String method() {
-        return this.method;
+        return method;
     }
 
     @Override
     public String path() {
-        return this.path;
+        return path;
     }
 
     @Override
@@ -61,17 +68,17 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     @Override
     public HttpHeaders headers() {
-        return this.headers;
+        return headers;
     }
 
     @Override
     public Map<String, List<String>> queryParams() {
-        return this.queryParams;
+        return queryParams;
     }
 
     @Override
     public HttpBodyInput body() {
-        var localBody = this.body;
+        var localBody = body;
         if (localBody != null) {
             return localBody;
         }
@@ -80,7 +87,7 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     @Override
     public long requestStartTimeInNanos() {
-        return this.startTime;
+        return startTime;
     }
 
     @Override
