@@ -10,9 +10,9 @@ import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.common.telemetry.*;
 import io.koraframework.http.server.netty.*;
-import io.koraframework.http.server.netty.loom.*;
 import io.koraframework.http.server.netty.request.*;
 import io.koraframework.logging.common.MDC;
+import io.koraframework.netty.common.loom.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
@@ -37,7 +37,7 @@ import static io.netty.util.ReferenceCountUtil.*;
 import static java.nio.charset.StandardCharsets.*;
 
 @ChannelHandler.Sharable
-public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter { // Меняем родителя!
+public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter {
 
     private static final Logger log = LoggerFactory.getLogger(KoraVirtualThreadHandler.class);
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
@@ -48,15 +48,17 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
     private final boolean contextPropagationEnabled;
     private final HttpServerRouter currentRouter;
     private final HttpServerTelemetry telemetry;
+    private final ThreadFactory virtualThreadFactory;
 
     private volatile boolean shuttingDown = false;
 
     public KoraVirtualThreadHandler(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled,
-                                    HttpServerRouter currentRouter, HttpServerTelemetry telemetry) {
+                                    HttpServerRouter currentRouter, HttpServerTelemetry telemetry, ThreadFactory virtualThreadFactory) {
         this.httpServerConfig = httpServerConfig;
         this.contextPropagationEnabled = contextPropagationEnabled;
         this.currentRouter = currentRouter;
         this.telemetry = telemetry;
+        this.virtualThreadFactory = virtualThreadFactory;
     }
 
     @Override
@@ -80,22 +82,10 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         ctx.fireChannelRead(msg);
     }
 
-    private void startVirtualThread(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody body) {
+    private void startVirtualThread(ChannelHandlerContext ctx, FullHttpRequest nettyReq, NettyRequestHttpBody body) {
         try {
-            if (nettyReq instanceof ReferenceCounted rc) {
-                rc.retain();
-            }
-
-            var eventLoopExecutor = new StickyScheduler(ctx);
-            Thread.Builder.OfVirtual builder = Thread.ofVirtual().name("kora-netty-carrier-", 1L);
-
-            try {
-                KoraLoomSupport.setScheduler(builder, eventLoopExecutor);
-            } catch (Throwable t) {
-                log.error("CRITICAL: KoraLoomSupport.setScheduler failed!", t);
-            }
-
-            Thread thread = builder.unstarted(() -> {
+            nettyReq.retain();
+            Thread thread = virtualThreadFactory.newThread(() -> {
                 try {
                     log.debug("Virtual thread started successfully for request: {}", nettyReq.uri());
                     dispatch(ctx, nettyReq, body);
@@ -370,13 +360,25 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         }
 
         ctx.writeAndFlush(msg).addListener(future -> {
-            ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
-
             if (body != null) {
-                try {body.close();} catch (IOException e) {log.error("Failed to close response body", e);}
+                try { body.close(); } catch (IOException e) { log.error("Failed to close response body", e); }
+            }
+            if (observation != null) {
+                observation.end();
             }
 
             safeRelease(nettyReq);
+
+            if (future.isSuccess()) {
+                log.debug("HTTP response successfully flushed to network for request: {}", nettyReq.uri());
+            } else {
+                Throwable cause = future.cause();
+                if (cause instanceof IOException) {
+                    log.debug("Client closed connection prematurely for request: {} (Message: {})", nettyReq.uri(), cause.getMessage());
+                } else {
+                    log.error("Failed to flush HTTP response to network for request: {}", nettyReq.uri(), cause);
+                }
+            }
 
             if (!future.isSuccess() || !keepAlive) {
                 ctx.close();

@@ -13,6 +13,8 @@ import io.netty.buffer.*;
 import io.netty.channel.*;
 import org.jspecify.annotations.*;
 
+import java.util.concurrent.*;
+
 public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
 
     private final String name;
@@ -61,9 +63,16 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     public KoraVirtualThreadHandler koraVirtualThreadHandler(
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
         @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
-        HttpServerTelemetryFactory telemetryFactory
+        HttpServerTelemetryFactory telemetryFactory,
+        ThreadFactory koraVirtualThreadFactory
     ) {
         var telemetry = telemetryFactory.get(this.name, httpServerConfig.get().port(), httpServerConfig.get().telemetry());
-        return new KoraVirtualThreadHandler(httpServerConfig, httpServerConfig.get().telemetry().logging().enabled(), httpServerRouter, telemetry);
+        return new KoraVirtualThreadHandler(
+            httpServerConfig,
+            httpServerConfig.get().telemetry().logging().enabled(),
+            httpServerRouter,
+            telemetry,
+            koraVirtualThreadFactory
+        );
     }
 }

@@ -173,6 +173,9 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         @Override
         public Thread newThread(Runnable r) {
             return unstartedVirtualThread("loom-on-netty-" + id + "-" + Long.toHexString(ThreadLocalRandom.current().nextLong()), b -> {
+                if (!LoomBranchSupport.isSupported() && !PrivateLoomSupport.isSupported()) {
+                    return;
+                }
                 if (warmupTasks > 0) {
                     warmupTasks--;
                     if (!LoomBranchSupport.isSupported()) {
@@ -210,7 +213,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                 b -> {
                     if (LoomBranchSupport.isSupported()) {
                         LoomBranchSupport.setScheduler(b, new IoScheduler(this));
-                    } else {
+                    } else if (PrivateLoomSupport.isSupported()) {
                         PrivateLoomSupport.setScheduler(b, new IoScheduler(this));
                     }
                 },
