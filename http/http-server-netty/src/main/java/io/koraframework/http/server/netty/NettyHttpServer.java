@@ -15,7 +15,6 @@ import org.jspecify.annotations.*;
 import org.slf4j.*;
 
 import java.net.*;
-import java.time.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
@@ -105,21 +104,14 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         log.debug("HTTP Server {} (Netty) stopping...", name);
         state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
+
         var dispatcher = koraVirtualThreadHandler.get();
-        dispatcher.setShuttingDown(true);
+
         try {
             log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", name);
-            final Duration shutdownAwait = httpServerConfig.get().shutdownWait();
-            dispatcher.getPhaser().awaitAdvanceInterruptibly(
-                dispatcher.getPhaser().arrive(),
-                shutdownAwait.toMillis(),
-                TimeUnit.MILLISECONDS
-            );
-        } catch (TimeoutException e) {
-            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", name, httpServerConfig.get().shutdownWait());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", name);
+            dispatcher.shutdown();
+        } catch (Throwable e) {
+            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted or failed", name, e);
         }
         var localChannel = serverChannel;
         if (localChannel != null) {
