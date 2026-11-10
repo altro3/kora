@@ -28,7 +28,6 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
         NettyResources resources,
         @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
         @Tag(Tag.Factory.class) ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler,
-        @Tag(Tag.Factory.class) ValueOf<NettyResponseWriteHandler> responseWriteHandler,
         @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer
     ) {
         return new NettyHttpServer(
@@ -36,7 +35,6 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
             resources,
             httpServerConfig,
             koraVirtualThreadHandler,
-            responseWriteHandler,
             configurer
         );
     }
@@ -67,13 +65,5 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     ) {
         var telemetry = telemetryFactory.get(this.name, httpServerConfig.get().port(), httpServerConfig.get().telemetry());
         return new KoraVirtualThreadHandler(httpServerConfig, httpServerConfig.get().telemetry().logging().enabled(), httpServerRouter, telemetry);
-    }
-
-    @DefaultComponent
-    @Tag(Tag.Factory.class)
-    public NettyResponseWriteHandler responseWriteHandler(
-        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig
-    ) {
-        return new NettyResponseWriteHandler(httpServerConfig);
     }
 }

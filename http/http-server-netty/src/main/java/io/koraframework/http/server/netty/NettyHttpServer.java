@@ -27,7 +27,6 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final String name;
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler;
-    private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
     private final @Nullable Configurer<ServerBootstrap> configurer;
     private final boolean manageResources;
     private volatile NettyResources resources;
@@ -38,19 +37,17 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         @Nullable NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
         ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler,
-        ValueOf<NettyResponseWriteHandler> responseWriteHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
         this.httpServerConfig = httpServerConfig;
         this.koraVirtualThreadHandler = koraVirtualThreadHandler;
-        this.responseWriteHandler = responseWriteHandler;
         this.configurer = configurer;
         if (resources != null) {
             this.resources = resources;
-            this.manageResources = false;
+            manageResources = false;
         } else {
-            this.manageResources = true;
+            manageResources = true;
         }
     }
 
@@ -60,11 +57,11 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             log.debug("HTTP Server {} (Netty) starting...", name);
             final long started = TimeUtils.started();
 
-            if (this.manageResources) {
+            if (manageResources) {
                 throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported. Use external NettyResources from netty-common.");
             }
 
-            var config = this.httpServerConfig.get();
+            var config = httpServerConfig.get();
             var bootstrap = new ServerBootstrap();
             var recvAllocator = new FixedRecvByteBufAllocator(4096);
 
@@ -72,29 +69,27 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 .channel(resources.channelClass())
                 .option(ChannelOption.SO_BACKLOG, 4096);
 
-            if (this.configurer != null) {
-                bootstrap = this.configurer.configure(bootstrap.clone());
+            if (configurer != null) {
+                bootstrap = configurer.configure(bootstrap.clone());
             }
 
             var waterMark = new WriteBufferWaterMark(1024 * 1024, 2 * 1024 * 1024);
-            var dispatcherValue = this.koraVirtualThreadHandler;
-            var writeHandlerValue = this.responseWriteHandler;
 
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.ALLOCATOR, new UnpooledByteBufAllocator(false, true))
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new NettyServerChannelInitializer(this, config, dispatcherValue, writeHandlerValue));
+                .childHandler(new NettyServerChannelInitializer(this, config, koraVirtualThreadHandler));
 
             int port = config.port();
             ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
             if (!bindFuture.isSuccess()) {
                 throw bindFuture.cause();
             }
-            this.serverChannel = bindFuture.channel();
-            this.state.set(HttpServerState.RUN);
-            var data = StructuredArgument.marker("port", this.port());
+            serverChannel = bindFuture.channel();
+            state.set(HttpServerState.RUN);
+            var data = StructuredArgument.marker("port", port());
             log.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
         } catch (Throwable e) {
             if (e instanceof BindException || e.getCause() instanceof BindException) {
@@ -108,34 +103,34 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     @Override
     public void release() {
         log.debug("HTTP Server {} (Netty) stopping...", name);
-        this.state.set(HttpServerState.SHUTDOWN);
+        state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
-        var dispatcher = this.koraVirtualThreadHandler.get();
+        var dispatcher = koraVirtualThreadHandler.get();
         dispatcher.setShuttingDown(true);
         try {
-            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);
-            final Duration shutdownAwait = this.httpServerConfig.get().shutdownWait();
+            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", name);
+            final Duration shutdownAwait = httpServerConfig.get().shutdownWait();
             dispatcher.getPhaser().awaitAdvanceInterruptibly(
                 dispatcher.getPhaser().arrive(),
                 shutdownAwait.toMillis(),
                 TimeUnit.MILLISECONDS
             );
         } catch (TimeoutException e) {
-            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", this.name, this.httpServerConfig.get().shutdownWait());
+            log.warn("HTTP Server {} (Netty) failed completing graceful shutdown in {}", name, httpServerConfig.get().shutdownWait());
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", this.name);
+            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", name);
         }
-        var localChannel = this.serverChannel;
+        var localChannel = serverChannel;
         if (localChannel != null) {
             try {
-                localChannel.close().await(this.httpServerConfig.get().shutdownWait().toMillis(), TimeUnit.MILLISECONDS);
+                localChannel.close().await(httpServerConfig.get().shutdownWait().toMillis(), TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
         if (dispatcher.getActiveRequests().get() > 0) {
-            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", this.name, dispatcher.getActiveRequests().get());
+            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", name, dispatcher.getActiveRequests().get());
         } else {
             log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
         }
@@ -143,7 +138,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     @Override
     public int port() {
-        var localChannel = this.serverChannel;
+        var localChannel = serverChannel;
         if (localChannel == null) {
             return -1;
         }
@@ -159,15 +154,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     public ReadinessProbeFailure probe() {
         HttpServerState currentState = state.get();
         if (currentState == HttpServerState.INIT) {
-            return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) init");
+            return new ReadinessProbeFailure("HTTP Server " + name + " (Netty) init");
         }
         if (currentState == HttpServerState.RUN) {
             return null;
         }
         if (currentState == HttpServerState.SHUTDOWN) {
-            return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) shutdown");
+            return new ReadinessProbeFailure("HTTP Server " + name + " (Netty) shutdown");
         }
-        return new ReadinessProbeFailure("HTTP Server " + this.name + " (Netty) unknown state");
+        return new ReadinessProbeFailure("HTTP Server " + name + " (Netty) unknown state");
     }
 
     private enum HttpServerState {
