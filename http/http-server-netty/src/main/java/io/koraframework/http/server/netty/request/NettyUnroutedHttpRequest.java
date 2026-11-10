@@ -1,24 +1,12 @@
 package io.koraframework.http.server.netty.request;
 
-import io.koraframework.http.common.body.HttpBody;
-import io.koraframework.http.common.body.HttpBodyInput;
+import io.koraframework.http.common.body.*;
 import io.koraframework.http.common.header.HttpHeaders;
-import io.koraframework.http.server.common.router.UnroutedHttpRequest;
-import io.koraframework.http.server.netty.NettyContext;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.QueryStringDecoder;
-import io.netty.util.AttributeKey;
-import org.jspecify.annotations.Nullable;
+import io.koraframework.http.server.common.router.*;
+import io.netty.handler.codec.http.*;
+import org.jspecify.annotations.*;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.util.Collections;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-
-import static io.koraframework.http.server.netty.handler.NettyRequestStreamingHandler.ACTIVE_BODY_KEY;
+import java.util.*;
 
 public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
@@ -29,9 +17,9 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     private final long startTime;
     private final Map<String, List<String>> queryParams;
     @Nullable
-    private volatile HttpBodyInput body;
+    private final HttpBodyInput body;
 
-    public NettyUnroutedHttpRequest(FullHttpRequest nettyRequest) {
+    public NettyUnroutedHttpRequest(FullHttpRequest nettyRequest, @Nullable NettyRequestHttpBody streamingBody) {
         this.nettyRequest = nettyRequest;
         this.method = nettyRequest.method().name();
         this.startTime = System.nanoTime();
@@ -40,6 +28,13 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         this.path = decoder.path();
         this.queryParams = Collections.unmodifiableMap(decoder.parameters());
         this.headers = new NettyHttpHeaders(nettyRequest.headers());
+        this.body = streamingBody != null ? streamingBody : (nettyRequest.content().readableBytes() == 0 ? HttpBody.empty() : createFallbackBody(nettyRequest));
+    }
+
+    private static NettyRequestHttpBody createFallbackBody(FullHttpRequest nettyRequest) {
+        var nettyBody = new NettyRequestHttpBody(nettyRequest, null, 10 * 1024 * 1024);
+        nettyBody.prepare();
+        return nettyBody;
     }
 
     @Override
@@ -80,43 +75,12 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         if (localBody != null) {
             return localBody;
         }
-
-        try {
-            var newBody = this.getContent();
-            if (this.body == null) {
-                this.body = newBody;
-                return newBody;
-            }
-            if (newBody instanceof NettyRequestHttpBody nettyBody) {
-                nettyBody.close();
-            }
-            var winnerBody = this.body;
-            return winnerBody != null ? winnerBody : newBody;
-        } catch (IOException e) {
-            throw new UncheckedIOException("HTTP request body cannot be opened for " + this.method + " " + this.path, e);
-        }
+        return HttpBody.empty();
     }
 
     @Override
     public long requestStartTimeInNanos() {
         return this.startTime;
-    }
-
-    private HttpBodyInput getContent() throws IOException {
-        var nettyContext = NettyContext.get();
-        if (nettyContext != null) {
-            var streamingBody = nettyContext.channelContext().channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
-            if (streamingBody != null) {
-                return streamingBody;
-            }
-        }
-
-        if (nettyRequest.content().readableBytes() == 0) {
-            return HttpBody.empty();
-        }
-        var nettyBody = new NettyRequestHttpBody(nettyRequest, null, 10 * 1024 * 1024);
-        nettyBody.prepare();
-        return nettyBody;
     }
 
     @Override

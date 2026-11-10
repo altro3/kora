@@ -56,7 +56,7 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest nettyReq) throws Exception {
+    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest nettyReq) {
         if (shuttingDown) {
             try {
                 var bytes = "Server is shutting down".getBytes(StandardCharsets.UTF_8);
@@ -87,7 +87,10 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     private void dispatch(ChannelHandlerContext ctx, FullHttpRequest nettyReq) {
         var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
-        var koraReq = new NettyUnroutedHttpRequest(nettyReq);
+
+        NettyRequestHttpBody streamingBody = ctx.channel().attr(NettyRequestStreamingHandler.ACTIVE_BODY_KEY).get();
+        var koraReq = new NettyUnroutedHttpRequest(nettyReq, streamingBody);
+
         var invocation = currentRouter.route(koraReq);
         var httpServerRequest = invocation.routedRequest();
         var observation = telemetry.observe(httpServerRequest);

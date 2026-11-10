@@ -35,7 +35,6 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
         nettyRequest.retain();
     }
 
-    // Вызывается из потока Netty EventLoop
     public void addContent(HttpContent content) {
         ByteBuf data = content.content().retain();
         if (data.isReadable()) {
@@ -46,7 +45,7 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
         if (content instanceof LastHttpContent) {
             queue.add(LastHttpContent.EMPTY_LAST_CONTENT);
         }
-        Thread thread = this.waitingThread;
+        Thread thread = waitingThread;
         if (thread != null) {
             LockSupport.unpark(thread);
         }
@@ -55,7 +54,7 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
     public void setException(IOException ex) {
         this.pendingException = ex;
         queue.add(ex);
-        Thread thread = this.waitingThread;
+        Thread thread = waitingThread;
         if (thread != null) {
             LockSupport.unpark(thread);
         }
@@ -176,14 +175,14 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
                 return true;
             }
 
-            private void throwMaxRequestBodySizeException() throws IOException {
+            private void throwMaxRequestBodySizeException() {
                 streamClosed = true;
                 if (ctx != null) ctx.close();
                 throw new TooLongFrameException("HTTP request body exceeded maximum configured size of " + maxRequestBodySize + " bytes");
             }
 
             @Override
-            public void close() throws IOException {
+            public void close() {
                 streamClosed = true;
                 if (currentBuf != null) {
                     currentBuf.release();

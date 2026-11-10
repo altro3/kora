@@ -20,7 +20,7 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
     }
 
     @Override
-    public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
         if (msg instanceof HttpRequest req) {
             if (req instanceof FullHttpRequest fullReq) {
                 ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
@@ -49,9 +49,6 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
             NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).get();
             if (body != null) {
                 body.addContent(content);
-                if (content instanceof LastHttpContent) {
-                    ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
-                }
                 ReferenceCountUtil.release(content);
             } else {
                 ctx.fireChannelRead(msg);
@@ -63,7 +60,7 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
     }
 
     @Override
-    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+    public void channelInactive(ChannelHandlerContext ctx) {
         NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
         if (body != null) {
             body.setException(new IOException("Connection closed prematurely"));
@@ -72,7 +69,7 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
     }
 
     @Override
-    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
+    public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
         if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
             NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
             if (body != null) {
