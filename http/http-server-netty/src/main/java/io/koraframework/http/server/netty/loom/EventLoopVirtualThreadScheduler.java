@@ -1,0 +1,39 @@
+package io.koraframework.http.server.netty.loom;
+
+import io.netty.util.*;
+import io.netty.util.concurrent.*;
+import org.jspecify.annotations.*;
+
+public sealed interface EventLoopVirtualThreadScheduler
+    permits LoomCarrierGroup.IoScheduler, LoomCarrierGroup.Runner, LoomCarrierGroup.StickyScheduler {
+
+    AttributeMap attributeMap();
+
+    EventExecutor eventLoop();
+
+    @Nullable
+    static EventLoopVirtualThreadScheduler current() {
+        if (LoomBranchSupport.isSupported()) {
+            if (!Thread.currentThread().isVirtual()) {
+                return null;
+            }
+            if (LoomBranchSupport.currentScheduler() instanceof EventLoopVirtualThreadScheduler elvts) {
+                return elvts;
+            } else {
+                return null;
+            }
+        } else if (PrivateLoomSupport.isSupported()) {
+            Thread thread = Thread.currentThread();
+            if (!thread.isVirtual()) {
+                return null;
+            }
+            if (PrivateLoomSupport.getScheduler(thread) instanceof EventLoopVirtualThreadScheduler elvts) {
+                return elvts;
+            } else {
+                return null;
+            }
+        } else {
+            return null;
+        }
+    }
+}

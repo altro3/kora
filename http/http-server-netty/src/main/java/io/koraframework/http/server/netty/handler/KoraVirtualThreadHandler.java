@@ -26,8 +26,6 @@ import java.io.*;
 import java.nio.*;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.concurrent.locks.*;
 import java.util.function.*;
 
 import static io.koraframework.common.telemetry.Observation.*;
@@ -39,7 +37,7 @@ import static io.netty.util.ReferenceCountUtil.*;
 import static java.nio.charset.StandardCharsets.*;
 
 @ChannelHandler.Sharable
-public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<Object> {
+public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter { // Меняем родителя!
 
     private static final Logger log = LoggerFactory.getLogger(KoraVirtualThreadHandler.class);
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
@@ -55,7 +53,6 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     public KoraVirtualThreadHandler(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled,
                                     HttpServerRouter currentRouter, HttpServerTelemetry telemetry) {
-        super(false);
         this.httpServerConfig = httpServerConfig;
         this.contextPropagationEnabled = contextPropagationEnabled;
         this.currentRouter = currentRouter;
@@ -63,24 +60,20 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
-        if (msg instanceof HttpRequest nettyReq) {
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+        if (msg instanceof FullHttpRequest nettyReq) {
+            if (nettyReq.decoderResult().isFailure()) {
+                log.error("HTTP Request decoding failed: {}", nettyReq.decoderResult().cause().getMessage());
+                sendStaticErrorAndClose(ctx, nettyReq);
+                return;
+            }
             if (shuttingDown) {
                 sendStaticErrorAndClose(ctx, nettyReq);
                 return;
             }
 
-            var body = new NettyRequestHttpBody(nettyReq, ctx, httpServerConfig.get().maxRequestBodySize().toBytes());
-            ctx.channel().attr(ACTIVE_BODY_KEY).set(body);
+            var body = new NettyRequestHttpBody(nettyReq);
             startVirtualThread(ctx, nettyReq, body);
-            return;
-        }
-
-        if (msg instanceof HttpContent content) {
-            NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).get();
-            if (body != null) {
-                body.addContent(content);
-            }
             return;
         }
 
@@ -88,26 +81,38 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     private void startVirtualThread(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody body) {
-        if (nettyReq instanceof ReferenceCounted rc) {
-            rc.retain();
-        }
-
-        var eventLoopExecutor = new KoraStickyScheduler(ctx);
-        Thread.Builder.OfVirtual builder = Thread.ofVirtual().name("kora-netty-carrier-", 1L);
-        KoraLoomSupport.setScheduler(builder, eventLoopExecutor);
-
-        Thread thread = builder.unstarted(() -> {
-            try {
-                dispatch(ctx, nettyReq, body);
-            } catch (Throwable t) {
-                log.error("Error inside Kora dispatch pipeline", t);
-                ctx.close(); // Экстренное закрытие сокета при критическом сбое в Loom
+        try {
+            if (nettyReq instanceof ReferenceCounted rc) {
+                rc.retain();
             }
-        });
 
-        thread.start();
+            var eventLoopExecutor = new StickyScheduler(ctx);
+            Thread.Builder.OfVirtual builder = Thread.ofVirtual().name("kora-netty-carrier-", 1L);
+
+            try {
+                KoraLoomSupport.setScheduler(builder, eventLoopExecutor);
+            } catch (Throwable t) {
+                log.error("CRITICAL: KoraLoomSupport.setScheduler failed!", t);
+            }
+
+            Thread thread = builder.unstarted(() -> {
+                try {
+                    log.debug("Virtual thread started successfully for request: {}", nettyReq.uri());
+                    dispatch(ctx, nettyReq, body);
+                } catch (Throwable t) {
+                    log.error("CRITICAL: Error inside Kora dispatch pipeline (Loom Thread)", t);
+                    ctx.executor().execute(ctx::close);
+                }
+            });
+
+            thread.start();
+            log.debug("Virtual thread.start() invoked");
+        } catch (Throwable t) {
+            log.error("CRITICAL: Failed to create or start virtual thread entirely", t);
+            safeRelease(nettyReq);
+            ctx.close();
+        }
     }
-
 
     private void dispatch(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody streamingBody) {
         var koraReq = new NettyUnroutedHttpRequest(nettyReq, streamingBody);
@@ -151,6 +156,7 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+        log.error("Exception caught in Netty channel handler pipeline", cause);
         if (ctx.channel().isActive()) {
             ctx.close();
         }
@@ -181,19 +187,41 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
         public Void get() {
             var httpServerRequestObserved = observation.observeRequest(httpServerRequest);
             HttpServerResponse response;
+            HttpBodyOutput body = null;
             try {
                 response = invocation.proceed(httpServerRequestObserved);
                 if (observation != null) {
                     observation.observeResponse(response);
                 }
+                body = response.body();
+                if (body != null) {
+                    ByteBuffer availableContent = body.getFullContentIfAvailable();
+                    if (availableContent != null) {
+                        response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(availableContent, body.contentType()));
+                    } else {
+                        long contentLength = body.contentLength();
+                        if (contentLength <= 64 * 1024) {
+                            int initialCapacity = contentLength > 0 ? (int) contentLength : 1024;
+                            try (var baos = new ByteArrayOutputStream(initialCapacity)) {
+                                body.write(baos);
+                                byte[] bytes = baos.toByteArray();
+                                ByteBuffer nioBuffer = ByteBuffer.wrap(bytes);
+                                response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(nioBuffer, body.contentType()));
+                            } catch (Throwable t) {
+                                log.error("Fast-path serialization failed", t);
+                            }
+                        }
+                    }
+                }
             } catch (Throwable e) {
-                if (e instanceof HttpServerResponse) {
-                    response = (HttpServerResponse) e;
+                if (e instanceof HttpServerResponse resp) {
+                    response = resp;
                     if (observation != null) {
                         observation.observeError(e);
                         observation.observeResponse(response);
                     }
                 } else {
+                    log.error("Internal server error during request dispatching", e);
                     if (observation != null) {
                         var errorResponse = HttpServerResponse.of(500);
                         observation.observeError(e);
@@ -209,30 +237,10 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
                 }
             }
 
-            HttpBodyOutput body = response.body();
-            if (body != null) {
-                ByteBuffer availableContent = body.getFullContentIfAvailable();
-                if (availableContent != null) {
-                    response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(availableContent, body.contentType()));
-                } else {
-                    long contentLength = body.contentLength();
-                    if (contentLength <= 64 * 1024) {
-                        int initialCapacity = contentLength > 0 ? (int) contentLength : 1024;
-                        try (var baos = new ByteArrayOutputStream(initialCapacity)) {
-                            body.write(baos);
-                            byte[] bytes = baos.toByteArray();
-                            ByteBuffer nioBuffer = ByteBuffer.wrap(bytes);
-                            response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(nioBuffer, body.contentType()));
-                        } catch (Throwable t) {
-                            log.error("Fast-path serialization failed", t);
-                        }
-                    }
-                }
-            }
-
             try {
                 handler.prepareAndSendResponse(ctx, nettyReq, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), response, observation);
             } catch (Throwable t) {
+                log.error("Failed to prepare or send HTTP response", t);
                 if (observation != null) {
                     observation.observeError(t);
                     observation.end();
@@ -248,7 +256,7 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpRequest nettyReq, HttpVersion version,
-                                        boolean keepAlive, HttpServerResponse response, HttpServerObservation observation) throws Exception {
+                                        boolean keepAlive, HttpServerResponse response, HttpServerObservation observation) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
         boolean isHead = nettyReq.method() == HttpMethod.HEAD;
@@ -295,13 +303,63 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
         ctx.write(nettyResp);
 
-        try (var output = new VirtualThreadNettyBodyOutputStream(ctx)) {
-            body.write(output);
-            output.flush();
+        ctx.executor().execute(() -> {
+            try {
+                writeStreamBody(ctx, body, nettyReq, version, keepAlive, observation);
+            } catch (Throwable t) {
+                log.error("Failed to stream response body via EventLoop", t);
+                ctx.close();
+            }
+        });
+    }
+
+    private void writeStreamBody(ChannelHandlerContext ctx, HttpBodyOutput body, HttpRequest nettyReq,
+                                 HttpVersion version, boolean keepAlive, HttpServerObservation observation) {
+        if (!ctx.channel().isActive()) {
+            cleanUpResponse(ctx, body, nettyReq, observation);
+            return;
         }
 
-        var lastChunk = LastHttpContent.EMPTY_LAST_CONTENT;
-        finalizeAndWrite(ctx, nettyReq, lastChunk, version, keepAlive, body, observation);
+        if (ctx.channel().isWritable()) {
+            ByteBuf buffer = ctx.alloc().buffer(8192);
+            try (var os = new ByteBufOutputStream(buffer)) {
+                body.write(os);
+
+                if (buffer.isReadable()) {
+                    ctx.writeAndFlush(new DefaultHttpContent(buffer)).addListener(future -> {
+                        if (future.isSuccess()) {
+                            writeStreamBody(ctx, body, nettyReq, version, keepAlive, observation);
+                        } else {
+                            buffer.release();
+                            ctx.close();
+                            cleanUpResponse(ctx, body, nettyReq, observation);
+                        }
+                    });
+                } else {
+                    buffer.release();
+                    var lastChunk = LastHttpContent.EMPTY_LAST_CONTENT;
+                    finalizeAndWrite(ctx, nettyReq, lastChunk, version, keepAlive, body, observation);
+                }
+            } catch (Throwable t) {
+                buffer.release();
+                log.error("Error during streaming payload compilation", t);
+                ctx.close();
+                cleanUpResponse(ctx, body, nettyReq, observation);
+            }
+        } else {
+            ctx.executor().schedule(() -> writeStreamBody(ctx, body, nettyReq, version, keepAlive, observation), 1, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private void cleanUpResponse(ChannelHandlerContext ctx, HttpBodyOutput body, HttpRequest nettyReq, HttpServerObservation observation) {
+        ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
+        if (body != null) {
+            try {body.close();} catch (IOException e) {log.error("Failed to close body", e);}
+        }
+        if (observation != null) {
+            observation.end();
+        }
+        safeRelease(nettyReq);
     }
 
     private void finalizeAndWrite(ChannelHandlerContext ctx, HttpRequest nettyReq, Object msg,
@@ -315,7 +373,7 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
             ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
 
             if (body != null) {
-                try { body.close(); } catch (IOException e) { log.error("Failed to close response body", e); }
+                try {body.close();} catch (IOException e) {log.error("Failed to close response body", e);}
             }
 
             safeRelease(nettyReq);
@@ -403,67 +461,6 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
                 ctx.channel().config().setAutoRead(true);
                 ctx.read();
             }
-        }
-    }
-
-    private static final class VirtualThreadNettyBodyOutputStream extends OutputStream {
-        private final ChannelHandlerContext ctx;
-        private CompositeByteBuf compositeBuffer;
-        private final int chunkThreshold = 8192;
-
-        public VirtualThreadNettyBodyOutputStream(ChannelHandlerContext ctx) {
-            this.ctx = ctx;
-            this.compositeBuffer = ctx.alloc().compositeBuffer();
-        }
-
-        @Override
-        public void write(int b) {
-            ensureWritability();
-            ByteBuf buf = ctx.alloc().buffer(1);
-            buf.writeByte(b);
-            compositeBuffer.addComponent(true, buf);
-            checkFlushThreshold();
-        }
-
-        @Override
-        public void write(byte[] b, int off, int len) {
-            if (len == 0) return;
-            ensureWritability();
-            ByteBuf buf = ctx.alloc().buffer(len);
-            buf.writeBytes(b, off, len);
-            compositeBuffer.addComponent(true, buf);
-            checkFlushThreshold();
-        }
-
-        private void checkFlushThreshold() {
-            if (compositeBuffer.readableBytes() >= chunkThreshold) {
-                flushBuffer();
-            }
-        }
-
-        private void flushBuffer() {
-            if (compositeBuffer.readableBytes() > 0) {
-                ByteBuf chunk = compositeBuffer;
-                this.compositeBuffer = ctx.alloc().compositeBuffer();
-                ctx.writeAndFlush(new DefaultHttpContent(chunk));
-            }
-        }
-
-        @Override
-        public void flush() {
-            flushBuffer();
-        }
-
-        private void ensureWritability() {
-            while (!ctx.channel().isWritable() && ctx.channel().isActive()) {
-                LockSupport.parkNanos(1_000_000);
-            }
-        }
-
-        @Override
-        public void close() {
-            flushBuffer();
-            compositeBuffer.release();
         }
     }
 }

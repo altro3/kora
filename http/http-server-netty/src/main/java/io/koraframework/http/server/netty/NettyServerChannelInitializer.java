@@ -32,7 +32,7 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
         ChannelPipeline p = ch.pipeline();
 
         p.addLast("http-codec", new HttpServerCodec(DECODER_CONFIG));
-        p.addLast("chunked-writer", new ChunkedWriteHandler());
+        p.addLast(new HttpObjectAggregator((int) config.maxRequestBodySize().toBytes()));
         var readTimeout = config.socketReadTimeout();
         if (!readTimeout.isZero()) {
             p.addLast("read-timeout", new ReadTimeoutHandler(readTimeout.toMillis(), TimeUnit.MILLISECONDS));

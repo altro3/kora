@@ -1,63 +1,24 @@
 package io.koraframework.http.server.netty.request;
 
-import io.koraframework.http.common.body.*;
-import io.netty.buffer.*;
-import io.netty.channel.*;
-import io.netty.handler.codec.http.*;
-import org.jspecify.annotations.*;
+import io.koraframework.http.common.body.HttpBodyInput;
+import io.netty.buffer.ByteBufInputStream;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.HttpHeaderNames;
+import io.netty.handler.codec.http.HttpUtil;
+import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 
-import java.io.*;
+import java.io.InputStream;
 
 public final class NettyRequestHttpBody implements HttpBodyInput {
 
-    private final HttpRequest nettyRequest;
-    private final ChannelHandlerContext ctx;
-    private final long maxRequestBodySize;
-    private final CompositeByteBuf bodyBuffer;
-    private long bytesRead = 0;
-    private boolean streamClosed = false;
-    private boolean released = false;
+    private final FullHttpRequest nettyRequest;
+    private final InputStream inputStream;
 
-    public NettyRequestHttpBody(HttpRequest nettyRequest, ChannelHandlerContext ctx, long maxRequestBodySize) {
+    public NettyRequestHttpBody(FullHttpRequest nettyRequest) {
         this.nettyRequest = nettyRequest;
-        this.ctx = ctx;
-        this.maxRequestBodySize = maxRequestBodySize;
-        this.bodyBuffer = ctx.alloc().compositeBuffer();
-    }
-
-    public void addContent(HttpContent content) {
-        if (streamClosed) {
-            return;
-        }
-
-        ByteBuf chunk = content.content().retain();
-        if (chunk.isReadable()) {
-            if (bytesRead + chunk.readableBytes() > maxRequestBodySize) {
-                chunk.release();
-                setException(new io.netty.handler.codec.TooLongFrameException(
-                    "HTTP request body exceeded maximum size of " + maxRequestBodySize + " bytes"
-                ));
-                return;
-            }
-
-            bytesRead += chunk.readableBytes();
-            bodyBuffer.addComponent(true, chunk);
-        } else {
-            chunk.release();
-        }
-
-        if (content instanceof LastHttpContent) {
-            streamClosed = true;
-        }
-    }
-
-    public void setException(Throwable ex) {
-        streamClosed = true;
-        ctx.channel().eventLoop().execute(() -> {
-            if (ctx.channel().isActive()) {
-                ctx.close();
-            }
-        });
+        this.inputStream = new ByteBufInputStream(nettyRequest.content().retain(), true);
     }
 
     @Override
@@ -74,20 +35,14 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
     @Override
     @NonNull
     public InputStream asInputStream() {
-        return new ByteBufInputStream(bodyBuffer, true);
+        return inputStream;
     }
 
     @Override
     public void close() {
-        if (released) {
-            return;
+        try {
+            inputStream.close();
+        } catch (Exception ignored) {
         }
-        released = true;
-        bodyBuffer.release();
-    }
-
-    @Override
-    public String toString() {
-        return nettyRequest.toString();
     }
 }
