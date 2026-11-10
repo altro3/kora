@@ -3,7 +3,6 @@ package io.koraframework.http.server.netty.handler;
 import io.koraframework.application.graph.*;
 import io.koraframework.common.context.*;
 import io.koraframework.http.common.body.*;
-import io.koraframework.http.common.header.HttpHeaders;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
@@ -104,7 +103,7 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         }
     }
 
-    private void dispatch(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody streamingBody) {
+    private void dispatch(ChannelHandlerContext ctx, FullHttpRequest nettyReq, NettyRequestHttpBody streamingBody) {
         var koraReq = new NettyUnroutedHttpRequest(nettyReq, streamingBody);
 
         var invocation = currentRouter.route(koraReq);
@@ -158,12 +157,12 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         private final HttpServerInvocation invocation;
         private final HttpServerRequest httpServerRequest;
         private final HttpServerObservation observation;
-        private final HttpRequest nettyReq;
+        private final FullHttpRequest nettyReq;
         private final Context rootCtx;
 
         public ActionSupplier(KoraVirtualThreadHandler handler, ChannelHandlerContext ctx,
                               HttpServerInvocation invocation, HttpServerRequest httpServerRequest,
-                              HttpServerObservation observation, HttpRequest nettyReq, Context rootCtx) {
+                              HttpServerObservation observation, FullHttpRequest nettyReq, Context rootCtx) {
             this.handler = handler;
             this.ctx = ctx;
             this.invocation = invocation;
@@ -177,30 +176,20 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         public Void get() {
             var httpServerRequestObserved = observation.observeRequest(httpServerRequest);
             HttpServerResponse response;
-            HttpBodyOutput body = null;
             try {
                 response = invocation.proceed(httpServerRequestObserved);
                 if (observation != null) {
                     observation.observeResponse(response);
                 }
-                body = response.body();
+    var body = response.body();
                 if (body != null) {
-                    ByteBuffer availableContent = body.getFullContentIfAvailable();
+                    var availableContent = body.getFullContentIfAvailable();
                     if (availableContent != null) {
-                        response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(availableContent, body.contentType()));
-                    } else {
-                        long contentLength = body.contentLength();
-                        if (contentLength <= 64 * 1024) {
-                            int initialCapacity = contentLength > 0 ? (int) contentLength : 1024;
-                            try (var baos = new ByteArrayOutputStream(initialCapacity)) {
-                                body.write(baos);
-                                byte[] bytes = baos.toByteArray();
-                                ByteBuffer nioBuffer = ByteBuffer.wrap(bytes);
-                                response = HttpServerResponse.of(response.code(), response.headers(), new DefaultFullHttpBody(nioBuffer, body.contentType()));
-                            } catch (Throwable t) {
-                                log.error("Fast-path serialization failed", t);
-                            }
-                        }
+                        response = HttpServerResponse.of(
+                            response.code(),
+                            response.headers(),
+                            new DefaultFullHttpBody(availableContent, body.contentType())
+                        );
                     }
                 }
             } catch (Throwable e) {
@@ -235,8 +224,9 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
                     observation.observeError(t);
                     observation.end();
                 }
+                var body = response.body();
                 if (body != null) {
-                    try {body.close();} catch (IOException ignore) {}
+                    try { body.close(); } catch (IOException ignore) {}
                 }
                 safeRelease(nettyReq);
                 ctx.close();
@@ -245,7 +235,7 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         }
     }
 
-    private void prepareAndSendResponse(ChannelHandlerContext ctx, HttpRequest nettyReq, HttpVersion version,
+    private void prepareAndSendResponse(ChannelHandlerContext ctx, FullHttpRequest nettyReq, HttpVersion version,
                                         boolean keepAlive, HttpServerResponse response, HttpServerObservation observation) {
         var body = response.body();
         HttpResponseStatus status = HttpResponseStatus.valueOf(response.code());
@@ -253,7 +243,7 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
 
         if (body == null) {
             var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
-            writeHeaders(nettyResp.headers(), response.headers(), null);
+            writeHeaders(nettyResp.headers(), response, null);
             nettyResp.headers().set(CONTENT_LENGTH, 0);
             finalizeAndWrite(ctx, nettyReq, nettyResp, version, keepAlive, null, observation);
             return;
@@ -264,7 +254,7 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
 
         if (isHead) {
             var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
-            writeHeaders(nettyResp.headers(), response.headers(), contentType);
+            writeHeaders(nettyResp.headers(), response, contentType);
             if (declaredLength >= 0) {
                 nettyResp.headers().set(CONTENT_LENGTH, declaredLength);
             }
@@ -276,14 +266,14 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         if (content != null) {
             ByteBuf nettyBody = Unpooled.wrappedBuffer(content);
             var nettyResp = new DefaultFullHttpResponse(version, status, nettyBody);
-            writeHeaders(nettyResp.headers(), response.headers(), contentType);
+            writeHeaders(nettyResp.headers(), response, contentType);
             nettyResp.headers().set(CONTENT_LENGTH, nettyBody.readableBytes());
             finalizeAndWrite(ctx, nettyReq, nettyResp, version, keepAlive, body, observation);
             return;
         }
 
         var nettyResp = new DefaultHttpResponse(version, status);
-        writeHeaders(nettyResp.headers(), response.headers(), contentType);
+        writeHeaders(nettyResp.headers(), response, contentType);
         if (declaredLength >= 0) {
             nettyResp.headers().set(CONTENT_LENGTH, declaredLength);
         } else {
@@ -303,7 +293,7 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         });
     }
 
-    private void writeStreamBody(ChannelHandlerContext ctx, HttpBodyOutput body, HttpRequest nettyReq,
+    private void writeStreamBody(ChannelHandlerContext ctx, HttpBodyOutput body, FullHttpRequest nettyReq,
                                  HttpVersion version, boolean keepAlive, HttpServerObservation observation) {
         if (!ctx.channel().isActive()) {
             cleanUpResponse(ctx, body, nettyReq, observation);
@@ -352,13 +342,13 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
         safeRelease(nettyReq);
     }
 
-    private void finalizeAndWrite(ChannelHandlerContext ctx, HttpRequest nettyReq, Object msg,
+    private void finalizeAndWrite(ChannelHandlerContext ctx, FullHttpRequest nettyReq, Object msg,
                                   HttpVersion version, boolean keepAlive, @Nullable HttpBodyOutput body,
                                   @Nullable HttpServerObservation observation) {
         if (msg instanceof HttpMessage httpMsg) {
             setupConnectionHeader(httpMsg, version, keepAlive);
         }
-
+    
         ctx.writeAndFlush(msg).addListener(future -> {
             if (body != null) {
                 try { body.close(); } catch (IOException e) { log.error("Failed to close response body", e); }
@@ -367,38 +357,42 @@ public final class KoraVirtualThreadHandler extends ChannelInboundHandlerAdapter
                 observation.end();
             }
 
-            safeRelease(nettyReq);
-
-            if (future.isSuccess()) {
-                log.debug("HTTP response successfully flushed to network for request: {}", nettyReq.uri());
-            } else {
-                Throwable cause = future.cause();
-                if (cause instanceof IOException) {
-                    log.debug("Client closed connection prematurely for request: {} (Message: {})", nettyReq.uri(), cause.getMessage());
-                } else {
-                    log.error("Failed to flush HTTP response to network for request: {}", nettyReq.uri(), cause);
-                }
+            if (nettyReq.refCnt() > 0) {
+                nettyReq.release();
             }
 
-            if (!future.isSuccess() || !keepAlive) {
+            if (!future.isSuccess()) {
+                Throwable cause = future.cause();
+                if (!(cause instanceof IOException)) {
+                    log.error("Failed to flush HTTP response to network for request: {}", nettyReq.uri(), cause);
+                }
                 ctx.close();
-            } else {
-                ctx.read();
+                return;
+            }
+
+            if (!keepAlive) {
+                ctx.close();
             }
         });
     }
 
-    void writeHeaders(io.netty.handler.codec.http.HttpHeaders nettyHeaders, HttpHeaders koraHeaders, @Nullable String contentType) {
+    void writeHeaders(HttpHeaders nettyHeaders, HttpServerResponse response, @Nullable String contentType) {
         if (httpServerConfig.get().headerServerNameEnabled()) {
             nettyHeaders.set(SERVER, HEADER_SERVER_VALUE);
         }
-        for (var header : koraHeaders) {
-            var key = header.getKey();
-            if (isReservedHeader(key, contentType)) {
+
+        for (var header : response.headers()) {
+            String key = header.getKey();
+
+            if (SERVER.contentEqualsIgnoreCase(key)
+                || CONTENT_LENGTH.contentEqualsIgnoreCase(key)
+                || TRANSFER_ENCODING.contentEqualsIgnoreCase(key)
+                || (CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null)) {
                 continue;
             }
-            nettyHeaders.add(key, header.getValue());
+            nettyHeaders.add(AsciiString.cached(key), header.getValue());
         }
+
         if (contentType != null) {
             nettyHeaders.set(CONTENT_TYPE, contentType);
         }
