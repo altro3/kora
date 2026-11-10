@@ -5,12 +5,17 @@ import io.koraframework.http.server.netty.request.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
+import io.netty.handler.timeout.ReadTimeoutException;
 import io.netty.util.*;
 
 import java.io.*;
+import java.net.SocketTimeoutException;
+import java.util.Set;
+import java.util.concurrent.*;
 
 public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAdapter {
 
+    public static final Set<NettyRequestHttpBody> ACTIVE_BODIES = ConcurrentHashMap.newKeySet();
     public static final AttributeKey<NettyRequestHttpBody> ACTIVE_BODY_KEY = AttributeKey.valueOf("kora.active.body");
 
     private final HttpServerConfig config;
@@ -38,6 +43,7 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
             );
 
             var body = new NettyRequestHttpBody(fullReq, ctx, config.maxRequestBodySize().toBytes());
+            ACTIVE_BODIES.add(body);
             ctx.channel().attr(ACTIVE_BODY_KEY).set(body);
 
             ReferenceCountUtil.release(req);
@@ -49,6 +55,12 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
             NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).get();
             if (body != null) {
                 body.addContent(content);
+                if (content instanceof LastHttpContent) {
+                    var removed = ctx.channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
+                    if (removed != null) {
+                        ACTIVE_BODIES.remove(removed);
+                    }
+                }
                 ReferenceCountUtil.release(content);
             } else {
                 ctx.fireChannelRead(msg);
@@ -70,10 +82,10 @@ public final class NettyRequestStreamingHandler extends ChannelInboundHandlerAda
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) {
-        if (evt instanceof io.netty.handler.timeout.ReadTimeoutException) {
+        if (evt instanceof ReadTimeoutException) {
             NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).getAndSet(null);
             if (body != null) {
-                body.setException(new java.net.SocketTimeoutException("Read timeout"));
+                body.setException(new SocketTimeoutException("Read timeout"));
             }
             ctx.close();
             return;

@@ -9,17 +9,15 @@ import org.jspecify.annotations.*;
 
 import java.io.*;
 import java.util.concurrent.*;
-import java.util.concurrent.locks.*;
 
 public final class NettyRequestHttpBody implements HttpBodyInput {
 
     private final FullHttpRequest nettyRequest;
     private final @Nullable ChannelHandlerContext ctx;
     private final long maxRequestBodySize;
-    private final ConcurrentLinkedQueue<Object> queue = new ConcurrentLinkedQueue<>();
-    private volatile Thread waitingThread = null;
+    private final BlockingQueue<Object> queue = new LinkedBlockingQueue<>();
 
-    private @Nullable volatile InputStream inputStream;
+    private volatile @Nullable InputStream inputStream;
     private boolean released = false;
     private boolean streamClosed = false;
     private ByteBuf currentBuf = null;
@@ -45,19 +43,11 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
         if (content instanceof LastHttpContent) {
             queue.add(LastHttpContent.EMPTY_LAST_CONTENT);
         }
-        Thread thread = waitingThread;
-        if (thread != null) {
-            LockSupport.unpark(thread);
-        }
     }
 
     public void setException(IOException ex) {
         this.pendingException = ex;
         queue.add(ex);
-        Thread thread = waitingThread;
-        if (thread != null) {
-            LockSupport.unpark(thread);
-        }
     }
 
     @Override
@@ -150,17 +140,12 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
                     currentBuf = null;
                 }
 
-                Object item = queue.poll();
-                if (item == null) {
-                    waitingThread = Thread.currentThread();
-                    try {
-                        while ((item = queue.poll()) == null) {
-                            if (pendingException != null) throw pendingException;
-                            LockSupport.park();
-                        }
-                    } finally {
-                        waitingThread = null;
-                    }
+                Object item;
+                try {
+                    item = queue.take();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("Reading interrupted", e);
                 }
 
                 if (item instanceof IOException ex) {

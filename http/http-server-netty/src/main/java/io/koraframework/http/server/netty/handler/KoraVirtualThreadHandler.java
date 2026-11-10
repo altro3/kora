@@ -23,7 +23,6 @@ import org.slf4j.*;
 
 import java.io.*;
 import java.nio.*;
-import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
@@ -36,7 +35,7 @@ import static io.koraframework.http.server.netty.NettyContext.*;
 import static io.koraframework.logging.common.MDC.*;
 import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static io.netty.util.ReferenceCountUtil.*;
-import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.nio.charset.StandardCharsets.*;
 
 @ChannelHandler.Sharable
 public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
@@ -95,7 +94,8 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     private void dispatch(ChannelHandlerContext ctx, FullHttpRequest nettyReq) {
         var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
-        var streamingBody = ctx.channel().attr(NettyRequestStreamingHandler.ACTIVE_BODY_KEY).getAndSet(null);
+        NettyRequestHttpBody streamingBody = ctx.channel().attr(NettyRequestStreamingHandler.ACTIVE_BODY_KEY).get();
+
         var koraReq = new NettyUnroutedHttpRequest(nettyReq, streamingBody);
         var invocation = currentRouter.route(koraReq);
         var httpServerRequest = invocation.routedRequest();
@@ -456,7 +456,15 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     public void shutdown() {
         shuttingDown = true;
-        phaser.arriveAndAwaitAdvance();
+        var activeBodies = NettyRequestStreamingHandler.ACTIVE_BODIES;
+        for (var body : activeBodies) {
+            body.setException(new IOException("Server is shutting down gracefully"));
+        }
+        activeBodies.clear();
+        try {
+            phaser.arriveAndAwaitAdvance();
+        } catch (Throwable ignore) {}
+
         vtExecutor.shutdown();
     }
 }
