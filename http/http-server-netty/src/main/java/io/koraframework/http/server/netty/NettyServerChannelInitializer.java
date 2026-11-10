@@ -19,14 +19,14 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
 
     private final NettyHttpServer server;
     private final HttpServerConfig config;
-    private final ValueOf<KoraVirtualThreadDispatcher> dispatcherValue;
+    private final ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandlerValue;
     private final ValueOf<NettyResponseWriteHandler> writeHandlerValue;
 
     public NettyServerChannelInitializer(NettyHttpServer server, HttpServerConfig config,
-                                         ValueOf<KoraVirtualThreadDispatcher> dispatcherValue, ValueOf<NettyResponseWriteHandler> writeHandlerValue) {
+                                         ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandlerValue, ValueOf<NettyResponseWriteHandler> writeHandlerValue) {
         this.server = server;
         this.config = config;
-        this.dispatcherValue = dispatcherValue;
+        this.koraVirtualThreadHandlerValue = koraVirtualThreadHandlerValue;
         this.writeHandlerValue = writeHandlerValue;
     }
 
@@ -44,9 +44,9 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
         if (!writeTimeout.isZero()) {
             p.addLast("write-timeout", new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
         }
-        p.addLast("response-writer", writeHandlerValue.get());
         p.addLast("request-streaming", new NettyRequestStreamingHandler(config));
-        p.addLast("virtual-thread-dispatcher", dispatcherValue.get());
+        p.addLast("virtual-thread-handler", koraVirtualThreadHandlerValue.get());
+        p.addLast("response-writer", writeHandlerValue.get());
 
         //        p.addLast("cpu-benchmark-pong", new ChannelInboundHandlerAdapter() {
 //            @Override

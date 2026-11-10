@@ -26,7 +26,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
     private final String name;
     private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher;
+    private final ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler;
     private final ValueOf<NettyResponseWriteHandler> responseWriteHandler;
     private final @Nullable Configurer<ServerBootstrap> configurer;
     private final boolean manageResources;
@@ -37,13 +37,13 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         String name,
         @Nullable NettyResources resources,
         ValueOf<HttpServerConfig> httpServerConfig,
-        ValueOf<KoraVirtualThreadDispatcher> virtualThreadDispatcher,
+        ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler,
         ValueOf<NettyResponseWriteHandler> responseWriteHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = name;
         this.httpServerConfig = httpServerConfig;
-        this.virtualThreadDispatcher = virtualThreadDispatcher;
+        this.koraVirtualThreadHandler = koraVirtualThreadHandler;
         this.responseWriteHandler = responseWriteHandler;
         this.configurer = configurer;
         if (resources != null) {
@@ -77,7 +77,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
 
             var waterMark = new WriteBufferWaterMark(1024 * 1024, 2 * 1024 * 1024);
-            var dispatcherValue = this.virtualThreadDispatcher;
+            var dispatcherValue = this.koraVirtualThreadHandler;
             var writeHandlerValue = this.responseWriteHandler;
 
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
@@ -110,7 +110,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         log.debug("HTTP Server {} (Netty) stopping...", name);
         this.state.set(HttpServerState.SHUTDOWN);
         final long started = TimeUtils.started();
-        var dispatcher = this.virtualThreadDispatcher.get();
+        var dispatcher = this.koraVirtualThreadHandler.get();
         dispatcher.setShuttingDown(true);
         try {
             log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", this.name);

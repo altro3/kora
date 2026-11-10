@@ -4,7 +4,7 @@ import io.koraframework.application.graph.*;
 import io.koraframework.common.context.*;
 import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
-import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.common.telemetry.*;
@@ -29,30 +29,25 @@ import static io.koraframework.common.telemetry.Observation.*;
 import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
 import static io.koraframework.http.server.netty.NettyContext.*;
 import static io.koraframework.logging.common.MDC.*;
-import static io.netty.util.ReferenceCountUtil.safeRelease;
+import static io.netty.util.ReferenceCountUtil.*;
 import static java.lang.IO.*;
 
 @ChannelHandler.Sharable
-public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandler<FullHttpRequest> {
+public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final boolean contextPropagationEnabled;
     private final HttpServerRouter currentRouter;
     private final HttpServerTelemetry telemetry;
+
     private final AtomicInteger activeRequests = new AtomicInteger(0);
     private final Phaser phaser = new Phaser(1);
-    private final ExecutorService vtExecutor = new ForkJoinPool(
-        Runtime.getRuntime().availableProcessors(),
-        ForkJoinPool.defaultForkJoinWorkerThreadFactory,
-        null,
-        true
-    );
-
     private volatile boolean shuttingDown = false;
+    private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
-    public KoraVirtualThreadDispatcher(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled,
-                                       HttpServerRouter currentRouter, HttpServerTelemetry telemetry) {
+    public KoraVirtualThreadHandler(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled,
+                                    HttpServerRouter currentRouter, HttpServerTelemetry telemetry) {
         super(false);
         this.httpServerConfig = httpServerConfig;
         this.contextPropagationEnabled = contextPropagationEnabled;
@@ -80,7 +75,7 @@ public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandl
 
         vtExecutor.execute(() -> {
             try {
-                this.dispatch(ctx, nettyReq);
+                dispatch(ctx, nettyReq);
             } finally {
                 activeRequests.decrementAndGet();
                 phaser.arriveAndDeregister();
@@ -138,7 +133,7 @@ public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandl
     }
 
     private static final class ActionSupplier implements Supplier<Void> {
-        private final KoraVirtualThreadDispatcher dispatcher;
+        private final KoraVirtualThreadHandler handler;
         private final ChannelHandlerContext ctx;
         private final HttpServerInvocation invocation;
         private final HttpServerRequest httpServerRequest;
@@ -146,12 +141,12 @@ public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandl
         private final FullHttpRequest nettyReq;
         private final Context rootCtx;
 
-        public ActionSupplier(KoraVirtualThreadDispatcher dispatcher, ChannelHandlerContext ctx,
+        public ActionSupplier(KoraVirtualThreadHandler handler, ChannelHandlerContext ctx,
                               HttpServerInvocation invocation,
                               HttpServerRequest httpServerRequest,
                               HttpServerObservation observation,
                               FullHttpRequest nettyReq, Context rootCtx) {
-            this.dispatcher = dispatcher;
+            this.handler = handler;
             this.ctx = ctx;
             this.invocation = invocation;
             this.httpServerRequest = httpServerRequest;
@@ -185,7 +180,7 @@ public final class KoraVirtualThreadDispatcher extends SimpleChannelInboundHandl
                         observation.end();
                     }
                     try {
-                        dispatcher.sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
+                        handler.sendStaticErrorResponse(ctx, nettyReq.protocolVersion(), HttpUtil.isKeepAlive(nettyReq), rootCtx, e);
                     } finally {
                         safeRelease(nettyReq);
                     }

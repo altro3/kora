@@ -199,7 +199,7 @@ class NettyHttpServerTest extends HttpServerTestKit {
             resources,
             (ValueOf<HttpServerConfig>) config,
             httpServerRouter,
-            valueOf(new KoraVirtualThreadDispatcher(serverConfig, false)),
+            valueOf(new KoraVirtualThreadHandler(serverConfig, false)),
             valueOf(new NettyResponseWriteHandler(serverConfig)),
             null
         );
