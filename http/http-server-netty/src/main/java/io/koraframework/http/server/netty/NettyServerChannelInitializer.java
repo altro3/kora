@@ -41,7 +41,6 @@ public class NettyServerChannelInitializer extends ChannelInitializer<SocketChan
         if (!writeTimeout.isZero()) {
             p.addLast("write-timeout", new WriteTimeoutHandler(writeTimeout.toMillis(), TimeUnit.MILLISECONDS));
         }
-        p.addLast("request-streaming", new NettyRequestStreamingHandler(config));
         p.addLast("virtual-thread-handler", koraVirtualThreadHandlerValue.get());
 
         //        p.addLast("cpu-benchmark-pong", new ChannelInboundHandlerAdapter() {

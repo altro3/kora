@@ -10,6 +10,7 @@ import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.common.telemetry.*;
 import io.koraframework.http.server.netty.*;
+import io.koraframework.http.server.netty.loom.*;
 import io.koraframework.http.server.netty.request.*;
 import io.koraframework.logging.common.MDC;
 import io.netty.buffer.*;
@@ -42,16 +43,15 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
 
     private static final Logger log = LoggerFactory.getLogger(KoraVirtualThreadHandler.class);
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
+    public static final AttributeKey<NettyRequestHttpBody> ACTIVE_BODY_KEY = AttributeKey.valueOf("kora.active.body");
     private static final AsciiString HEADER_SERVER_VALUE = AsciiString.cached("Kora");
 
     private final ValueOf<HttpServerConfig> httpServerConfig;
     private final boolean contextPropagationEnabled;
     private final HttpServerRouter currentRouter;
     private final HttpServerTelemetry telemetry;
-    private final AtomicInteger activeRequests = new AtomicInteger(0);
-    private final Phaser phaser = new Phaser(1);
+
     private volatile boolean shuttingDown = false;
-    private final ExecutorService vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     public KoraVirtualThreadHandler(ValueOf<HttpServerConfig> httpServerConfig, boolean contextPropagationEnabled,
                                     HttpServerRouter currentRouter, HttpServerTelemetry telemetry) {
@@ -63,57 +63,60 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     @Override
-    protected void channelRead0(ChannelHandlerContext ctx, Object msg) {
+    protected void channelRead0(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof HttpRequest nettyReq) {
             if (shuttingDown) {
-                try {
-                    var bytes = "Server is shutting down".getBytes(UTF_8);
-                    var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
-                    var errorResp = new DefaultFullHttpResponse(nettyReq.protocolVersion(), HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
-                    ctx.writeAndFlush(errorResp);
-                } finally {
-                    release(nettyReq);
-                }
+                sendStaticErrorAndClose(ctx, nettyReq);
                 return;
             }
 
-            activeRequests.incrementAndGet();
-            phaser.register();
+            var body = new NettyRequestHttpBody(nettyReq, ctx, httpServerConfig.get().maxRequestBodySize().toBytes());
+            ctx.channel().attr(ACTIVE_BODY_KEY).set(body);
+            startVirtualThread(ctx, nettyReq, body);
+            return;
+        }
 
-            if (nettyReq instanceof ReferenceCounted rc) {
-                rc.retain();
+        if (msg instanceof HttpContent content) {
+            NettyRequestHttpBody body = ctx.channel().attr(ACTIVE_BODY_KEY).get();
+            if (body != null) {
+                body.addContent(content);
             }
-
-            vtExecutor.execute(() -> {
-                try {
-                    dispatch(ctx, nettyReq);
-                } finally {
-                    activeRequests.decrementAndGet();
-                    phaser.arriveAndDeregister();
-                }
-            });
-
-            ctx.read();
             return;
         }
 
-        if (msg instanceof LastHttpContent lastContent) {
-            release(lastContent);
-            return;
-        }
-
-        release(msg);
+        ctx.fireChannelRead(msg);
     }
 
-    private void dispatch(ChannelHandlerContext ctx, HttpRequest nettyReq) {
-        var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
-        NettyRequestHttpBody streamingBody = ctx.channel().attr(NettyRequestStreamingHandler.ACTIVE_BODY_KEY).get();
+    private void startVirtualThread(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody body) {
+        if (nettyReq instanceof ReferenceCounted rc) {
+            rc.retain();
+        }
 
+        var eventLoopExecutor = new KoraStickyScheduler(ctx);
+        Thread.Builder.OfVirtual builder = Thread.ofVirtual().name("kora-netty-carrier-", 1L);
+        KoraLoomSupport.setScheduler(builder, eventLoopExecutor);
+
+        Thread thread = builder.unstarted(() -> {
+            try {
+                dispatch(ctx, nettyReq, body);
+            } catch (Throwable t) {
+                log.error("Error inside Kora dispatch pipeline", t);
+                ctx.close(); // Экстренное закрытие сокета при критическом сбое в Loom
+            }
+        });
+
+        thread.start();
+    }
+
+
+    private void dispatch(ChannelHandlerContext ctx, HttpRequest nettyReq, NettyRequestHttpBody streamingBody) {
         var koraReq = new NettyUnroutedHttpRequest(nettyReq, streamingBody);
+
         var invocation = currentRouter.route(koraReq);
         var httpServerRequest = invocation.routedRequest();
         var observation = telemetry.observe(httpServerRequest);
         var httpServerRequestObserved = observation.observeRequest(httpServerRequest);
+        var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
         var activeCtx = rootCtx.with(observation.span());
 
         var finalContext = KoraContext.empty()
@@ -123,6 +126,17 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
             .with(OBSERVATION_KEY, observation);
 
         KoraContext.runWith(finalContext, new ActionSupplier(this, ctx, invocation, httpServerRequestObserved, observation, nettyReq, activeCtx));
+    }
+
+    private void sendStaticErrorAndClose(ChannelHandlerContext ctx, HttpRequest nettyReq) {
+        try {
+            var bytes = "Server is shutting down".getBytes(UTF_8);
+            var buffer = ctx.alloc().directBuffer(bytes.length).writeBytes(bytes);
+            var errorResp = new DefaultFullHttpResponse(nettyReq.protocolVersion(), HttpResponseStatus.INTERNAL_SERVER_ERROR, buffer);
+            ctx.writeAndFlush(errorResp).addListener(ChannelFutureListener.CLOSE);
+        } finally {
+            release(nettyReq);
+        }
     }
 
     @Override
@@ -140,18 +154,6 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
         if (ctx.channel().isActive()) {
             ctx.close();
         }
-    }
-
-    public void setShuttingDown(boolean shuttingDown) {
-        this.shuttingDown = shuttingDown;
-    }
-
-    public Phaser getPhaser() {
-        return phaser;
-    }
-
-    public AtomicInteger getActiveRequests() {
-        return activeRequests;
     }
 
     private static final class ActionSupplier implements Supplier<Void> {
@@ -309,26 +311,15 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
             setupConnectionHeader(httpMsg, version, keepAlive);
         }
 
-        if (keepAlive) {
-            ctx.channel().config().setAutoRead(true);
-        }
-
         ctx.writeAndFlush(msg).addListener(future -> {
-            ctx.channel().attr(NettyRequestStreamingHandler.ACTIVE_BODY_KEY).set(null);
+            ctx.channel().attr(ACTIVE_BODY_KEY).set(null);
+
             if (body != null) {
-                try {
-                    body.close();
-                } catch (IOException e) {
-                    log.error("Failed to close response body", e);
-                }
+                try { body.close(); } catch (IOException e) { log.error("Failed to close response body", e); }
             }
-            if (observation != null) {
-                if (!future.isSuccess()) {
-                    observation.observeError(future.cause());
-                }
-                observation.end();
-            }
+
             safeRelease(nettyReq);
+
             if (!future.isSuccess() || !keepAlive) {
                 ctx.close();
             } else {
@@ -338,7 +329,7 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
     }
 
     void writeHeaders(io.netty.handler.codec.http.HttpHeaders nettyHeaders, HttpHeaders koraHeaders, @Nullable String contentType) {
-        if (this.httpServerConfig.get().headerServerNameEnabled()) {
+        if (httpServerConfig.get().headerServerNameEnabled()) {
             nettyHeaders.set(SERVER, HEADER_SERVER_VALUE);
         }
         for (var header : koraHeaders) {
@@ -385,6 +376,10 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
                 response.headers().set(CONNECTION, HttpHeaderValues.CLOSE);
             }
         }
+    }
+
+    public void shutdown() {
+        shuttingDown = true;
     }
 
     private static final class CloseOrAutoReadListener implements ChannelFutureListener {
@@ -470,13 +465,5 @@ public final class KoraVirtualThreadHandler extends SimpleChannelInboundHandler<
             flushBuffer();
             compositeBuffer.release();
         }
-    }
-
-    public void shutdown() {
-        shuttingDown = true;
-        vtExecutor.shutdown();
-        try {
-            phaser.arriveAndAwaitAdvance();
-        } catch (Throwable ignore) {}
     }
 }

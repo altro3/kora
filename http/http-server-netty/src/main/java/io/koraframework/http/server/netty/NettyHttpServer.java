@@ -121,11 +121,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 Thread.currentThread().interrupt();
             }
         }
-        if (dispatcher.getActiveRequests().get() > 0) {
-            log.warn("HTTP Server {} (Netty) completed shutdown but {} requests are still active", name, dispatcher.getActiveRequests().get());
-        } else {
-            log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
-        }
+        log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
     }
 
     @Override

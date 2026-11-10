@@ -57,7 +57,6 @@ class NettyHttpServerRefreshTest {
             config,
             routerDelegate,
             () -> new KoraVirtualThreadHandler(config, false),
-            () -> new NettyResponseWriteHandler(config),
             null,
             null
         );

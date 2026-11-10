@@ -23,35 +23,21 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
         this.nettyRequest = nettyRequest;
         this.method = nettyRequest.method().name();
         this.startTime = System.nanoTime();
-
         var decoder = new QueryStringDecoder(nettyRequest.uri());
         this.path = decoder.path();
         this.queryParams = Collections.unmodifiableMap(decoder.parameters());
         this.headers = new NettyHttpHeaders(nettyRequest.headers());
-
-        if (streamingBody != null) {
-            body = streamingBody;
-        } else if (nettyRequest instanceof FullHttpRequest fullReq) {
-            body = fullReq.content().readableBytes() == 0 ? HttpBody.empty() : createFallbackBody(fullReq);
-        } else {
-            body = HttpBody.empty();
-        }
-    }
-
-    private static NettyRequestHttpBody createFallbackBody(FullHttpRequest fullRequest) {
-        var nettyBody = new NettyRequestHttpBody(fullRequest, null, 10 * 1024 * 1024);
-        nettyBody.prepare();
-        return nettyBody;
+        this.body = streamingBody != null ? streamingBody : HttpBody.empty();
     }
 
     @Override
     public String method() {
-        return method;
+        return this.method;
     }
 
     @Override
     public String path() {
-        return path;
+        return this.path;
     }
 
     @Override
@@ -68,17 +54,17 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     @Override
     public HttpHeaders headers() {
-        return headers;
+        return this.headers;
     }
 
     @Override
     public Map<String, List<String>> queryParams() {
-        return queryParams;
+        return this.queryParams;
     }
 
     @Override
     public HttpBodyInput body() {
-        var localBody = body;
+        var localBody = this.body;
         if (localBody != null) {
             return localBody;
         }
@@ -87,7 +73,7 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     @Override
     public long requestStartTimeInNanos() {
-        return startTime;
+        return this.startTime;
     }
 
     @Override
