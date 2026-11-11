@@ -65,7 +65,7 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
             if (buffer.isEmpty()) {
                 fullBody = Unpooled.EMPTY_BUFFER;
             } else if (buffer.size() == 1) {
-                fullBody = buffer.get(0).content().retain();
+                fullBody = buffer.getFirst().content().retain();
             } else {
                 List<ByteBuf> pieces = new ArrayList<>(buffer.size());
                 for (HttpContent c : buffer) {

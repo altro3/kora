@@ -30,7 +30,7 @@ final class FullOutboundHandler extends OutboundHandler {
             parent.setOutboundHandler(null);
             super.discardOutbound();
             markResponseWritten();
-            parent.requiredFlushCoalescer().flushNow();
+            parent.requiredCtx().flush();
             parent.requiredCtx().close();
             return;
         }

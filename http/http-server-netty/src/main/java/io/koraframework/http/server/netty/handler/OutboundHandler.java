@@ -12,7 +12,7 @@ public abstract class OutboundHandler {
     protected final KoraOutboundAccess outboundAccess;
     protected final PipeliningServerHandler parent;
 
-    Compressor. @Nullable Session compressionSession;
+    Compressor.@Nullable Session compressionSession;
     boolean responseWritten = false;
 
     OutboundHandler(KoraOutboundAccess outboundAccess, PipeliningServerHandler parent) {
@@ -70,7 +70,7 @@ public abstract class OutboundHandler {
     }
 
     private void writeCompressing0(HttpContent content, boolean flush, boolean last) {
-        Compressor.Session session = Objects.requireNonNull(this.compressionSession);
+        Compressor.Session session = java.util.Objects.requireNonNull(this.compressionSession);
         session.push(content.content());
         if (last) {
             session.finish();
@@ -80,20 +80,20 @@ public abstract class OutboundHandler {
             session.fixContentLength(hr);
             writeIntermediate(new DefaultHttpResponse(hr.protocolVersion(), hr.status(), hr.headers()), false, false);
         }
-        boolean close = shouldCloseAfterContent(last);
+
         ByteBuf toSend = session.poll();
         if (toSend == null) {
             if (last) {
                 HttpHeaders trailingHeaders = ((LastHttpContent) content).trailingHeaders();
-                writePotentialEnd(trailingHeaders.isEmpty() ? LastHttpContent.EMPTY_LAST_CONTENT : new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, trailingHeaders), flush, close);
-            } else if (flush || close) {
-                writeIntermediate(new DefaultHttpContent(Unpooled.EMPTY_BUFFER), flush, close);
+                writePotentialEnd(trailingHeaders.isEmpty() ? LastHttpContent.EMPTY_LAST_CONTENT : new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, trailingHeaders), flush, shouldCloseAfterContent(true));
+            } else {
+                writeIntermediate(new DefaultHttpContent(Unpooled.EMPTY_BUFFER), true, false);
             }
         } else {
             if (last) {
-                writePotentialEnd(new DefaultLastHttpContent(toSend, ((LastHttpContent) content).trailingHeaders()), flush, close);
+                writePotentialEnd(new DefaultLastHttpContent(toSend, ((LastHttpContent) content).trailingHeaders()), flush, shouldCloseAfterContent(true));
             } else {
-                writeIntermediate(new DefaultHttpContent(toSend), flush, close);
+                writeIntermediate(new DefaultHttpContent(toSend), flush, false);
             }
         }
     }

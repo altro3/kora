@@ -1,15 +1,12 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.server.netty.*;
-import io.koraframework.http.server.netty.buffer.KoraReadBuffer;
-import io.netty.channel.ChannelHandler;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.embedded.EmbeddedChannel;
-import io.netty.handler.codec.compression.ZlibCodecFactory;
-import io.netty.handler.codec.compression.ZlibWrapper;
+import io.netty.channel.*;
+import io.netty.channel.embedded.*;
+import io.netty.handler.codec.compression.*;
 import io.netty.handler.codec.http.*;
-import io.netty.util.ReferenceCountUtil;
-import org.jspecify.annotations.Nullable;
+import io.netty.util.*;
+import org.jspecify.annotations.*;
 
 public final class KoraMessageInboundHandler extends InboundHandler {
     private final PipeliningServerHandler parent;
@@ -79,7 +76,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
     private EmbeddedChannel newDecompressionChannel(ChannelHandler decompressor) {
         EmbeddedChannel channel = new EmbeddedChannel(parent.requiredCtx().channel().id(),
-                parent.requiredCtx().channel().metadata().hasDisconnect(), parent.requiredCtx().channel().config());
+            parent.requiredCtx().channel().metadata().hasDisconnect(), parent.requiredCtx().channel().config());
         channel.pipeline().addLast("decompressor", decompressor);
         return channel;
     }
