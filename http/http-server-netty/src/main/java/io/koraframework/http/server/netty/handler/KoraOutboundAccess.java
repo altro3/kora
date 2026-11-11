@@ -1,0 +1,359 @@
+package io.koraframework.http.server.netty.handler;
+
+import io.koraframework.http.server.netty.*;
+import io.netty.buffer.*;
+import io.netty.channel.*;
+import io.netty.handler.codec.http.*;
+import org.jspecify.annotations.*;
+import org.slf4j.*;
+
+public final class KoraOutboundAccess {
+    private static final Logger LOG = LoggerFactory.getLogger(KoraOutboundAccess.class);
+
+    private final HttpRequest request;
+    private final ChannelHandlerContext ctx;
+    private final PipeliningServerHandler parent;
+
+    private boolean skipCompression;
+    @Nullable
+    private OutboundHandler handler;
+    @Nullable
+    private Object attachment = null;
+    private boolean closeAfterWrite = false;
+    private volatile boolean finalWriteIssued;
+    private volatile boolean recordFinalWrite;
+    private @Nullable ChannelFuture finalWrite;
+
+    public KoraOutboundAccess(HttpRequest request, ChannelHandlerContext ctx, PipeliningServerHandler parent) {
+        this.request = request;
+        this.ctx = ctx;
+        this.parent = parent;
+    }
+
+    public void attachment(Object attachment) {
+        this.attachment = attachment;
+    }
+
+    public Object attachment() {
+        return this.attachment;
+    }
+
+    public Runnable whenAbandoned(Runnable callback) {
+        ChannelFuture closeFuture = ctx.channel().closeFuture();
+        ChannelFutureListener listener = future -> callback.run();
+        closeFuture.addListener(listener);
+        return () -> closeFuture.removeListener(listener);
+    }
+
+    public boolean isAbandoned() {
+        return !ctx.channel().isActive() && finalWritePending();
+    }
+
+    private boolean finalWritePending() {
+        if (!finalWriteIssued) {
+            return true;
+        }
+        ChannelFuture future = finalWrite;
+        return future != null && !future.isSuccess();
+    }
+
+    public boolean recordFinalWrite() {
+        recordFinalWrite = true;
+        return !finalWriteIssued;
+    }
+
+    public @Nullable ChannelFuture finalWrite() {
+        return finalWrite;
+    }
+
+    public void closeAfterWrite() {
+        closeAfterWrite = true;
+    }
+
+    public void closeAfterWriteInEventLoop() {
+        closeAfterWrite = true;
+        OutboundHandler current = this.handler;
+        if (current != null) {
+            current.markCloseAfterWrite();
+        }
+    }
+
+    private void preprocess(HttpResponse message) {
+        HttpVersion requestVersion = request.protocolVersion();
+        HttpVersion responseVersion = parent.rejectUnsupportedHttpVersions && !HttpVersion.HTTP_1_0.equals(requestVersion)
+            ? HttpVersion.HTTP_1_1 : requestVersion;
+
+        if (!message.protocolVersion().equals(responseVersion)) {
+            message.setProtocolVersion(responseVersion);
+        }
+
+        if (request.protocolVersion().isKeepAliveDefault()) {
+            if (request.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+                closeAfterWrite();
+            }
+        } else {
+            if (!requestsKeepAlive()) {
+                closeAfterWrite();
+            }
+        }
+
+        boolean http10KeptAlive = false;
+        if (message.protocolVersion().isKeepAliveDefault()) {
+            if (message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+                closeAfterWrite();
+            } else if (closeAfterWrite) {
+                message.headers().add(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+            }
+        } else {
+            if (!message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true)) {
+                if (parent.http10KeepAlive && !closeAfterWrite
+                    && (HttpUtil.isContentLengthSet(message) || !parent.canHaveBody(message.status()) || HttpMethod.HEAD.equals(request.method()))
+                    && !message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+                    http10KeptAlive = true;
+                    message.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                } else {
+                    closeAfterWrite();
+                }
+            } else if (closeAfterWrite) {
+                message.headers().remove(HttpHeaderNames.CONNECTION);
+            }
+        }
+
+        if (!http10KeptAlive && !HttpMethod.HEAD.equals(request.method()) && !HttpUtil.isContentLengthSet(message) && !HttpUtil.isTransferEncodingChunked(message) && parent.canHaveBody(message.status())) {
+            HttpUtil.setKeepAlive(message, false);
+            closeAfterWrite();
+        }
+    }
+
+    private boolean requestsKeepAlive() {
+        if (parent.http10KeepAlive) {
+            HttpHeaders headers = request.headers();
+            return headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true)
+                && !headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true);
+        }
+        return request.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true);
+    }
+
+    public void writeContinue() {
+        if (handler == null) {
+            write(new ContinueOutboundHandler(this));
+        }
+    }
+
+    public boolean responseStarted() {
+        OutboundHandler current = handler;
+        return current != null && !(current instanceof ContinueOutboundHandler cont && cont.next == null);
+    }
+
+    public void write(OutboundHandler handler) {
+        if (responseStarted()) {
+            handler.discardRefused();
+            throw new IllegalStateException("Only one response per request");
+        }
+
+        EventLoop eventLoop = ctx.channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> writeMoved(handler));
+            } catch (Throwable t) {
+                handler.discardRefused();
+                throw t;
+            }
+            return;
+        }
+
+        if (parent.removed) {
+            handler.discardOutbound();
+            return;
+        }
+
+        if (this.handler instanceof ContinueOutboundHandler cont) {
+            cont.next = handler;
+            parent.writeSome();
+        } else {
+            this.handler = handler;
+            if (parent.outboundQueue.peek() == this) {
+                parent.writeSome();
+            }
+        }
+    }
+
+    private void writeMoved(OutboundHandler handler) {
+        if (responseStarted()) {
+            LOG.warn("Only one response per request: a response written from another thread is dropped");
+            handler.discardRefused();
+            return;
+        }
+        try {
+            write(handler);
+        } catch (Throwable t) {
+            giveUpOffLoopWrite(t);
+        }
+    }
+
+    public void abort() {
+        EventLoop eventLoop = ctx.channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            eventLoop.execute(this::abort);
+            return;
+        }
+        OutboundHandler current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
+        if (parent.removed || (current != null && current.responseWritten)) {
+            return;
+        }
+        ctx.close();
+    }
+
+    public void runInResponseOrder(Runnable action, Runnable discard) {
+        write(new ActionOutboundHandler(this, action, discard));
+    }
+
+    public void writeHeadResponse(HttpResponse response) {
+        writeFull(new DefaultFullHttpResponse(
+            response.protocolVersion(),
+            response.status(),
+            Unpooled.EMPTY_BUFFER,
+            response.headers(),
+            EmptyHttpHeaders.INSTANCE
+        ), true);
+    }
+
+    private void writeFull(FullHttpResponse response, boolean headResponse) {
+        FullOutboundHandler oh = null;
+        try {
+            response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
+            if (parent.canHaveBody(response.status())) {
+                if (!headResponse) {
+                    HttpUtil.setContentLength(response, response.content().readableBytes());
+                }
+            } else {
+                response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+            }
+            preprocess(response);
+            oh = new FullOutboundHandler(this, response);
+            if (response.content().isReadable()) {
+                prepareCompression(response, oh, response.content().readableBytes());
+            }
+        } catch (Throwable t) {
+            response.release();
+            discardCompression(oh);
+            throw t;
+        }
+        write(oh);
+    }
+
+    private static void discardCompression(@Nullable OutboundHandler handler) {
+        if (handler != null && handler.compressionSession != null) {
+            handler.compressionSession.discard();
+            handler.compressionSession = null;
+        }
+    }
+
+    public void write(HttpResponse response, KoraAvailableBody body) {
+        try {
+            writeFull(new DefaultFullHttpResponse(
+                response.protocolVersion(),
+                response.status(),
+                body.toByteBuf(),
+                response.headers(),
+                EmptyHttpHeaders.INSTANCE
+            ), false);
+        } catch (Throwable t) {
+            body.close();
+            throw t;
+        }
+    }
+
+    public void write(HttpResponse response, KoraStreamingNettyBody body) {
+        EventLoop eventLoop = ctx.channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> writeClaimedStreaming(response, body));
+            } catch (Throwable t) {
+                body.close();
+                throw t;
+            }
+            return;
+        }
+        response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+        if (parent.canHaveBody(response.status()) && !request.protocolVersion().equals(HttpVersion.HTTP_1_0)) {
+            response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+        } else {
+            response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
+        }
+        preprocess(response);
+        var oh = new StreamingOutboundHandler(this, response);
+        try {
+            prepareCompression(response, oh, -1);
+            oh.body = body;
+        } catch (Throwable t) {
+            discardCompression(oh);
+            body.close();
+            throw t;
+        }
+        write(oh);
+    }
+
+    private void writeClaimedStreaming(HttpResponse response, KoraStreamingNettyBody body) {
+        if (responseStarted()) {
+            LOG.warn("Only one response per request: a response written from another thread is dropped");
+            body.close();
+            return;
+        }
+        try {
+            write(response, body);
+        } catch (Throwable t) {
+            body.close();
+            giveUpOffLoopWrite(t);
+        }
+    }
+
+    private void giveUpOffLoopWrite(Throwable t) {
+        OutboundHandler current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
+        if (current != null && current.responseWritten) {
+            LOG.warn("Failed to write a response that followed a response written from another thread: {}", t.getMessage(), t);
+            ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
+            return;
+        }
+        LOG.warn("Failed to write the response: {}", t.getMessage(), t);
+        parent.requestHandler.responseFailed(attachment, t);
+        if (current != null) {
+            if (parent.outboundHandler != parent.handler && parent.outboundHandler != current && !parent.outboundQueue.contains(this)) {
+                current.discardOutbound();
+            }
+            ctx.close();
+        } else {
+            parent.rejectUnaccepted(this);
+        }
+    }
+
+    public void skipCompression() {
+        skipCompression = true;
+    }
+
+    private void prepareCompression(HttpResponse response, OutboundHandler outboundHandler, long contentLength) {
+        if (parent.compressor == null || skipCompression) {
+            return;
+        }
+        Compressor.Session compressionSession = parent.compressor.prepare(ctx, request, response, contentLength);
+        if (compressionSession != null) {
+            outboundHandler.compressionSession = compressionSession;
+            if (!(response instanceof FullHttpResponse) && response.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
+                response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+                response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
+            }
+        }
+    }
+
+    public @Nullable OutboundHandler handler() {
+        return handler;
+    }
+
+    public void setHandler(@Nullable OutboundHandler handler) {
+        this.handler = handler;
+    }
+
+    public boolean isCloseAfterWrite() {
+        return closeAfterWrite;
+    }
+}
