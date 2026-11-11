@@ -1,25 +1,33 @@
 package io.koraframework.http.server.netty.handler;
 
+import io.netty.buffer.*;
 import io.netty.handler.codec.http.*;
+import org.jspecify.annotations.*;
+
+import java.util.*;
 
 final class ContinueOutboundHandler extends OutboundHandler {
-    static final FullHttpResponse CONTINUE_11 = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.CONTINUE, io.netty.buffer.Unpooled.EMPTY_BUFFER);
+    static final FullHttpResponse CONTINUE_11 = new DefaultFullHttpResponse(
+        HttpVersion.HTTP_1_1,
+        HttpResponseStatus.CONTINUE,
+        Unpooled.EMPTY_BUFFER
+    );
 
     boolean written = false;
-    @org.jspecify.annotations.Nullable OutboundHandler next;
+    @Nullable OutboundHandler next;
 
-    ContinueOutboundHandler(KoraOutboundAccess outboundAccess) {
-        super(outboundAccess);
+    ContinueOutboundHandler(KoraOutboundAccess outboundAccess, PipeliningServerHandler parent) {
+        super(outboundAccess, parent);
     }
 
     @Override
     void writeSome() {
         if (!written) {
-            outboundAccess.parent().write0(CONTINUE_11, true, false, false, null);
+            parent.write0(CONTINUE_11, true, false, false, null);
             written = true;
         }
         if (next != null) {
-            outboundAccess.parent().setOutboundHandler(next);
+            parent.setOutboundHandler(next);
         }
     }
 

@@ -1,6 +1,5 @@
-package io.koraframework.http.server.netty.handler;
+package io.koraframework.http.server.netty.compression;
 
-import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.channel.embedded.*;

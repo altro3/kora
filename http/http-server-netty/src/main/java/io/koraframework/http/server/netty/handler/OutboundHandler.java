@@ -1,28 +1,34 @@
 package io.koraframework.http.server.netty.handler;
 
+import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import org.jspecify.annotations.*;
 
+import java.util.*;
+
 public abstract class OutboundHandler {
-    final KoraOutboundAccess outboundAccess;
-    @Nullable Compressor.Session compressionSession;
+    protected final KoraOutboundAccess outboundAccess;
+    protected final PipeliningServerHandler parent;
+
+    Compressor. @Nullable Session compressionSession;
     boolean responseWritten = false;
 
-    OutboundHandler(KoraOutboundAccess outboundAccess) {
-        this.outboundAccess = outboundAccess;
+    OutboundHandler(KoraOutboundAccess outboundAccess, PipeliningServerHandler parent) {
+        this.outboundAccess = Objects.requireNonNull(outboundAccess, "outboundAccess");
+        this.parent = Objects.requireNonNull(parent, "parent");
     }
 
     final void markResponseWritten() {
         if (!responseWritten) {
             responseWritten = true;
-            outboundAccess.parent().requestHandler.responseWritten(outboundAccess.attachment());
+            parent.requestHandler.responseWritten(outboundAccess.attachment());
         }
     }
 
     private boolean shouldCloseAfterContent(boolean last) {
-        return last && (outboundAccess.isCloseAfterWrite() || (outboundAccess.parent().shuttingDown && outboundAccess.parent().outboundQueue.isEmpty()));
+        return last && (outboundAccess.isCloseAfterWrite() || (parent.shuttingDown && parent.outboundQueue.isEmpty()));
     }
 
     protected final void writeCompressing(HttpContent content, boolean flush, boolean last) {
@@ -41,30 +47,30 @@ public abstract class OutboundHandler {
         boolean keep = last && outboundAccess.isRecordFinalWrite();
         ChannelPromise recorded = null;
         if (keep) {
-            recorded = outboundAccess.parent().requiredCtx().newPromise();
+            recorded = parent.requiredCtx().newPromise();
             outboundAccess.setFinalWrite(recorded);
         }
         if (!last) {
             writeIntermediate(content, flush, close);
             return;
         }
-        outboundAccess.parent().write0(content, flush, close, false, recorded);
+        parent.write0(content, flush, close, false, recorded);
     }
 
     final void writeIntermediate(Object content, boolean flush, boolean close) {
         boolean watch = outboundAccess.isRecordFinalWrite();
-        ChannelFuture future = outboundAccess.parent().write0(content, flush, close, watch, null);
+        ChannelFuture future = parent.write0(content, flush, close, watch, null);
         if (watch) {
             future.addListener((ChannelFutureListener) f -> {
                 if (!f.isSuccess()) {
-                    outboundAccess.parent().requestHandler.responseFailed(outboundAccess.attachment(), f.cause());
+                    parent.requestHandler.responseFailed(outboundAccess.attachment(), f.cause());
                 }
             });
         }
     }
 
     private void writeCompressing0(HttpContent content, boolean flush, boolean last) {
-        Compressor.Session session = java.util.Objects.requireNonNull(this.compressionSession);
+        Compressor.Session session = Objects.requireNonNull(this.compressionSession);
         session.push(content.content());
         if (last) {
             session.finish();

@@ -8,8 +8,8 @@ final class FullOutboundHandler extends OutboundHandler {
     private final FullHttpResponse message;
     private boolean written = false;
 
-    FullOutboundHandler(KoraOutboundAccess outboundAccess, FullHttpResponse message) {
-        super(outboundAccess);
+    FullOutboundHandler(KoraOutboundAccess outboundAccess, FullHttpResponse message, PipeliningServerHandler parent) {
+        super(outboundAccess, parent);
         this.message = message;
     }
 
@@ -26,23 +26,23 @@ final class FullOutboundHandler extends OutboundHandler {
         try {
             writeCompressing(message, true, true);
         } catch (RuntimeException | Error e) {
-            outboundAccess.parent().requestHandler.responseFailed(outboundAccess.attachment(), e);
-            outboundAccess.parent().setOutboundHandler(null);
+            parent.requestHandler.responseFailed(outboundAccess.attachment(), e);
+            parent.setOutboundHandler(null);
             super.discardOutbound();
             markResponseWritten();
-            outboundAccess.parent().requiredFlushCoalescer().flushNow();
-            outboundAccess.parent().requiredCtx().close();
+            parent.requiredFlushCoalescer().flushNow();
+            parent.requiredCtx().close();
             return;
         }
-        outboundAccess.parent().setOutboundHandler(null);
+        parent.setOutboundHandler(null);
         markResponseWritten();
-        outboundAccess.parent().writeSome();
+        parent.writeSome();
     }
 
     @Override
     void discardOutbound() {
         super.discardOutbound();
-        outboundAccess.parent().setOutboundHandler(null);
+        parent.setOutboundHandler(null);
         markResponseWritten();
         if (!written) {
             message.release();

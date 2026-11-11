@@ -1,5 +1,6 @@
 package io.koraframework.http.server.netty.handler;
 
+import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.buffer.KoraReadBuffer;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
@@ -51,7 +52,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
         boolean full = request.getClass() != DefaultHttpRequest.class && request instanceof FullHttpRequest;
         if (full && decompressionChannel == null) {
             FullHttpRequest fullRequest = (FullHttpRequest) request;
-            KoraAvailableBody body = new KoraAvailableBody(parent.bufferFactory().adapt(fullRequest.content().retain()));
+            var body = new KoraAvailableBody(parent.bufferFactory().adapt(fullRequest.content().retain()));
             parent.accept(request, body, outboundAccess);
         } else if (!parent.hasBody(request)) {
             parent.setInboundHandler(request.decoderResult().isFailure() ? parent.droppingInboundHandler : parent.noBodyInboundHandler);

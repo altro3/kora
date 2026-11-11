@@ -5,8 +5,8 @@ final class ActionOutboundHandler extends OutboundHandler {
     private final Runnable discard;
     private boolean done = false;
 
-    ActionOutboundHandler(KoraOutboundAccess outboundAccess, Runnable action, Runnable discard) {
-        super(outboundAccess);
+    ActionOutboundHandler(KoraOutboundAccess outboundAccess, Runnable action, Runnable discard, PipeliningServerHandler parent) {
+        super(outboundAccess, parent);
         this.action = action;
         this.discard = discard;
     }

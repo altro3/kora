@@ -1,6 +1,7 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.server.netty.*;
+import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
@@ -64,6 +65,18 @@ public final class KoraOutboundAccess {
 
     public @Nullable ChannelFuture finalWrite() {
         return finalWrite;
+    }
+
+    public boolean isRecordFinalWrite() {
+        return recordFinalWrite;
+    }
+
+    public void setFinalWriteIssued(boolean finalWriteIssued) {
+        this.finalWriteIssued = finalWriteIssued;
+    }
+
+    public void setFinalWrite(@Nullable ChannelFuture finalWrite) {
+        this.finalWrite = finalWrite;
     }
 
     public void closeAfterWrite() {
@@ -136,7 +149,7 @@ public final class KoraOutboundAccess {
 
     public void writeContinue() {
         if (handler == null) {
-            write(new ContinueOutboundHandler(this));
+            write(new ContinueOutboundHandler(this, parent));
         }
     }
 
@@ -205,7 +218,7 @@ public final class KoraOutboundAccess {
     }
 
     public void runInResponseOrder(Runnable action, Runnable discard) {
-        write(new ActionOutboundHandler(this, action, discard));
+        write(new ActionOutboundHandler(this, action, discard, parent));
     }
 
     public void writeHeadResponse(HttpResponse response) {
@@ -230,7 +243,7 @@ public final class KoraOutboundAccess {
                 response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
             }
             preprocess(response);
-            oh = new FullOutboundHandler(this, response);
+            oh = new FullOutboundHandler(this, response, parent);
             if (response.content().isReadable()) {
                 prepareCompression(response, oh, response.content().readableBytes());
             }
@@ -249,7 +262,11 @@ public final class KoraOutboundAccess {
         }
     }
 
-    public void write(HttpResponse response, KoraAvailableBody body) {
+    public void write(HttpResponse response, @Nullable KoraAvailableBody body) {
+        if (body == null) {
+            writeFull(new DefaultFullHttpResponse(response.protocolVersion(), response.status(), Unpooled.EMPTY_BUFFER, response.headers(), EmptyHttpHeaders.INSTANCE), false);
+            return;
+        }
         try {
             writeFull(new DefaultFullHttpResponse(
                 response.protocolVersion(),
@@ -275,17 +292,19 @@ public final class KoraOutboundAccess {
             }
             return;
         }
+
         response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
         if (parent.canHaveBody(response.status()) && !request.protocolVersion().equals(HttpVersion.HTTP_1_0)) {
             response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
         } else {
             response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
         }
+
         preprocess(response);
-        var oh = new StreamingOutboundHandler(this, response);
+        var oh = new StreamingOutboundHandler(this, response, parent);
         try {
             prepareCompression(response, oh, -1);
-            oh.body = body;
+            body.subscribe(oh);
         } catch (Throwable t) {
             discardCompression(oh);
             body.close();
@@ -293,6 +312,7 @@ public final class KoraOutboundAccess {
         }
         write(oh);
     }
+
 
     private void writeClaimedStreaming(HttpResponse response, KoraStreamingNettyBody body) {
         if (responseStarted()) {
