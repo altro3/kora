@@ -338,7 +338,7 @@ public final class KoraOutboundAccess {
         LOG.warn("Failed to write the response: {}", t.getMessage(), t);
         parent.requestHandler.responseFailed(attachment, t);
         if (current != null) {
-            if (parent.outboundHandler != parent.handler && parent.outboundHandler != current && !parent.outboundQueue.contains(this)) {
+            if (parent.outboundHandler != handler && parent.outboundHandler != current && !parent.outboundQueue.contains(this)) {
                 current.discardOutbound();
             }
             ctx.close();

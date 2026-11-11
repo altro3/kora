@@ -1,6 +1,7 @@
 package io.koraframework.http.server.netty;
 
 import io.koraframework.http.server.netty.buffer.*;
+import io.netty.buffer.*;
 
 import java.io.*;
 import java.nio.charset.*;
@@ -50,6 +51,13 @@ public final class KoraAvailableBody implements AutoCloseable {
             throw new IllegalStateException("Body has already been consumed");
         }
         return new AvailableBodyPublisher(buffer);
+    }
+
+    public ByteBuf toByteBuf() {
+        if (!consumed.compareAndSet(false, true)) {
+            throw new IllegalStateException("Body has already been consumed");
+        }
+        return buffer.toByteBuf();
     }
 
     @Override

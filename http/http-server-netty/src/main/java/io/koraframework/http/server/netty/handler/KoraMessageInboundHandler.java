@@ -25,7 +25,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
             return;
         }
 
-        KoraOutboundAccess outboundAccess = new KoraOutboundAccess(request, parent.requiredCtx(), parent);
+        var outboundAccess = new KoraOutboundAccess(request, parent.requiredCtx(), parent);
         parent.outboundQueue.add(outboundAccess);
 
         EmbeddedChannel decompressionChannel = null;
@@ -83,7 +83,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
     private int maxZlibAllocation() {
         long maxBufferSize = parent.bodySizeLimits.maxBufferSize();
-        if (maxBufferSize == Long.MAX_VALUE || maxBufferSize > Integer.MAX_VALUE) {
+        if (maxBufferSize > Integer.MAX_VALUE) {
             return 0;
         }
         return (int) Math.max(1, maxBufferSize);
@@ -97,7 +97,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
         }
         String transferEncoding = headers.get(HttpHeaderNames.TRANSFER_ENCODING);
         if (transferEncoding != null) {
-            int idx = transferEncoding.indexOf(",");
+            int idx = transferEncoding.indexOf(',');
             if (idx != -1) {
                 return transferEncoding.substring(0, idx).trim();
             }
