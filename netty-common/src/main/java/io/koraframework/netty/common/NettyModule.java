@@ -90,7 +90,7 @@ public interface NettyModule {
         int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors() * 2;
         var ioHandlerFactory = getIoHandlerFactory(config);
         if (loomConfig.enabled()) {
-            return () -> eventLoopGroupFactory.createEventLoopGroup(nThreads, "netty-kora-worker", true, ioHandlerFactory);
+            return () -> eventLoopGroupFactory.createEventLoopGroup(nThreads, "netty-kora-loom-worker", true, ioHandlerFactory);
         }
 
         var tf = (threadFactory == null) ? new DefaultThreadFactory("netty-kora-worker", true) : threadFactory;

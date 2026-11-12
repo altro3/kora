@@ -112,8 +112,9 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             }
             serverChannel = bindFuture.channel();
             state.set(HttpServerState.RUN);
-            var data = StructuredArgument.marker("port", port());
-            log.info(data, "HTTP Server {} (Netty) started in {}", name, TimeUtils.tookForLogging(started));
+            var boundPort = port();
+            var data = StructuredArgument.marker("port", boundPort);
+            log.info(data, "HTTP Server {} (Netty) started on port {} in {}", name, boundPort, TimeUtils.tookForLogging(started));
         } catch (Throwable e) {
             if (e instanceof BindException || e.getCause() instanceof BindException) {
                 throw new IllegalStateException("HTTP server '%s' (Netty) failed to start on port '%s': port is already in use; stop the other process or configure a different port".formatted(name, httpServerConfig.get().port()), e);
