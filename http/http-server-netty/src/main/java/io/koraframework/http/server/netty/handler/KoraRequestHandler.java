@@ -238,6 +238,20 @@ public final class KoraRequestHandler implements RequestHandler {
 
         var nettyResp = new DefaultHttpResponse(version, status);
         writeHeaders(nettyResp.headers(), response, contentType);
+
+        if (declaredLength >= 0 && declaredLength <= 65536) {
+            var buf = ctx.alloc().buffer((int) declaredLength);
+            try (body; var out = new ByteBufOutputStream(buf)) {
+                body.write(out);
+            } catch (Throwable t) {
+                buf.release();
+                throw t;
+            }
+            var availableBody = new KoraAvailableBody(new KoraReadBuffer(buf));
+            outboundAccess.write(nettyResp, availableBody);
+            return;
+        }
+
         if (declaredLength >= 0) {
             nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
         }

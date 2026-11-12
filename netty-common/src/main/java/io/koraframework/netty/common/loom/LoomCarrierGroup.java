@@ -240,6 +240,14 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                 }
             }
             drained = true;
+            while (ioThread.isAlive()) {
+                if (ioContinuationScheduled) {
+                    ioContinuationScheduled = false;
+                    ioContinuation.run();
+                } else {
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                }
+            }
             while (enqueuing.get() != 0) {
                 Thread.onSpinWait();
             }
@@ -347,7 +355,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         }
 
         private void executeIo(Thread thread, Runnable command) {
-            if (thread == ioThread) {
+            if (thread == ioThread && !drained) {
                 Thread t = Thread.currentThread();
                 ioContinuation = command;
                 ioContinuationScheduled = true;
@@ -360,21 +368,22 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         }
 
         private void executeIo(Runnable command) {
-            Runnable ioContinuation = this.ioContinuation;
-            if (ioContinuation == null) {
-                ioContinuation = command;
-                this.ioContinuation = command;
-            }
-            if (ioContinuation == command) {
-                Thread t = Thread.currentThread();
-                ioContinuationScheduled = true;
-                if (t != carrier && !isOnRunner(t)) {
-                    LockSupport.unpark(carrier);
+            if (!drained) {
+                Runnable ioContinuation = this.ioContinuation;
+                if (ioContinuation == null) {
+                    ioContinuation = command;
+                    this.ioContinuation = command;
                 }
-                return;
+                if (ioContinuation == command) {
+                    Thread t = Thread.currentThread();
+                    ioContinuationScheduled = true;
+                    if (t != carrier && !isOnRunner(t)) {
+                        LockSupport.unpark(carrier);
+                    }
+                    return;
+                }
             }
-
-            PrivateLoomSupport.getDefaultScheduler().execute(command);
+            runOnDefaultScheduler(command);
         }
 
         @Override
