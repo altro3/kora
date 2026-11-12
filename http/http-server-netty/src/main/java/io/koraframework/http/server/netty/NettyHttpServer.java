@@ -34,7 +34,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
     private final String name;
     private final NettyResources resources;
-    private final ValueOf<KoraNettyServerConfig> httpServerConfig;
+    private final ValueOf<HttpServerConfig> httpServerConfig;
+    private final ValueOf<KoraNettyServerConfig> nettyServerConfig;
     private final ValueOf<RequestHandler> requestHandler;
     private final @Nullable Configurer<ServerBootstrap> configurer;
     private volatile @Nullable Channel serverChannel;
@@ -42,13 +43,15 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     public NettyHttpServer(
         String name,
         NettyResources resources,
-        ValueOf<KoraNettyServerConfig> httpServerConfig,
+        ValueOf<HttpServerConfig> httpServerConfig,
+        ValueOf<KoraNettyServerConfig> nettyServerConfig,
         ValueOf<RequestHandler> requestHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
         this.name = Objects.requireNonNull(name, "name");
         this.resources = Objects.requireNonNull(resources, "resources");
         this.httpServerConfig = Objects.requireNonNull(httpServerConfig, "httpServerConfig");
+        this.nettyServerConfig = Objects.requireNonNull(nettyServerConfig, "nettyServerConfig");
         this.requestHandler = Objects.requireNonNull(requestHandler, "requestHandler");
         this.configurer = configurer;
     }
@@ -60,7 +63,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             long started = TimeUtils.started();
 
             var config = httpServerConfig.get();
-            var pipelineBuilder = new KoraHttpPipelineBuilder(config, requestHandler.get());
+            var nettyConfig = nettyServerConfig.get();
+            var pipelineBuilder = new KoraHttpPipelineBuilder(config, nettyConfig, requestHandler.get());
             var bootstrap = new ServerBootstrap();
             var recvAllocator = new FixedRecvByteBufAllocator(4096);
 
@@ -93,7 +97,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 });
 
             int port = config.port();
-            var host = config.host();
+            var host = nettyConfig.host();
             ChannelFuture bindFuture;
             if (host == null || host.isBlank()) {
                 bindFuture = port == 0 && CHECK_LOOPBACK_PORT_SHADOWING

@@ -26,11 +26,18 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
         this.name = name;
     }
 
+    @DefaultComponent
+    @Tag(Tag.Factory.class)
+    public KoraNettyServerConfig koraNettyServerConfig(Config config, ConfigValueMapper<KoraNettyServerConfig> mapper) {
+        return mapper.mapOrThrow(config.get(configPath));
+    }
+
     @Root
     @Tag(Tag.Factory.class)
     public NettyHttpServer server(
         NettyResources resources,
-        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> nettyServerConfig,
         @Tag(Tag.Factory.class) ValueOf<RequestHandler> requestHandler,
         @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer
     ) {
@@ -38,6 +45,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
             name,
             resources,
             httpServerConfig,
+            nettyServerConfig,
             requestHandler,
             configurer
         );
@@ -62,7 +70,8 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @DefaultComponent
     @Tag(Tag.Factory.class)
     public RequestHandler koraRequestHandler(
-        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> nettyServerConfig,
         @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
         HttpServerTelemetryFactory telemetryFactory,
         ThreadFactory koraVirtualThreadFactory
@@ -71,6 +80,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
         var telemetry = telemetryFactory.get(name, config.port(), config.telemetry());
         return new KoraRequestHandler(
             httpServerConfig,
+            nettyServerConfig,
             config.telemetry().logging().enabled(),
             httpServerRouter,
             telemetry,

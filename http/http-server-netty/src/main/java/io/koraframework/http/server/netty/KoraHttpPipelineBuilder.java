@@ -1,5 +1,6 @@
 package io.koraframework.http.server.netty;
 
+import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.netty.body.*;
 import io.koraframework.http.server.netty.compression.*;
 import io.koraframework.http.server.netty.handler.*;
@@ -20,7 +21,8 @@ public final class KoraHttpPipelineBuilder {
     public static final String HANDLER_HTTP_CODEC = "http-codec";
     public static final String HANDLER_PIPELINING = "kora-pipelining";
 
-    private final KoraNettyServerConfig config;
+    private final HttpServerConfig httpServerConfig;
+    private final KoraNettyServerConfig nettyConfig;
     private final RequestHandler requestHandler;
     @Nullable
     private final Compressor compressor;
@@ -28,19 +30,21 @@ public final class KoraHttpPipelineBuilder {
     private final LoggingHandler loggingHandler;
 
     public KoraHttpPipelineBuilder(
-        KoraNettyServerConfig config,
+        HttpServerConfig httpServerConfig,
+        KoraNettyServerConfig nettyConfig,
         RequestHandler requestHandler) {
-        this.config = Objects.requireNonNull(config, "config");
+        this.httpServerConfig = Objects.requireNonNull(httpServerConfig, "httpServerConfig");
+        this.nettyConfig = Objects.requireNonNull(nettyConfig, "nettyConfig");
         this.requestHandler = Objects.requireNonNull(requestHandler, "requestHandler");
 
         var compressionStrategy = new DefaultHttpCompressionStrategy(
-            config.compressionThreshold(),
-            config.compressionLevel(),
-            config.maxZstdEncodeSize()
+            nettyConfig.compressionThreshold(),
+            nettyConfig.compressionLevel(),
+            nettyConfig.maxZstdEncodeSize()
         );
         compressor = compressionStrategy.isEnabled() ? new Compressor(compressionStrategy) : null;
-        loggingHandler = config.wireLogLevel() != null
-            ? new LoggingHandler(KoraHttpPipelineBuilder.class, config.wireLogLevel())
+        loggingHandler = nettyConfig.wireLogLevel() != null
+            ? new LoggingHandler(KoraHttpPipelineBuilder.class, nettyConfig.wireLogLevel())
             : null;
     }
 
@@ -51,9 +55,9 @@ public final class KoraHttpPipelineBuilder {
             pipeline.addLast(HANDLER_LOGGING, loggingHandler);
         }
 
-        long readIdleMillis = toMillisOrZero(config.socketReadTimeout());
-        long writeIdleMillis = toMillisOrZero(config.socketWriteTimeout());
-        long allIdleMillis = toMillisOrZero(config.idleTimeout());
+        long readIdleMillis = toMillisOrZero(httpServerConfig.socketReadTimeout());
+        long writeIdleMillis = toMillisOrZero(httpServerConfig.socketWriteTimeout());
+        long allIdleMillis = toMillisOrZero(nettyConfig.idleTimeout());
         if (readIdleMillis > 0 || writeIdleMillis > 0 || allIdleMillis > 0) {
             pipeline.addLast(HANDLER_IDLE_STATE, new IdleStateHandler(
                 readIdleMillis,
@@ -67,10 +71,10 @@ public final class KoraHttpPipelineBuilder {
 
         var serverHandler = new PipeliningServerHandler(requestHandler);
         serverHandler.setCompressor(compressor);
-        serverHandler.setBodySizeLimits(new BodySizeLimits(config.maxRequestBodySize().toBytes(), config.maxRequestBufferSize()));
-        serverHandler.setRequestDecompressionEnabled(config.requestDecompressionEnabled());
-        serverHandler.setHttp10KeepAlive(config.http10KeepAlive());
-        serverHandler.setRejectUnsupportedHttpVersions(config.rejectUnsupportedHttpVersions());
+        serverHandler.setBodySizeLimits(new BodySizeLimits(httpServerConfig.maxRequestBodySize().toBytes(), nettyConfig.maxRequestBufferSize()));
+        serverHandler.setRequestDecompressionEnabled(nettyConfig.requestDecompressionEnabled());
+        serverHandler.setHttp10KeepAlive(nettyConfig.http10KeepAlive());
+        serverHandler.setRejectUnsupportedHttpVersions(nettyConfig.rejectUnsupportedHttpVersions());
 
         pipeline.addLast(HANDLER_PIPELINING, serverHandler);
         return serverHandler::shutdownGracefully;
@@ -78,12 +82,12 @@ public final class KoraHttpPipelineBuilder {
 
     private HttpServerCodec createServerCodec() {
         var decoderConfig = new HttpDecoderConfig()
-            .setMaxInitialLineLength(config.maxInitialLineLength())
-            .setMaxHeaderSize(config.maxHeaderSize())
-            .setMaxChunkSize(config.maxChunkSize())
-            .setValidateHeaders(config.validateHeaders())
-            .setInitialBufferSize(config.initialBufferSize())
-            .setChunkedSupported(config.chunkedSupported());
+            .setMaxInitialLineLength(nettyConfig.maxInitialLineLength())
+            .setMaxHeaderSize(nettyConfig.maxHeaderSize())
+            .setMaxChunkSize(nettyConfig.maxChunkSize())
+            .setValidateHeaders(nettyConfig.validateHeaders())
+            .setInitialBufferSize(nettyConfig.initialBufferSize())
+            .setChunkedSupported(nettyConfig.chunkedSupported());
         return new HttpServerCodec(decoderConfig);
     }
 

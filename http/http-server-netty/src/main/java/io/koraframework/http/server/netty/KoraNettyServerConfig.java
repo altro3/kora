@@ -1,14 +1,13 @@
 package io.koraframework.http.server.netty;
 
 import io.koraframework.config.common.annotation.*;
-import io.koraframework.http.server.common.*;
 import io.netty.handler.logging.*;
 import org.jspecify.annotations.*;
 
 import java.time.*;
 
 @ConfigMapper
-public interface KoraNettyServerConfig extends HttpServerConfig {
+public interface KoraNettyServerConfig {
 
     @Nullable
     String host();

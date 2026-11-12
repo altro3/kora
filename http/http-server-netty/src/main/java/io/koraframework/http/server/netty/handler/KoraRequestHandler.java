@@ -3,6 +3,7 @@ package io.koraframework.http.server.netty.handler;
 import io.koraframework.application.graph.*;
 import io.koraframework.common.context.*;
 import io.koraframework.http.common.body.*;
+import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
 import io.koraframework.http.server.common.router.*;
@@ -41,20 +42,23 @@ public final class KoraRequestHandler implements RequestHandler {
     private static final W3CTraceContextPropagator PROPAGATOR = W3CTraceContextPropagator.getInstance();
     private static final AsciiString HEADER_SERVER_VALUE = AsciiString.cached("Kora");
 
-    private final ValueOf<KoraNettyServerConfig> httpServerConfig;
+    private final ValueOf<HttpServerConfig> httpServerConfig;
+    private final ValueOf<KoraNettyServerConfig> nettyServerConfig;
     private final boolean contextPropagationEnabled;
     private final HttpServerRouter currentRouter;
     private final HttpServerTelemetry telemetry;
     private final ThreadFactory virtualThreadFactory;
 
     public KoraRequestHandler(
-        ValueOf<KoraNettyServerConfig> httpServerConfig,
+        ValueOf<HttpServerConfig> httpServerConfig,
+        ValueOf<KoraNettyServerConfig> nettyServerConfig,
         boolean contextPropagationEnabled,
         HttpServerRouter currentRouter,
         HttpServerTelemetry telemetry,
         ThreadFactory virtualThreadFactory
     ) {
         this.httpServerConfig = Objects.requireNonNull(httpServerConfig, "httpServerConfig");
+        this.nettyServerConfig = Objects.requireNonNull(nettyServerConfig, "nettyServerConfig");
         this.contextPropagationEnabled = contextPropagationEnabled;
         this.currentRouter = Objects.requireNonNull(currentRouter, "currentRouter");
         this.telemetry = Objects.requireNonNull(telemetry, "telemetry");
@@ -64,9 +68,10 @@ public final class KoraRequestHandler implements RequestHandler {
     @Override
     public void accept(ChannelHandlerContext ctx, HttpRequest request, @Nullable AutoCloseable body, KoraOutboundAccess outboundAccess) {
         var config = httpServerConfig.get();
+        var nettyConfig = nettyServerConfig.get();
         var version = request.protocolVersion();
 
-        if (config.rejectUnsupportedHttpVersions() && version.majorVersion() != 1) {
+        if (nettyConfig.rejectUnsupportedHttpVersions() && version.majorVersion() != 1) {
             closeQuietly(body);
             outboundAccess.closeAfterWrite();
             writeSimpleError(ctx, outboundAccess, HttpVersion.HTTP_1_1, HttpResponseStatus.HTTP_VERSION_NOT_SUPPORTED, "Unsupported HTTP version: " + version.text());
