@@ -1,14 +1,17 @@
 package io.koraframework.http.server.netty.handler;
 
+import io.netty.buffer.*;
 import io.netty.channel.embedded.*;
+import io.netty.handler.codec.compression.*;
 import io.netty.handler.codec.http.*;
-import io.netty.util.*;
 
 public final class KoraDecompressingInboundHandler extends InboundHandler {
+    private final PipeliningServerHandler parent;
     private final EmbeddedChannel decompressionChannel;
     private InboundHandler delegate;
 
-    public KoraDecompressingInboundHandler(EmbeddedChannel decompressionChannel, InboundHandler delegate) {
+    public KoraDecompressingInboundHandler(PipeliningServerHandler parent, EmbeddedChannel decompressionChannel, InboundHandler delegate) {
+        this.parent = parent;
         this.decompressionChannel = decompressionChannel;
         this.delegate = delegate;
     }
@@ -24,30 +27,69 @@ public final class KoraDecompressingInboundHandler extends InboundHandler {
 
     @Override
     void read(Object message) {
-        HttpContent content = (HttpContent) message;
-        decompressionChannel.writeInbound(content.content().retain());
+        var content = (HttpContent) message;
+        var last = message instanceof LastHttpContent;
+        if (last && content.decoderResult().isFailure()) {
+            parent.handleContentDecoderFailure(content);
+            return;
+        }
 
+        var compressed = content.content();
+        if (!compressed.isReadable() && !last) {
+            delegate.read(message);
+            return;
+        }
+
+        try {
+            decompressionChannel.writeInbound(compressed.retain());
+            drainDecompressed();
+
+            if (last) {
+                if (decompressionChannel.isOpen()) {
+                    decompressionChannel.finish();
+                }
+                drainDecompressed();
+                var trailingHeaders = ((LastHttpContent) message).trailingHeaders();
+                delegate.read(trailingHeaders.isEmpty()
+                    ? LastHttpContent.EMPTY_LAST_CONTENT
+                    : new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, trailingHeaders));
+            }
+        } catch (DecompressionException e) {
+            dispose();
+            delegate.handleUpstreamError(e);
+            if (last) {
+                parent.inboundHandler().read(LastHttpContent.EMPTY_LAST_CONTENT);
+            }
+        } finally {
+            content.release();
+        }
+    }
+
+    private void drainDecompressed() {
         while (true) {
-            Object decompressed = decompressionChannel.readInbound();
+            ByteBuf decompressed = decompressionChannel.readInbound();
             if (decompressed == null) {
                 break;
             }
-            delegate.read(decompressed);
-        }
-
-        if (message instanceof LastHttpContent) {
-            decompressionChannel.finish();
-            while (true) {
-                Object decompressed = decompressionChannel.readInbound();
-                if (decompressed == null) {
-                    break;
-                }
-                delegate.read(decompressed);
+            if (!decompressed.isReadable()) {
+                decompressed.release();
+                continue;
             }
-            decompressionChannel.finishAndReleaseAll();
-            delegate.read(LastHttpContent.EMPTY_LAST_CONTENT);
+            delegate.read(new DefaultHttpContent(decompressed));
         }
-        ReferenceCountUtil.release(message);
+    }
+
+    void dispose() {
+        if (decompressionChannel.pipeline().context("decompressor") != null) {
+            decompressionChannel.pipeline().remove("decompressor");
+        }
+        if (!decompressionChannel.isOpen()) {
+            return;
+        }
+        try {
+            decompressionChannel.finishAndReleaseAll();
+        } catch (DecompressionException ignored) {
+        }
     }
 
     @Override
@@ -62,10 +104,7 @@ public final class KoraDecompressingInboundHandler extends InboundHandler {
 
     @Override
     void discard() {
-        try {
-            decompressionChannel.finishAndReleaseAll();
-        } catch (Throwable ignored) {
-        }
+        dispose();
         delegate.discard();
     }
 }

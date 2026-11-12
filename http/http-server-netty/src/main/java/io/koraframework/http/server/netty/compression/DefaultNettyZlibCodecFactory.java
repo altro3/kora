@@ -15,20 +15,12 @@
  */
 package io.koraframework.http.server.netty.compression;
 
-import io.micronaut.context.annotation.*;
-import io.micronaut.core.annotation.*;
 import io.netty.handler.codec.compression.*;
-import jakarta.inject.*;
 
 /**
  * Stock Netty codec construction.
  */
-@Internal
-@Singleton
-@BootstrapContextCompatible
-@Requires(missingBeans = NettyZlibCodecFactory.class)
 public final class DefaultNettyZlibCodecFactory implements NettyZlibCodecFactory {
-    /** Stock construction for clients outside an application context. */
     public static final NettyZlibCodecFactory INSTANCE = new DefaultNettyZlibCodecFactory();
 
     @Override

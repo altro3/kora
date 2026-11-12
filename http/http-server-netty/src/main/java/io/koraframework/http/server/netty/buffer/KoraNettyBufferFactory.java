@@ -17,7 +17,7 @@ public final class KoraNettyBufferFactory {
     private final ByteBufAllocator allocator;
 
     public KoraNettyBufferFactory(ByteBufAllocator allocator) {
-        this.allocator = allocator;
+        this.allocator = Objects.requireNonNull(allocator, "allocator");
     }
 
     public KoraReadBuffer createEmpty() {
@@ -25,20 +25,17 @@ public final class KoraNettyBufferFactory {
     }
 
     public KoraReadBuffer copyOf(CharSequence cs, Charset charset) {
-        ByteBuf byteBuf = charset == StandardCharsets.UTF_8 ?
-            ByteBufUtil.writeUtf8(allocator, cs) :
-            ByteBufUtil.encodeString(allocator, CharBuffer.wrap(cs), charset);
+        var byteBuf = charset == StandardCharsets.UTF_8
+            ? ByteBufUtil.writeUtf8(allocator, cs)
+            : ByteBufUtil.encodeString(allocator, CharBuffer.wrap(cs), charset);
         return adapt(byteBuf);
     }
 
     public KoraReadBuffer copyOf(InputStream stream) throws IOException {
-        ByteBuf buffer = allocator.buffer();
+        var buffer = allocator.buffer();
         boolean free = true;
         try {
-            while (true) {
-                if (buffer.writeBytes(stream, 4096) == -1) {
-                    break;
-                }
+            while (buffer.writeBytes(stream, 4096) != -1) {
             }
             free = false;
             return adapt(buffer);
@@ -51,7 +48,7 @@ public final class KoraNettyBufferFactory {
 
     @Nullable
     public KoraReadBuffer copyOf(ScatteringByteChannel channel, int n) throws IOException {
-        ByteBuf bb = allocator.buffer(n);
+        var bb = allocator.buffer(n);
         int actual;
         try {
             actual = bb.writeBytes(channel, n);
@@ -71,7 +68,10 @@ public final class KoraNettyBufferFactory {
     }
 
     public KoraReadBuffer copyOf(ByteBuffer nioBuffer) {
-        ByteBuf bb = allocator.buffer(nioBuffer.remaining());
+        if (!nioBuffer.hasRemaining()) {
+            return createEmpty();
+        }
+        var bb = allocator.buffer(nioBuffer.remaining());
         boolean done = false;
         try {
             bb.writeBytes(nioBuffer);
@@ -85,10 +85,16 @@ public final class KoraNettyBufferFactory {
     }
 
     public KoraReadBuffer adapt(ByteBuffer nioBuffer) {
+        if (!nioBuffer.hasRemaining()) {
+            return createEmpty();
+        }
         return adapt(Unpooled.wrappedBuffer(nioBuffer));
     }
 
     public KoraReadBuffer adapt(byte[] array) {
+        if (array.length == 0) {
+            return createEmpty();
+        }
         return adapt(Unpooled.wrappedBuffer(array));
     }
 
@@ -105,7 +111,7 @@ public final class KoraNettyBufferFactory {
         if (!itr.hasNext()) {
             return createEmpty();
         } else {
-            KoraReadBuffer first = itr.next();
+            var first = itr.next();
             if (!itr.hasNext()) {
                 return first;
             }
@@ -115,14 +121,14 @@ public final class KoraNettyBufferFactory {
             ? new ArrayList<>(collection.size())
             : new ArrayList<>();
         try {
-            for (KoraReadBuffer buffer : buffers) {
+            for (var buffer : buffers) {
                 components.add(toByteBuf(buffer));
             }
         } catch (Throwable e) {
-            for (ByteBuf component : components) {
+            for (var component : components) {
                 ReferenceCountUtil.safeRelease(component);
             }
-            for (KoraReadBuffer buffer : buffers) {
+            for (var buffer : buffers) {
                 try {
                     buffer.close();
                 } catch (Throwable f) {
@@ -132,7 +138,7 @@ public final class KoraNettyBufferFactory {
             throw e;
         }
 
-        CompositeByteBuf composite = allocator.compositeBuffer(MAX_COMPOSITE_COMPONENTS);
+        var composite = allocator.compositeBuffer(MAX_COMPOSITE_COMPONENTS);
         try {
             composite.addComponents(true, components);
             return adapt(composite);

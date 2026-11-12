@@ -4,11 +4,24 @@ import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.buffer.*;
 import io.netty.handler.codec.http.*;
 
-public final class KoraStreamingInboundHandler extends InboundHandler {
-    private final KoraStreamingNettyBody targetBody;
+import java.io.*;
 
-    public KoraStreamingInboundHandler(KoraStreamingNettyBody targetBody) {
+public final class KoraStreamingInboundHandler extends InboundHandler {
+    private final PipeliningServerHandler parent;
+    private final KoraOutboundAccess outboundAccess;
+    private final KoraStreamingNettyBody targetBody;
+    private long receivedLength;
+    private boolean sendContinue;
+
+    public KoraStreamingInboundHandler(
+        PipeliningServerHandler parent,
+        KoraOutboundAccess outboundAccess,
+        KoraStreamingNettyBody targetBody,
+        boolean sendContinue) {
+        this.parent = parent;
+        this.outboundAccess = outboundAccess;
         this.targetBody = targetBody;
+        this.sendContinue = sendContinue;
     }
 
     @Override
@@ -18,26 +31,86 @@ public final class KoraStreamingInboundHandler extends InboundHandler {
 
     @Override
     void read(Object message) {
-        HttpContent content = (HttpContent) message;
+        var content = (HttpContent) message;
         boolean last = message instanceof LastHttpContent;
+        if (last && content.decoderResult().isFailure()) {
+            parent.handleContentDecoderFailure(content);
+            return;
+        }
 
-        if (content.content().isReadable()) {
+        int readableBytes = content.content().readableBytes();
+        if (readableBytes > 0) {
+            long maxBodySize = parent.bodySizeLimits.maxBodySize();
+            if (maxBodySize != Long.MAX_VALUE && readableBytes > maxBodySize - receivedLength) {
+                long actualLength = receivedLength > Long.MAX_VALUE - readableBytes ? Long.MAX_VALUE : receivedLength + readableBytes;
+                content.release();
+                handleUpstreamError(new IllegalStateException("Content length exceeded limit: " + maxBodySize + ", actual: " + actualLength));
+                return;
+            }
+            receivedLength += readableBytes;
             targetBody.add(new KoraReadBuffer(content.content().retain()));
         }
 
+        content.release();
+
         if (last) {
             targetBody.complete();
+            if (parent.inboundHandler() == this || (parent.inboundHandler() instanceof KoraDecompressingInboundHandler)) {
+                parent.setInboundHandler(parent.baseInboundHandler());
+            }
         }
-        content.release();
+    }
+
+    public void onConsumerStart() {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            eventLoop.execute(this::onConsumerStart);
+            return;
+        }
+        if (sendContinue) {
+            sendContinue = false;
+            outboundAccess.writeContinue();
+        }
+    }
+
+    public void onConsumerDemandChanged() {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            eventLoop.execute(this::onConsumerDemandChanged);
+            return;
+        }
+        parent.refreshNeedMore();
+    }
+
+    public void onConsumerCancel() {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            eventLoop.execute(this::onConsumerCancel);
+            return;
+        }
+        sendContinue = false;
+        if (parent.inboundHandler() == this) {
+            parent.setInboundHandler(parent.droppingInboundHandler);
+            parent.refreshNeedMore();
+        } else if (parent.inboundHandler() instanceof KoraDecompressingInboundHandler dec) {
+            dec.dispose();
+            parent.setInboundHandler(parent.droppingInboundHandler);
+            parent.refreshNeedMore();
+        }
+        targetBody.close();
     }
 
     @Override
     void handleUpstreamError(Throwable cause) {
+        if (parent.inboundHandler() instanceof KoraDecompressingInboundHandler dih) {
+            dih.dispose();
+        }
+        parent.setInboundHandler(parent.droppingInboundHandler);
         targetBody.error(cause);
     }
 
     @Override
     void discard() {
-        targetBody.close();
+        handleUpstreamError(new EOFException("Connection closed before full body was received"));
     }
 }

@@ -1,9 +1,8 @@
 package io.koraframework.http.server.netty.compression;
 
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpHeaders;
-import io.netty.handler.codec.http.HttpResponse;
-import io.netty.handler.codec.http.HttpUtil;
+import io.netty.handler.codec.http.*;
+
+import java.util.*;
 
 public final class DefaultHttpCompressionStrategy {
 
@@ -35,8 +34,7 @@ public final class DefaultHttpCompressionStrategy {
         if (contentLength != -1 && contentLength < compressionThreshold) {
             return false;
         }
-        HttpHeaders headers = response.headers();
-        String contentType = headers.get(HttpHeaderNames.CONTENT_TYPE);
+        var contentType = response.headers().get(HttpHeaderNames.CONTENT_TYPE);
         return contentType != null && isTextBased(contentType);
     }
 
@@ -49,12 +47,15 @@ public final class DefaultHttpCompressionStrategy {
     }
 
     private static boolean isTextBased(String contentType) {
-        String type = contentType.toLowerCase();
-        return type.startsWith("text/")
-            || type.startsWith("application/json")
-            || type.startsWith("application/javascript")
-            || type.startsWith("application/xml")
-            || type.startsWith("application/xhtml+xml")
-            || type.startsWith("image/svg+xml");
+        int semi = contentType.indexOf(';');
+        var mime = (semi != -1 ? contentType.substring(0, semi) : contentType).trim().toLowerCase(Locale.ENGLISH);
+        return mime.startsWith("text/")
+            || mime.equals("application/json")
+            || mime.endsWith("+json")
+            || mime.equals("application/javascript")
+            || mime.equals("application/xml")
+            || mime.endsWith("+xml")
+            || mime.equals("application/xhtml+xml")
+            || mime.equals("image/svg+xml");
     }
 }

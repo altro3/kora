@@ -32,7 +32,7 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
 
     @Override
     void read(Object message) {
-        HttpContent content = (HttpContent) message;
+        var content = (HttpContent) message;
         boolean last = message.getClass() == DefaultLastHttpContent.class || message instanceof LastHttpContent;
         if (last && content.decoderResult().isFailure()) {
             parent.handleContentDecoderFailure(content);
@@ -48,6 +48,9 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
                 long actualLength = receivedLength > Long.MAX_VALUE - readableBytes ? Long.MAX_VALUE : receivedLength + readableBytes;
                 failed = true;
                 content.release();
+                if (parent.inboundHandler() instanceof KoraDecompressingInboundHandler decompressing) {
+                    decompressing.dispose();
+                }
                 handleUpstreamError(new IllegalStateException("Content length exceeded limit: " + parent.bodySizeLimits.maxBodySize() + ", actual: " + actualLength));
                 if (last) {
                     parent.inboundHandler().read(LastHttpContent.EMPTY_LAST_CONTENT);
@@ -65,25 +68,25 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
             if (buffer.isEmpty()) {
                 fullBody = Unpooled.EMPTY_BUFFER;
             } else if (buffer.size() == 1) {
-                fullBody = buffer.getFirst().content().retain();
+                fullBody = buffer.getFirst().content();
             } else {
-                List<ByteBuf> pieces = new ArrayList<>(buffer.size());
-                for (HttpContent c : buffer) {
-                    pieces.add(c.content().retain());
+                var pieces = new ArrayList<ByteBuf>(buffer.size());
+                for (var c : buffer) {
+                    pieces.add(c.content());
                 }
                 buffer.clear();
-                fullBody = parent.composeBody(parent.requiredCtx().alloc(), pieces);
+                fullBody = PipeliningServerHandler.composeBody(parent.requiredCtx().alloc(), pieces);
             }
             buffer.clear();
             receivedLength = 0;
-            HttpRequest req = this.request;
-            this.request = null;
-            KoraOutboundAccess outAccess = this.outboundAccess;
-            this.outboundAccess = null;
+            var req = Objects.requireNonNull(request);
+            request = null;
+            var outAccess = Objects.requireNonNull(outboundAccess);
+            outboundAccess = null;
 
-            KoraAvailableBody body = new KoraAvailableBody(parent.bufferFactory().adapt(fullBody));
+            var body = new KoraAvailableBody(parent.bufferFactory().adapt(fullBody));
             parent.setInboundHandler(parent.baseInboundHandler());
-            parent.accept(Objects.requireNonNull(req), body, Objects.requireNonNull(outAccess));
+            parent.accept(req, body, outAccess);
         }
     }
 
@@ -100,14 +103,22 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
     }
 
     private void devolveToStreaming() {
-        if (this.request == null) return;
-        HttpRequest req = Objects.requireNonNull(this.request);
-        KoraOutboundAccess outAccess = Objects.requireNonNull(this.outboundAccess);
-        this.request = null;
-        this.outboundAccess = null;
+        if (request == null) {
+            return;
+        }
+        var req = Objects.requireNonNull(request);
+        var outAccess = Objects.requireNonNull(outboundAccess);
+        request = null;
+        outboundAccess = null;
 
-        var streamingBody = new KoraStreamingNettyBody(parent.requiredCtx());
-        var streamingInboundHandler = new KoraStreamingInboundHandler(streamingBody);
+        var streamingBody = new KoraStreamingNettyBody();
+        var streamingInboundHandler = new KoraStreamingInboundHandler(
+            parent,
+            outAccess,
+            streamingBody,
+            HttpUtil.is100ContinueExpected(req)
+        );
+        streamingBody.attachHandler(streamingInboundHandler);
 
         if (parent.inboundHandler() == this) {
             parent.setInboundHandler(streamingInboundHandler);
@@ -115,7 +126,7 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
             ((KoraDecompressingInboundHandler) parent.inboundHandler()).setDelegate(streamingInboundHandler);
         }
 
-        for (HttpContent content : buffer) {
+        for (var content : buffer) {
             streamingInboundHandler.read(content);
         }
         buffer.clear();
@@ -127,7 +138,7 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
 
     @Override
     void discard() {
-        for (HttpContent content : buffer) {
+        for (var content : buffer) {
             content.release();
         }
         buffer.clear();

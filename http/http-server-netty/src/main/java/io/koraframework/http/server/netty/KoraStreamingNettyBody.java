@@ -1,17 +1,16 @@
 package io.koraframework.http.server.netty;
 
 import io.koraframework.http.server.netty.buffer.*;
-import io.netty.channel.*;
+import io.koraframework.http.server.netty.handler.*;
 import io.netty.util.internal.shaded.org.jctools.queues.*;
 import org.jspecify.annotations.*;
 
-import java.util.concurrent.Flow.*;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
-public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, AutoCloseable {
-
-    private final EventLoop eventLoop;
-    private final ChannelHandlerContext ctx;
+public final class KoraStreamingNettyBody implements Flow.Publisher<KoraReadBuffer>, AutoCloseable {
+    private static final int MAX_BUFFERED_CHUNKS = 32;
 
     private final AtomicInteger queueSize = new AtomicInteger(0);
     private final MpscChunkedArrayQueue<KoraReadBuffer> queue = new MpscChunkedArrayQueue<>(128, 4096);
@@ -21,13 +20,23 @@ public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, 
     private final AtomicBoolean completed = new AtomicBoolean(false);
 
     @Nullable
-    private volatile Throwable error = null;
+    private volatile Throwable error;
     @Nullable
-    private volatile VolatileSubscription currentSubscription = null;
+    private volatile VolatileSubscription currentSubscription;
+    @Nullable
+    private volatile KoraStreamingInboundHandler inboundHandler;
 
-    public KoraStreamingNettyBody(ChannelHandlerContext ctx) {
-        this.ctx = ctx;
-        this.eventLoop = ctx.channel().eventLoop();
+    public KoraStreamingNettyBody() {
+    }
+
+    public void attachHandler(KoraStreamingInboundHandler handler) {
+        inboundHandler = handler;
+        if (cancelled.get()) {
+            handler.onConsumerCancel();
+        } else if (subscribed.get()) {
+            handler.onConsumerStart();
+            handler.onConsumerDemandChanged();
+        }
     }
 
     public void add(KoraReadBuffer buffer) {
@@ -37,6 +46,10 @@ public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, 
         }
         queueSize.incrementAndGet();
         queue.offer(buffer);
+        if (cancelled.get()) {
+            drainQueueOnCancel();
+            return;
+        }
         drain();
     }
 
@@ -51,19 +64,34 @@ public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, 
     }
 
     @Override
-    public void subscribe(Subscriber<? super KoraReadBuffer> subscriber) {
+    public void subscribe(Flow.Subscriber<? super KoraReadBuffer> subscriber) {
+        Objects.requireNonNull(subscriber, "subscriber");
         if (!subscribed.compareAndSet(false, true)) {
+            subscriber.onSubscribe(new Flow.Subscription() {
+                @Override
+                public void request(long n) {
+                }
+
+                @Override
+                public void cancel() {
+                }
+            });
             subscriber.onError(new IllegalStateException("ByteBody can only be subscribed to once."));
             return;
         }
 
-        VolatileSubscription sub = new VolatileSubscription(subscriber);
-        this.currentSubscription = sub;
+        var sub = new VolatileSubscription(subscriber);
+        currentSubscription = sub;
+        var handler = inboundHandler;
+        if (handler != null) {
+            handler.onConsumerStart();
+        }
         subscriber.onSubscribe(sub);
+        sub.drain();
     }
 
     private void drain() {
-        VolatileSubscription sub = currentSubscription;
+        var sub = currentSubscription;
         if (sub != null) {
             sub.drain();
         }
@@ -72,39 +100,59 @@ public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, 
     @Override
     public void close() {
         if (cancelled.compareAndSet(false, true)) {
-            KoraReadBuffer rb;
-            while ((rb = queue.poll()) != null) {
-                queueSize.decrementAndGet();
-                rb.close();
+            drainQueueOnCancel();
+            var handler = inboundHandler;
+            if (handler != null) {
+                handler.onConsumerCancel();
             }
         }
     }
 
-    public boolean isWritable() {
-        return queueSize.get() < 32;
+    private void drainQueueOnCancel() {
+        KoraReadBuffer rb;
+        while ((rb = queue.poll()) != null) {
+            queueSize.decrementAndGet();
+            rb.close();
+        }
     }
 
-    private final class VolatileSubscription implements Subscription {
-        private final Subscriber<? super KoraReadBuffer> subscriber;
-        private final AtomicLong requested = new AtomicLong(0);
-        private final AtomicBoolean draining = new AtomicBoolean(false);
+    public boolean isWritable() {
+        if (cancelled.get()) {
+            return true;
+        }
+        var sub = currentSubscription;
+        if (sub == null) {
+            return queueSize.get() < MAX_BUFFERED_CHUNKS;
+        }
+        return queueSize.get() < MAX_BUFFERED_CHUNKS && sub.requested.get() > queueSize.get();
+    }
 
-        public VolatileSubscription(Subscriber<? super KoraReadBuffer> subscriber) {
+    private final class VolatileSubscription implements Flow.Subscription {
+        private final Flow.Subscriber<? super KoraReadBuffer> subscriber;
+        private final AtomicLong requested = new AtomicLong(0);
+        private final AtomicInteger wip = new AtomicInteger(0);
+        private boolean terminated;
+
+        VolatileSubscription(Flow.Subscriber<? super KoraReadBuffer> subscriber) {
             this.subscriber = subscriber;
         }
 
         @Override
         public void request(long n) {
             if (n <= 0) {
-                subscriber.onError(new IllegalArgumentException("Spec rule 3.9: n must be > 0"));
+                error = new IllegalArgumentException("Spec rule 3.9: n must be > 0");
+                drain();
                 return;
             }
 
-            requested.updateAndGet(current -> (current + n < 0) ? Long.MAX_VALUE : current + n);
-            if (!eventLoop.inEventLoop()) {
-                eventLoop.execute(ctx::read);
-            } else {
-                ctx.read();
+            requested.updateAndGet(current -> {
+                long next = current + n;
+                return next < 0 ? Long.MAX_VALUE : next;
+            });
+
+            var handler = inboundHandler;
+            if (handler != null) {
+                handler.onConsumerDemandChanged();
             }
 
             drain();
@@ -112,69 +160,99 @@ public final class KoraStreamingNettyBody implements Publisher<KoraReadBuffer>, 
 
         @Override
         public void cancel() {
-            KoraStreamingNettyBody.this.close();
+            close();
         }
 
         void drain() {
-            if (!draining.compareAndSet(false, true)) {
+            if (wip.getAndIncrement() != 0) {
                 return;
             }
 
-            try {
-                long req = requested.get();
-                long emitted = 0;
+            int missed = 1;
+            while (true) {
+                if (!terminated) {
+                    long req = requested.get();
+                    long emitted = 0;
 
-                while (emitted != req) {
-                    if (cancelled.get()) {
-                        return;
+                    while (emitted != req) {
+                        if (cancelled.get()) {
+                            drainQueueOnCancel();
+                            terminated = true;
+                            break;
+                        }
+
+                        var t = error;
+                        if (t != null) {
+                            terminated = true;
+                            drainQueueOnCancel();
+                            subscriber.onError(t);
+                            break;
+                        }
+
+                        var buffer = queue.poll();
+                        boolean empty = buffer == null;
+
+                        if (completed.get() && empty) {
+                            terminated = true;
+                            subscriber.onComplete();
+                            break;
+                        }
+
+                        if (empty) {
+                            break;
+                        }
+
+                        queueSize.decrementAndGet();
+
+                        if (cancelled.get()) {
+                            buffer.close();
+                            drainQueueOnCancel();
+                            terminated = true;
+                            break;
+                        }
+
+                        try {
+                            subscriber.onNext(buffer);
+                        } catch (Throwable e) {
+                            buffer.close();
+                            terminated = true;
+                            close();
+                            subscriber.onError(e);
+                            break;
+                        }
+                        emitted++;
                     }
 
-                    Throwable t = error;
-                    if (t != null) {
-                        subscriber.onError(t);
-                        return;
+                    if (!terminated) {
+                        if (cancelled.get()) {
+                            drainQueueOnCancel();
+                            terminated = true;
+                        } else if (error != null && queue.isEmpty()) {
+                            terminated = true;
+                            subscriber.onError(Objects.requireNonNull(error));
+                        } else if (completed.get() && queue.isEmpty()) {
+                            terminated = true;
+                            subscriber.onComplete();
+                        }
                     }
 
-                    KoraReadBuffer buffer = queue.poll();
-                    boolean empty = (buffer == null);
-
-                    if (completed.get() && empty) {
-                        subscriber.onComplete();
-                        return;
-                    }
-
-                    if (empty) {
-                        break;
-                    }
-
-                    queueSize.decrementAndGet();
-
-                    if (cancelled.get()) {
-                        buffer.close();
-                        return;
-                    }
-
-                    try {
-                        subscriber.onNext(buffer);
-                    } catch (Throwable e) {
-                        buffer.close();
-                        throw e;
-                    }
-                    emitted++;
-                }
-
-                if (emitted != 0) {
-                    requested.addAndGet(-emitted);
-                    if (!cancelled.get() && !completed.get()) {
-                        if (eventLoop.inEventLoop()) {
-                            ctx.read();
-                        } else {
-                            eventLoop.execute(ctx::read);
+                    if (emitted != 0) {
+                        if (req != Long.MAX_VALUE) {
+                            requested.addAndGet(-emitted);
+                        }
+                        if (!terminated && !cancelled.get()) {
+                            var handler = inboundHandler;
+                            if (handler != null) {
+                                handler.onConsumerDemandChanged();
+                            }
                         }
                     }
                 }
-            } finally {
-                draining.set(false);
+
+                missed = wip.addAndGet(-missed);
+                if (missed == 0) {
+                    break;
+                }
             }
         }
     }

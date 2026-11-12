@@ -21,6 +21,9 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
     private boolean headWritten = false;
     private boolean completed = false;
     private boolean refused = false;
+    private boolean completedBeforeOpen = false;
+    @Nullable
+    private Throwable errorBeforeOpen;
 
     StreamingOutboundHandler(KoraOutboundAccess outboundAccess, HttpResponse initialMessage, PipeliningServerHandler parent) {
         super(outboundAccess, parent);
@@ -32,7 +35,7 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
 
     @Override
     void markCloseAfterWrite() {
-        HttpResponse message = this.initialMessage;
+        var message = initialMessage;
         if (message != null) {
             HttpUtil.setKeepAlive(message, false);
         }
@@ -44,17 +47,40 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
             headWritten = true;
             writeIntermediate(initialMessage, false, false);
             initialMessage = null;
+            if (errorBeforeOpen != null) {
+                var err = errorBeforeOpen;
+                errorBeforeOpen = null;
+                fail(err);
+                return;
+            }
+            if (completedBeforeOpen) {
+                finishResponse();
+                return;
+            }
         }
 
-        Subscription sub = this.subscription;
-        if (sub != null && !completed && !refused && parent.requiredCtx().channel().isWritable()) {
+        var sub = subscription;
+        if (sub != null && !completed && !refused && headWritten && parent.requiredCtx().channel().isWritable()) {
             sub.request(1);
         }
     }
 
     @Override
     public void onSubscribe(Subscription subscription) {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> onSubscribe(subscription));
+            } catch (Throwable t) {
+                subscription.cancel();
+            }
+            return;
+        }
         this.subscription = subscription;
+        if (refused || completed) {
+            subscription.cancel();
+            return;
+        }
         if (parent.outboundHandler == this) {
             writeSome();
         }
@@ -63,17 +89,33 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
     @Override
     @SuppressWarnings("java:S1181")
     public void onNext(KoraReadBuffer item) {
-        if (refused || completed) {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> onNext(item));
+            } catch (Throwable t) {
+                item.close();
+            }
+            return;
+        }
+        if (refused || completed || !headWritten) {
             item.close();
             return;
         }
 
+        ByteBuf data;
         try {
-            ByteBuf data = item.toByteBuf();
-            writeCompressing(new DefaultHttpContent(data), true, false);
+            data = item.toByteBuf();
+        } catch (Throwable t) {
+            fail(t);
+            return;
+        }
 
-            if (parent.requiredCtx().channel().isWritable()) {
-                Objects.requireNonNull(subscription).request(1);
+        try {
+            writeCompressing(new DefaultHttpContent(data), true, false);
+            var sub = subscription;
+            if (sub != null && !completed && !refused && parent.requiredCtx().channel().isWritable()) {
+                sub.request(1);
             }
         } catch (RuntimeException | Error e) {
             fail(e);
@@ -83,9 +125,26 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
     @Override
     @SuppressWarnings("java:S1181")
     public void onComplete() {
-        if (completed || refused) return;
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(this::onComplete);
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
+        if (completed || refused) {
+            return;
+        }
         completed = true;
+        if (!headWritten) {
+            completedBeforeOpen = true;
+            return;
+        }
+        finishResponse();
+    }
 
+    private void finishResponse() {
         parent.setOutboundHandler(null);
         try {
             writeCompressing(LastHttpContent.EMPTY_LAST_CONTENT, true, true);
@@ -102,11 +161,29 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
 
     @Override
     public void onError(Throwable throwable) {
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> onError(throwable));
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
+        if (completed || refused) {
+            return;
+        }
+        if (!headWritten) {
+            completed = true;
+            errorBeforeOpen = throwable;
+            return;
+        }
         fail(throwable);
     }
 
     private void fail(Throwable t) {
-        if (completed || refused) return;
+        if (refused) {
+            return;
+        }
         completed = true;
 
         parent.requestHandler.responseFailed(outboundAccess.attachment(), t);
@@ -127,9 +204,9 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
     void discardOutbound() {
         super.discardOutbound();
         completed = true;
-        Subscription sub = this.subscription;
+        var sub = subscription;
         if (sub != null) {
-            this.subscription = null;
+            subscription = null;
             sub.cancel();
         }
         parent.setOutboundHandler(null);
@@ -140,10 +217,24 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
         super.discardRefused();
         refused = true;
         completed = true;
-        Subscription sub = this.subscription;
-        if (sub != null) {
-            this.subscription = null;
-            sub.cancel();
+        var eventLoop = parent.requiredCtx().channel().eventLoop();
+        if (eventLoop.inEventLoop()) {
+            var sub = subscription;
+            if (sub != null) {
+                subscription = null;
+                sub.cancel();
+            }
+        } else {
+            try {
+                eventLoop.execute(() -> {
+                    var sub = subscription;
+                    if (sub != null) {
+                        subscription = null;
+                        sub.cancel();
+                    }
+                });
+            } catch (Throwable ignored) {
+            }
         }
     }
 }

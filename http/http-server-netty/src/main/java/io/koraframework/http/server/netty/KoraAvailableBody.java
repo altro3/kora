@@ -5,7 +5,8 @@ import io.netty.buffer.*;
 
 import java.io.*;
 import java.nio.charset.*;
-import java.util.concurrent.Flow.*;
+import java.util.*;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public final class KoraAvailableBody implements AutoCloseable {
@@ -14,7 +15,7 @@ public final class KoraAvailableBody implements AutoCloseable {
     private final AtomicBoolean consumed = new AtomicBoolean(false);
 
     public KoraAvailableBody(KoraReadBuffer buffer) {
-        this.buffer = buffer;
+        this.buffer = Objects.requireNonNull(buffer, "buffer");
     }
 
     public long length() {
@@ -22,6 +23,9 @@ public final class KoraAvailableBody implements AutoCloseable {
     }
 
     public KoraAvailableBody split() {
+        if (consumed.get()) {
+            throw new IllegalStateException("Body has already been consumed");
+        }
         return new KoraAvailableBody(buffer.duplicate());
     }
 
@@ -46,7 +50,7 @@ public final class KoraAvailableBody implements AutoCloseable {
         return buffer.toInputStream();
     }
 
-    public Publisher<KoraReadBuffer> toPublisher() {
+    public Flow.Publisher<KoraReadBuffer> toPublisher() {
         if (!consumed.compareAndSet(false, true)) {
             throw new IllegalStateException("Body has already been consumed");
         }
@@ -62,46 +66,61 @@ public final class KoraAvailableBody implements AutoCloseable {
 
     @Override
     public void close() {
-        buffer.close();
+        if (consumed.compareAndSet(false, true)) {
+            buffer.close();
+        }
     }
 
-    private static final class AvailableBodyPublisher implements Publisher<KoraReadBuffer> {
+    private static final class AvailableBodyPublisher implements Flow.Publisher<KoraReadBuffer> {
         private final KoraReadBuffer buffer;
+        private final AtomicBoolean subscribed = new AtomicBoolean(false);
 
         AvailableBodyPublisher(KoraReadBuffer buffer) {
             this.buffer = buffer;
         }
 
         @Override
-        public void subscribe(Subscriber<? super KoraReadBuffer> subscriber) {
+        public void subscribe(Flow.Subscriber<? super KoraReadBuffer> subscriber) {
+            Objects.requireNonNull(subscriber, "subscriber");
+            if (!subscribed.compareAndSet(false, true)) {
+                subscriber.onSubscribe(new Flow.Subscription() {
+                    @Override
+                    public void request(long n) {
+                    }
+
+                    @Override
+                    public void cancel() {
+                    }
+                });
+                subscriber.onError(new IllegalStateException("Body publisher can only be subscribed to once"));
+                return;
+            }
             subscriber.onSubscribe(new AvailableBodySubscription(subscriber, buffer));
         }
     }
 
-    private static final class AvailableBodySubscription implements Subscription {
-        private final Subscriber<? super KoraReadBuffer> subscriber;
+    private static final class AvailableBodySubscription implements Flow.Subscription {
+        private final Flow.Subscriber<? super KoraReadBuffer> subscriber;
         private final KoraReadBuffer buffer;
         private final AtomicBoolean done = new AtomicBoolean(false);
 
-        AvailableBodySubscription(Subscriber<? super KoraReadBuffer> subscriber, KoraReadBuffer buffer) {
+        AvailableBodySubscription(Flow.Subscriber<? super KoraReadBuffer> subscriber, KoraReadBuffer buffer) {
             this.subscriber = subscriber;
             this.buffer = buffer;
         }
 
         @Override
         public void request(long n) {
+            if (!done.compareAndSet(false, true)) {
+                return;
+            }
             if (n <= 0) {
+                buffer.close();
                 subscriber.onError(new IllegalArgumentException("Spec rule 3.9: n must be > 0"));
                 return;
             }
-            if (done.compareAndSet(false, true)) {
-                try {
-                    subscriber.onNext(buffer);
-                    subscriber.onComplete();
-                } catch (Throwable t) {
-                    subscriber.onError(t);
-                }
-            }
+            subscriber.onNext(buffer);
+            subscriber.onComplete();
         }
 
         @Override

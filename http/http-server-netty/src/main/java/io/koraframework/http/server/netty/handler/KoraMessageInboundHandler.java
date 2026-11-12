@@ -30,13 +30,13 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
         EmbeddedChannel decompressionChannel = null;
         if (parent.requestDecompressionEnabled) {
-            HttpHeaders headers = request.headers();
-            String contentEncoding = getContentEncoding(headers);
+            var headers = request.headers();
+            var contentEncoding = getContentEncoding(headers);
             if (contentEncoding != null) {
                 if (HttpHeaderValues.GZIP.contentEqualsIgnoreCase(contentEncoding) || HttpHeaderValues.X_GZIP.contentEqualsIgnoreCase(contentEncoding)) {
-                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibEncoder(ZlibWrapper.GZIP, maxZlibAllocation()));
+                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP, maxZlibAllocation()));
                 } else if (HttpHeaderValues.DEFLATE.contentEqualsIgnoreCase(contentEncoding) || HttpHeaderValues.X_DEFLATE.contentEqualsIgnoreCase(contentEncoding)) {
-                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibEncoder(ZlibWrapper.ZLIB_OR_NONE, maxZlibAllocation()));
+                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.ZLIB_OR_NONE, maxZlibAllocation()));
                 }
                 if (decompressionChannel != null) {
                     headers.remove(HttpHeaderNames.CONTENT_LENGTH);
@@ -48,7 +48,7 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
         boolean full = request.getClass() != DefaultHttpRequest.class && request instanceof FullHttpRequest;
         if (full && decompressionChannel == null) {
-            FullHttpRequest fullRequest = (FullHttpRequest) request;
+            var fullRequest = (FullHttpRequest) request;
             var body = new KoraAvailableBody(parent.bufferFactory().adapt(fullRequest.content().retain()));
             parent.accept(request, body, outboundAccess);
         } else if (!parent.hasBody(request)) {
@@ -65,25 +65,28 @@ public final class KoraMessageInboundHandler extends InboundHandler {
             if (decompressionChannel == null) {
                 parent.setInboundHandler(parent.optimisticBufferingInboundHandler());
             } else {
-                parent.setInboundHandler(new KoraDecompressingInboundHandler(decompressionChannel, parent.optimisticBufferingInboundHandler()));
+                parent.setInboundHandler(new KoraDecompressingInboundHandler(parent, decompressionChannel, parent.optimisticBufferingInboundHandler()));
             }
             if (full) {
-                FullHttpRequest fullRequest = (FullHttpRequest) request;
+                var fullRequest = (FullHttpRequest) request;
                 parent.inboundHandler().read(new DefaultLastHttpContent(fullRequest.content().retain(), fullRequest.trailingHeaders()));
             }
         }
     }
 
     private EmbeddedChannel newDecompressionChannel(ChannelHandler decompressor) {
-        EmbeddedChannel channel = new EmbeddedChannel(parent.requiredCtx().channel().id(),
-            parent.requiredCtx().channel().metadata().hasDisconnect(), parent.requiredCtx().channel().config());
+        var channel = new EmbeddedChannel(
+            parent.requiredCtx().channel().id(),
+            parent.requiredCtx().channel().metadata().hasDisconnect(),
+            parent.requiredCtx().channel().config()
+        );
         channel.pipeline().addLast("decompressor", decompressor);
         return channel;
     }
 
     private int maxZlibAllocation() {
         long maxBufferSize = parent.bodySizeLimits.maxBufferSize();
-        if (maxBufferSize > Integer.MAX_VALUE) {
+        if (maxBufferSize == Long.MAX_VALUE || maxBufferSize > Integer.MAX_VALUE) {
             return 0;
         }
         return (int) Math.max(1, maxBufferSize);
@@ -91,11 +94,11 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
     @Nullable
     private static String getContentEncoding(HttpHeaders headers) {
-        String contentEncoding = headers.get(HttpHeaderNames.CONTENT_ENCODING);
+        var contentEncoding = headers.get(HttpHeaderNames.CONTENT_ENCODING);
         if (contentEncoding != null) {
             return contentEncoding.trim();
         }
-        String transferEncoding = headers.get(HttpHeaderNames.TRANSFER_ENCODING);
+        var transferEncoding = headers.get(HttpHeaderNames.TRANSFER_ENCODING);
         if (transferEncoding != null) {
             int idx = transferEncoding.indexOf(',');
             if (idx != -1) {

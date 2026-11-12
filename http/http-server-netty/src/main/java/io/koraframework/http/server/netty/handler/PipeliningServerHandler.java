@@ -5,7 +5,7 @@ import io.koraframework.http.server.netty.buffer.*;
 import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
-import io.netty.channel.socket.DuplexChannel;
+import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
@@ -23,7 +23,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
 
     final RequestHandler requestHandler;
     final KoraDroppingInboundHandler droppingInboundHandler = new KoraDroppingInboundHandler(this);
-    final KoraNoBodyInboundHandler noBodyInboundHandler = new KoraNoBodyInboundHandler(this);
+    final KoraDroppingInboundHandler noBodyInboundHandler = new KoraDroppingInboundHandler(this);
     private final InboundHandler baseInboundHandler = new KoraMessageInboundHandler(this);
     private final KoraOptimisticBufferingInboundHandler optimisticBufferingInboundHandler = new KoraOptimisticBufferingInboundHandler(this);
 
@@ -57,10 +57,10 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     public KoraNettyBufferFactory bufferFactory() {
-        KoraNettyBufferFactory factory = this.bufferFactory;
+        var factory = bufferFactory;
         if (factory == null) {
             factory = new KoraNettyBufferFactory(requiredCtx().alloc());
-            this.bufferFactory = factory;
+            bufferFactory = factory;
         }
         return factory;
     }
@@ -86,7 +86,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     public void setCompressionStrategy(DefaultHttpCompressionStrategy compressionStrategy) {
-        this.compressor = compressionStrategy.isEnabled() ? new Compressor(compressionStrategy) : null;
+        compressor = compressionStrategy.isEnabled() ? new Compressor(compressionStrategy) : null;
     }
 
     public void setBodySizeLimits(BodySizeLimits bodySizeLimits) {
@@ -141,7 +141,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         }
         try {
             outboundAccess.closeAfterWrite();
-            HttpResponse errResponse = new DefaultHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.INTERNAL_SERVER_ERROR);
+            var errResponse = new DefaultHttpResponse(outboundAccess.request().protocolVersion(), HttpResponseStatus.INTERNAL_SERVER_ERROR);
             outboundAccess.write(errResponse, (KoraAvailableBody) null);
         } catch (RuntimeException e) {
             LOG.debug("Failed to write the error response for a request that was not accepted", e);
@@ -186,7 +186,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         if (outboundHandler != null) {
             outboundHandler.discardOutbound();
         }
-        for (KoraOutboundAccess queued : outboundQueue) {
+        for (var queued : outboundQueue) {
             if (queued.handler() != null) {
                 queued.handler().discardOutbound();
             }
@@ -203,7 +203,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     void closeAfterContentDecoderFailure() {
-        KoraOutboundAccess lastResponse = outboundQueue.peekLast();
+        var lastResponse = outboundQueue.peekLast();
         if (lastResponse == null && outboundHandler != null) {
             lastResponse = outboundHandler.outboundAccess;
         }
@@ -215,10 +215,11 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     void handleContentDecoderFailure(HttpContent content) {
-        Throwable cause = content.decoderResult().cause();
+        var cause = content.decoderResult().cause();
         content.release();
         closeAfterContentDecoderFailure();
         inboundHandler.handleUpstreamError(cause);
+        inboundHandler.read(LastHttpContent.EMPTY_LAST_CONTENT);
     }
 
     @Override
@@ -245,18 +246,15 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        if (evt instanceof IdleStateEvent idleStateEvent) {
-            IdleState state = idleStateEvent.state();
-            if (state == IdleState.ALL_IDLE) {
-                ctx.close();
-            }
+        if (evt instanceof IdleStateEvent idleStateEvent && idleStateEvent.state() == IdleState.ALL_IDLE) {
+            ctx.close();
         }
         super.userEventTriggered(ctx, evt);
     }
 
     public ChannelFuture write0(Object message, boolean flush, boolean close, boolean needsPromise, @Nullable ChannelPromise given) {
         if (close) {
-            ChannelPromise promise = given == null ? requiredCtx().newPromise() : given;
+            var promise = given == null ? requiredCtx().newPromise() : given;
             return requiredCtx().writeAndFlush(message, promise)
                 .addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE)
                 .addListener((ChannelFutureListener) future -> {
@@ -271,11 +269,11 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             if (given != null) {
                 promise = given.addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE);
             } else {
-                promise = needsPromise ?
-                    requiredCtx().newPromise().addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE) :
-                    requiredCtx().voidPromise();
+                promise = needsPromise
+                    ? requiredCtx().newPromise().addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE)
+                    : requiredCtx().voidPromise();
             }
-            ChannelFuture future = requiredCtx().write(message, promise);
+            var future = requiredCtx().write(message, promise);
             if (flush) {
                 if (reading) {
                     flushPending = true;
@@ -296,7 +294,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         try {
             while (requiredCtx().channel().isWritable()) {
                 if (outboundHandler == null) {
-                    KoraOutboundAccess next = outboundQueue.peek();
+                    var next = outboundQueue.peek();
                     if (next != null && next.handler() != null) {
                         outboundQueue.poll();
                         outboundHandler = next.handler();
@@ -305,7 +303,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
                         return;
                     }
                 }
-                OutboundHandler oldHandler = outboundHandler;
+                var oldHandler = outboundHandler;
                 oldHandler.writeSome();
                 if (outboundHandler == oldHandler) {
                     break;
@@ -316,6 +314,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         }
     }
 
+    @SuppressWarnings("resource")
     public CompletionStage<?> shutdownGracefully() {
         assert ctx != null;
         if (requiredCtx().executor().inEventLoop()) {
@@ -323,7 +322,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         } else {
             requiredCtx().executor().execute(this::shutdownGracefully0);
         }
-        CompletableFuture<Void> future = new CompletableFuture<>();
+        var future = new CompletableFuture();
         requiredCtx().channel().closeFuture().addListener(f -> future.complete(null));
         return future;
     }
@@ -334,7 +333,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         if (inboundHandler == baseInboundHandler && outboundHandler == null && outboundQueue.isEmpty()) {
             requiredCtx().close();
         } else {
-            KoraOutboundAccess lastResponse = outboundQueue.peekLast();
+            var lastResponse = outboundQueue.peekLast();
             if (lastResponse == null && outboundHandler != null) {
                 lastResponse = outboundHandler.outboundAccess;
             }
@@ -345,17 +344,17 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     static ByteBuf composeBody(ByteBufAllocator alloc, List<ByteBuf> pieces) {
-        CompositeByteBuf composite = alloc.compositeBuffer(MAX_COMPOSITE_COMPONENTS);
+        var composite = alloc.compositeBuffer(MAX_COMPOSITE_COMPONENTS);
         try (var owned = new OwnedBuffer(composite)) {
-            // addComponents takes ownership of all pieces, releasing any it did not add
             composite.addComponents(true, pieces);
             return owned.take();
         }
     }
 
     private void closeAfterResponse() {
-        ChannelHandlerContext context = requiredCtx();
+        var context = requiredCtx();
         if (inboundHandler == baseInboundHandler || inboundHandler == noBodyInboundHandler) {
+            inboundHandler = new KoraClosedInboundHandler();
             context.close();
             return;
         }
@@ -364,13 +363,11 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             return;
         }
         inboundHandler.discard();
-
         var lingering = new KoraLingeringInboundHandler(context, this);
-        this.inboundHandler = lingering;
+        inboundHandler = lingering;
         lingering.scheduleTimeout(LINGER_IDLE_MILLIS);
         channel.closeFuture().addListener(f -> lingering.cancelTimeout());
-
-        SslHandler ssl = context.pipeline().get(SslHandler.class);
+        var ssl = context.pipeline().get(SslHandler.class);
         if (ssl == null) {
             channel.shutdownOutput();
         } else {
@@ -379,4 +376,3 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         refreshNeedMore();
     }
 }
-

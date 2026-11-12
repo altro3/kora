@@ -18,10 +18,8 @@ public final class Compressor {
     public Compressor(DefaultHttpCompressionStrategy strategy) {
         assert strategy.isEnabled();
         this.strategy = strategy;
-        this.compressionLevel = strategy.getCompressionLevel();
-
-        EnumSet<Algorithm> algorithms = EnumSet.of(Algorithm.GZIP, Algorithm.DEFLATE);
-        this.available = Collections.unmodifiableSet(algorithms);
+        compressionLevel = strategy.getCompressionLevel();
+        available = Collections.unmodifiableSet(EnumSet.of(Algorithm.GZIP, Algorithm.DEFLATE));
     }
 
     @Nullable
@@ -38,7 +36,7 @@ public final class Compressor {
         if (!request.headers().contains(HttpHeaderNames.ACCEPT_ENCODING)) {
             return null;
         }
-        Algorithm encoding = determineEncoding(request.headers().valueStringIterator(HttpHeaderNames.ACCEPT_ENCODING));
+        var encoding = determineEncoding(request.headers().valueStringIterator(HttpHeaderNames.ACCEPT_ENCODING));
         if (encoding == null) {
             return null;
         }
@@ -67,7 +65,7 @@ public final class Compressor {
         float gzipQ = -1.0f;
         float deflateQ = -1.0f;
         while (acceptEncodingValues.hasNext()) {
-            String header = acceptEncodingValues.next();
+            var header = acceptEncodingValues.next();
             int length = header.length();
             int start = 0;
             while (start <= length) {
@@ -78,8 +76,10 @@ public final class Compressor {
                 float q = 1.0f;
                 int equalsPos = header.indexOf('=', start, end);
                 if (equalsPos != -1) {
+                    int semiPos = header.indexOf(';', equalsPos + 1, end);
+                    int qEnd = semiPos != -1 ? semiPos : end;
                     try {
-                        q = Float.parseFloat(header.substring(equalsPos + 1, end));
+                        q = Float.parseFloat(header.substring(equalsPos + 1, qEnd));
                     } catch (NumberFormatException e) {
                         q = 0.0f;
                     }
@@ -96,7 +96,7 @@ public final class Compressor {
         }
         Algorithm best = null;
         float bestQ = 0.0f;
-        for (Algorithm algorithm : Algorithm.BY_PREFERENCE) {
+        for (var algorithm : Algorithm.BY_PREFERENCE) {
             float q = switch (algorithm) {
                 case GZIP -> gzipQ;
                 case DEFLATE -> deflateQ;
@@ -113,21 +113,31 @@ public final class Compressor {
     }
 
     private static @Nullable ByteBuf compressOneShot(ZlibWrapper wrapper, int level, ByteBuf body, ByteBufAllocator allocator) {
-        EmbeddedChannel ch = new EmbeddedChannel(ZlibCodecFactory.newZlibEncoder(wrapper, level));
+        var ch = new EmbeddedChannel(ZlibCodecFactory.newZlibEncoder(wrapper, level));
         try {
             ch.writeOutbound(body.retain());
             ch.finish();
             int size = ch.outboundMessages().size();
-            if (size == 0) return null;
-            if (size == 1) return (ByteBuf) ch.readOutbound();
-
-            CompositeByteBuf composite = allocator.compositeBuffer(size);
-            while (true) {
-                ByteBuf part = ch.readOutbound();
-                if (part == null) break;
-                composite.addComponent(true, part);
+            if (size == 0) {
+                return null;
             }
-            return composite;
+            if (size == 1) {
+                return ch.readOutbound();
+            }
+            var composite = allocator.compositeBuffer(size);
+            try {
+                while (true) {
+                    ByteBuf part = ch.readOutbound();
+                    if (part == null) {
+                        break;
+                    }
+                    composite.addComponent(true, part);
+                }
+                return composite;
+            } catch (Throwable e) {
+                composite.release();
+                throw e;
+            }
         } finally {
             ch.finishAndReleaseAll();
         }
@@ -167,7 +177,7 @@ public final class Compressor {
         }
 
         private EmbeddedChannel channel() {
-            EmbeddedChannel channel = compressionChannel;
+            var channel = compressionChannel;
             if (channel == null) {
                 channel = new EmbeddedChannel(
                     ctx.channel().id(),
@@ -207,9 +217,9 @@ public final class Compressor {
         }
 
         private void streamHeld() {
-            ByteBuf data = held;
+            var data = held;
             if (data != null) {
-                EmbeddedChannel channel = channel();
+                var channel = channel();
                 held = null;
                 channel.writeOutbound(data);
             }
@@ -219,7 +229,7 @@ public final class Compressor {
             if (finished) {
                 return;
             }
-            ByteBuf body = held;
+            var body = held;
             if (body != null) {
                 held = null;
                 ByteBuf result = null;
@@ -257,18 +267,18 @@ public final class Compressor {
         }
 
         public void discard() {
-            ByteBuf body = held;
+            var body = held;
             if (body != null) {
                 held = null;
                 body.release();
             }
-            ByteBuf result = compressed;
+            var result = compressed;
             if (result != null) {
                 compressed = null;
                 result.release();
             }
             if (!finished) {
-                EmbeddedChannel channel = compressionChannel;
+                var channel = compressionChannel;
                 if (channel != null) {
                     try {
                         channel.finishAndReleaseAll();
@@ -285,11 +295,11 @@ public final class Compressor {
             }
             if (hr.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
                 long newContentLength = 0;
-                ByteBuf result = compressed;
+                var result = compressed;
                 if (result != null) {
                     newContentLength = result.readableBytes();
                 } else {
-                    for (Object outboundMessage : channel().outboundMessages()) {
+                    for (var outboundMessage : channel().outboundMessages()) {
                         newContentLength += ((ByteBuf) outboundMessage).readableBytes();
                     }
                 }
@@ -298,13 +308,13 @@ public final class Compressor {
         }
 
         public @Nullable ByteBuf poll() {
-            ByteBuf result = compressed;
+            var result = compressed;
             if (result != null) {
                 compressed = null;
                 return result;
             }
             streamHeld();
-            EmbeddedChannel channel = compressionChannel;
+            var channel = compressionChannel;
             if (channel == null) {
                 return null;
             }
@@ -314,15 +324,20 @@ public final class Compressor {
             } else if (n == 1) {
                 return channel.readOutbound();
             }
-            CompositeByteBuf buf = channel.alloc().compositeBuffer(n);
-            while (true) {
-                ByteBuf item = channel.readOutbound();
-                if (item == null) {
-                    break;
+            var buf = channel.alloc().compositeBuffer(n);
+            try {
+                while (true) {
+                    ByteBuf item = channel.readOutbound();
+                    if (item == null) {
+                        break;
+                    }
+                    buf.addComponent(true, item);
                 }
-                buf.addComponent(true, item);
+                return buf;
+            } catch (Throwable e) {
+                buf.release();
+                throw e;
             }
-            return buf;
         }
     }
 }

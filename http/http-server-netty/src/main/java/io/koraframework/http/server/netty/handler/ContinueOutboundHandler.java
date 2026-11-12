@@ -4,8 +4,6 @@ import io.netty.buffer.*;
 import io.netty.handler.codec.http.*;
 import org.jspecify.annotations.*;
 
-import java.util.*;
-
 final class ContinueOutboundHandler extends OutboundHandler {
     static final FullHttpResponse CONTINUE_11 = new DefaultFullHttpResponse(
         HttpVersion.HTTP_1_1,

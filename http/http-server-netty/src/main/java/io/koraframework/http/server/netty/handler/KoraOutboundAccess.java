@@ -1,7 +1,6 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.server.netty.*;
-import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
@@ -19,11 +18,12 @@ public final class KoraOutboundAccess {
     @Nullable
     private OutboundHandler handler;
     @Nullable
-    private Object attachment = null;
-    private boolean closeAfterWrite = false;
+    private Object attachment;
+    private boolean closeAfterWrite;
     private volatile boolean finalWriteIssued;
     private volatile boolean recordFinalWrite;
-    private @Nullable ChannelFuture finalWrite;
+    @Nullable
+    private ChannelFuture finalWrite;
 
     public KoraOutboundAccess(HttpRequest request, ChannelHandlerContext ctx, PipeliningServerHandler parent) {
         this.request = request;
@@ -31,16 +31,21 @@ public final class KoraOutboundAccess {
         this.parent = parent;
     }
 
+    public HttpRequest request() {
+        return request;
+    }
+
     public void attachment(Object attachment) {
         this.attachment = attachment;
     }
 
+    @Nullable
     public Object attachment() {
-        return this.attachment;
+        return attachment;
     }
 
     public Runnable whenAbandoned(Runnable callback) {
-        ChannelFuture closeFuture = ctx.channel().closeFuture();
+        var closeFuture = ctx.channel().closeFuture();
         ChannelFutureListener listener = future -> callback.run();
         closeFuture.addListener(listener);
         return () -> closeFuture.removeListener(listener);
@@ -54,7 +59,7 @@ public final class KoraOutboundAccess {
         if (!finalWriteIssued) {
             return true;
         }
-        ChannelFuture future = finalWrite;
+        var future = finalWrite;
         return future != null && !future.isSuccess();
     }
 
@@ -63,7 +68,8 @@ public final class KoraOutboundAccess {
         return !finalWriteIssued;
     }
 
-    public @Nullable ChannelFuture finalWrite() {
+    @Nullable
+    public ChannelFuture finalWrite() {
         return finalWrite;
     }
 
@@ -85,15 +91,15 @@ public final class KoraOutboundAccess {
 
     public void closeAfterWriteInEventLoop() {
         closeAfterWrite = true;
-        OutboundHandler current = this.handler;
+        var current = handler;
         if (current != null) {
             current.markCloseAfterWrite();
         }
     }
 
     private void preprocess(HttpResponse message) {
-        HttpVersion requestVersion = request.protocolVersion();
-        HttpVersion responseVersion = parent.rejectUnsupportedHttpVersions && !HttpVersion.HTTP_1_0.equals(requestVersion)
+        var requestVersion = request.protocolVersion();
+        var responseVersion = parent.rejectUnsupportedHttpVersions && !HttpVersion.HTTP_1_0.equals(requestVersion)
             ? HttpVersion.HTTP_1_1 : requestVersion;
 
         if (!message.protocolVersion().equals(responseVersion)) {
@@ -140,7 +146,7 @@ public final class KoraOutboundAccess {
 
     private boolean requestsKeepAlive() {
         if (parent.http10KeepAlive) {
-            HttpHeaders headers = request.headers();
+            var headers = request.headers();
             return headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true)
                 && !headers.containsValue(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true);
         }
@@ -154,7 +160,7 @@ public final class KoraOutboundAccess {
     }
 
     public boolean responseStarted() {
-        OutboundHandler current = handler;
+        var current = handler;
         return current != null && !(current instanceof ContinueOutboundHandler cont && cont.next == null);
     }
 
@@ -164,7 +170,7 @@ public final class KoraOutboundAccess {
             throw new IllegalStateException("Only one response per request");
         }
 
-        EventLoop eventLoop = ctx.channel().eventLoop();
+        var eventLoop = ctx.channel().eventLoop();
         if (!eventLoop.inEventLoop()) {
             try {
                 eventLoop.execute(() -> writeMoved(handler));
@@ -178,6 +184,18 @@ public final class KoraOutboundAccess {
         if (parent.removed) {
             handler.discardOutbound();
             return;
+        }
+
+        if (closeAfterWrite) {
+            boolean marked = false;
+            try {
+                handler.markCloseAfterWrite();
+                marked = true;
+            } finally {
+                if (!marked) {
+                    handler.discardRefused();
+                }
+            }
         }
 
         if (this.handler instanceof ContinueOutboundHandler cont) {
@@ -205,12 +223,12 @@ public final class KoraOutboundAccess {
     }
 
     public void abort() {
-        EventLoop eventLoop = ctx.channel().eventLoop();
+        var eventLoop = ctx.channel().eventLoop();
         if (!eventLoop.inEventLoop()) {
             eventLoop.execute(this::abort);
             return;
         }
-        OutboundHandler current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
+        var current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
         if (parent.removed || (current != null && current.responseWritten)) {
             return;
         }
@@ -282,7 +300,7 @@ public final class KoraOutboundAccess {
     }
 
     public void write(HttpResponse response, KoraStreamingNettyBody body) {
-        EventLoop eventLoop = ctx.channel().eventLoop();
+        var eventLoop = ctx.channel().eventLoop();
         if (!eventLoop.inEventLoop()) {
             try {
                 eventLoop.execute(() -> writeClaimedStreaming(response, body));
@@ -292,14 +310,12 @@ public final class KoraOutboundAccess {
             }
             return;
         }
-
         response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
         if (parent.canHaveBody(response.status()) && !request.protocolVersion().equals(HttpVersion.HTTP_1_0)) {
             response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
         } else {
             response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
         }
-
         preprocess(response);
         var oh = new StreamingOutboundHandler(this, response, parent);
         try {
@@ -312,7 +328,6 @@ public final class KoraOutboundAccess {
         }
         write(oh);
     }
-
 
     private void writeClaimedStreaming(HttpResponse response, KoraStreamingNettyBody body) {
         if (responseStarted()) {
@@ -329,7 +344,7 @@ public final class KoraOutboundAccess {
     }
 
     private void giveUpOffLoopWrite(Throwable t) {
-        OutboundHandler current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
+        var current = handler instanceof ContinueOutboundHandler cont ? cont.next : handler;
         if (current != null && current.responseWritten) {
             LOG.warn("Failed to write a response that followed a response written from another thread: {}", t.getMessage(), t);
             ctx.writeAndFlush(Unpooled.EMPTY_BUFFER).addListener(ChannelFutureListener.CLOSE);
@@ -355,7 +370,7 @@ public final class KoraOutboundAccess {
         if (parent.compressor == null || skipCompression) {
             return;
         }
-        Compressor.Session compressionSession = parent.compressor.prepare(ctx, request, response, contentLength);
+        var compressionSession = parent.compressor.prepare(ctx, request, response, contentLength);
         if (compressionSession != null) {
             outboundHandler.compressionSession = compressionSession;
             if (!(response instanceof FullHttpResponse) && response.headers().contains(HttpHeaderNames.CONTENT_LENGTH)) {
@@ -365,7 +380,8 @@ public final class KoraOutboundAccess {
         }
     }
 
-    public @Nullable OutboundHandler handler() {
+    @Nullable
+    public OutboundHandler handler() {
         return handler;
     }
 
