@@ -10,8 +10,8 @@ import org.slf4j.*;
 import java.util.*;
 import java.util.concurrent.Flow.*;
 
-final class StreamingOutboundHandler extends OutboundHandler implements Subscriber<KoraReadBuffer> {
-    private static final Logger LOG = LoggerFactory.getLogger(StreamingOutboundHandler.class);
+final class KoraStreamingOutboundHandler extends OutboundHandler implements Subscriber<KoraReadBuffer> {
+    private static final Logger LOG = LoggerFactory.getLogger(KoraStreamingOutboundHandler.class);
 
     @Nullable
     private HttpResponse initialMessage;
@@ -25,7 +25,7 @@ final class StreamingOutboundHandler extends OutboundHandler implements Subscrib
     @Nullable
     private Throwable errorBeforeOpen;
 
-    StreamingOutboundHandler(KoraOutboundAccess outboundAccess, HttpResponse initialMessage, PipeliningServerHandler parent) {
+    KoraStreamingOutboundHandler(KoraOutboundAccess outboundAccess, HttpResponse initialMessage, PipeliningServerHandler parent) {
         super(outboundAccess, parent);
         if (initialMessage instanceof FullHttpResponse) {
             throw new IllegalArgumentException("Cannot have a full response as the initial message of a streaming response");

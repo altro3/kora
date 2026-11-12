@@ -317,7 +317,7 @@ public final class KoraOutboundAccess {
             response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
         }
         preprocess(response);
-        var oh = new StreamingOutboundHandler(this, response, parent);
+        var oh = new KoraStreamingOutboundHandler(this, response, parent);
         try {
             prepareCompression(response, oh, -1);
             body.subscribe(oh);

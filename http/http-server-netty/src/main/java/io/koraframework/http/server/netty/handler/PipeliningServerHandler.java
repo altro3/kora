@@ -246,8 +246,14 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
-        if (evt instanceof IdleStateEvent idleStateEvent && idleStateEvent.state() == IdleState.ALL_IDLE) {
-            ctx.close();
+        if (evt instanceof IdleStateEvent idleStateEvent) {
+            var state = idleStateEvent.state();
+            if (state == IdleState.ALL_IDLE
+                || (state == IdleState.READER_IDLE && readCalled)
+                || (state == IdleState.WRITER_IDLE && (outboundHandler != null || !outboundQueue.isEmpty()))) {
+                ctx.close();
+                return;
+            }
         }
         super.userEventTriggered(ctx, evt);
     }
@@ -374,5 +380,9 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             ssl.closeOutbound().addListener(f -> channel.shutdownOutput());
         }
         refreshNeedMore();
+    }
+
+    public void setCompressor(@Nullable Compressor compressor) {
+        this.compressor = compressor;
     }
 }
