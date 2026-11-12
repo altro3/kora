@@ -5,6 +5,7 @@ import io.koraframework.http.server.netty.buffer.*;
 import io.koraframework.http.server.netty.compression.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
+import io.netty.channel.socket.DuplexChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
@@ -16,6 +17,8 @@ import java.util.concurrent.*;
 
 public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter {
     private static final Logger LOG = LoggerFactory.getLogger(PipeliningServerHandler.class);
+
+    static final int MAX_COMPOSITE_COMPONENTS = 4096;
     private static final long LINGER_IDLE_MILLIS = 5_000;
 
     final RequestHandler requestHandler;
@@ -341,17 +344,12 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         }
     }
 
-    io.netty.buffer.ByteBuf composeBody(io.netty.buffer.ByteBufAllocator alloc, List<io.netty.buffer.ByteBuf> pieces) {
-        io.netty.buffer.CompositeByteBuf composite = alloc.compositeBuffer(4096);
-        boolean added = false;
-        try {
+    static ByteBuf composeBody(ByteBufAllocator alloc, List<ByteBuf> pieces) {
+        CompositeByteBuf composite = alloc.compositeBuffer(MAX_COMPOSITE_COMPONENTS);
+        try (var owned = new OwnedBuffer(composite)) {
+            // addComponents takes ownership of all pieces, releasing any it did not add
             composite.addComponents(true, pieces);
-            added = true;
-            return composite;
-        } finally {
-            if (!added) {
-                composite.release();
-            }
+            return owned.take();
         }
     }
 
@@ -361,7 +359,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             context.close();
             return;
         }
-        if (removed || !(context.channel() instanceof io.netty.channel.socket.DuplexChannel channel) || !channel.isActive()) {
+        if (removed || !(context.channel() instanceof DuplexChannel channel) || !channel.isActive()) {
             context.close();
             return;
         }
