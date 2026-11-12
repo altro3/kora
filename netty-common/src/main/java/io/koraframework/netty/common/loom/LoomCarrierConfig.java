@@ -8,7 +8,7 @@ import java.time.*;
 public interface LoomCarrierConfig {
 
     default boolean enabled() {
-        return false;
+        return true;
     }
 
     default Duration timeSliceLatency() {

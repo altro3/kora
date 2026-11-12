@@ -1,11 +1,15 @@
 package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.http.server.netty.*;
+import io.koraframework.http.server.netty.body.*;
+import io.koraframework.http.server.netty.buffer.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
+
+import java.util.concurrent.*;
 
 public final class KoraOutboundAccess {
     private static final Logger LOG = LoggerFactory.getLogger(KoraOutboundAccess.class);
@@ -299,23 +303,25 @@ public final class KoraOutboundAccess {
         }
     }
 
-    public void write(HttpResponse response, KoraStreamingNettyBody body) {
+    public void write(HttpResponse response, Flow.Publisher<KoraReadBuffer> body) {
         var eventLoop = ctx.channel().eventLoop();
         if (!eventLoop.inEventLoop()) {
             try {
                 eventLoop.execute(() -> writeClaimedStreaming(response, body));
             } catch (Throwable t) {
-                body.close();
+                closeBodyQuietly(body);
                 throw t;
             }
             return;
         }
+
         response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
         if (parent.canHaveBody(response.status()) && !request.protocolVersion().equals(HttpVersion.HTTP_1_0)) {
             response.headers().set(HttpHeaderNames.TRANSFER_ENCODING, HttpHeaderValues.CHUNKED);
         } else {
             response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
         }
+
         preprocess(response);
         var oh = new KoraStreamingOutboundHandler(this, response, parent);
         try {
@@ -323,10 +329,33 @@ public final class KoraOutboundAccess {
             body.subscribe(oh);
         } catch (Throwable t) {
             discardCompression(oh);
-            body.close();
+            closeBodyQuietly(body);
             throw t;
         }
         write(oh);
+    }
+
+    private void writeClaimedStreaming(HttpResponse response, Flow.Publisher<KoraReadBuffer> body) {
+        if (responseStarted()) {
+            LOG.warn("Only one response per request: a response written from another thread is dropped");
+            closeBodyQuietly(body);
+            return;
+        }
+        try {
+            write(response, body);
+        } catch (Throwable t) {
+            closeBodyQuietly(body);
+            giveUpOffLoopWrite(t);
+        }
+    }
+
+    private static void closeBodyQuietly(Flow.Publisher<KoraReadBuffer> body) {
+        if (body instanceof AutoCloseable closeable) {
+            try {
+                closeable.close();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     private void writeClaimedStreaming(HttpResponse response, KoraStreamingNettyBody body) {

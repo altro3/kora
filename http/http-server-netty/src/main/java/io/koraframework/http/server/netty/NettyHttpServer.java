@@ -79,7 +79,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new ChannelInitializer<Channel>() {
+                .childHandler(new ChannelInitializer<>() {
                     @Override
                     protected void initChannel(Channel ch) {
                         if (state.get() == HttpServerState.SHUTDOWN) {

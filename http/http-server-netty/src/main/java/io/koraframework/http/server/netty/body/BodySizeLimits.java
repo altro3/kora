@@ -1,4 +1,4 @@
-package io.koraframework.http.server.netty;
+package io.koraframework.http.server.netty.body;
 
 /**
  * Body size limits.

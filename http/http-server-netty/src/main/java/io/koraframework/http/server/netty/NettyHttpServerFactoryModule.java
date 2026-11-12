@@ -3,6 +3,8 @@ package io.koraframework.http.server.netty;
 import io.koraframework.application.graph.*;
 import io.koraframework.common.*;
 import io.koraframework.common.annotation.*;
+import io.koraframework.config.common.*;
+import io.koraframework.config.common.mapper.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.router.*;
 import io.koraframework.http.server.common.telemetry.*;
@@ -28,15 +30,15 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     @Tag(Tag.Factory.class)
     public NettyHttpServer server(
         NettyResources resources,
-        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
-        @Tag(Tag.Factory.class) ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler,
+        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> httpServerConfig,
+        @Tag(Tag.Factory.class) ValueOf<RequestHandler> requestHandler,
         @Tag(Tag.Factory.class) @Nullable Configurer<ServerBootstrap> configurer
     ) {
         return new NettyHttpServer(
-            this.name,
+            name,
             resources,
             httpServerConfig,
-            koraVirtualThreadHandler,
+            requestHandler,
             configurer
         );
     }
@@ -50,8 +52,7 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
     private static final class DefaultNettyBootstrapConfigurer implements Configurer<ServerBootstrap> {
         @Override
         public ServerBootstrap configure(ServerBootstrap bootstrap) {
-            var allocator = new UnpooledByteBufAllocator(false, true);
-
+            var allocator = PooledByteBufAllocator.DEFAULT;
             return bootstrap
                 .option(ChannelOption.ALLOCATOR, allocator)
                 .childOption(ChannelOption.ALLOCATOR, allocator);
@@ -60,16 +61,17 @@ public class NettyHttpServerFactoryModule extends HttpServerFactoryModule {
 
     @DefaultComponent
     @Tag(Tag.Factory.class)
-    public KoraVirtualThreadHandler koraVirtualThreadHandler(
-        @Tag(Tag.Factory.class) ValueOf<HttpServerConfig> httpServerConfig,
+    public RequestHandler koraRequestHandler(
+        @Tag(Tag.Factory.class) ValueOf<KoraNettyServerConfig> httpServerConfig,
         @Tag(Tag.Factory.class) HttpServerRouter httpServerRouter,
         HttpServerTelemetryFactory telemetryFactory,
         ThreadFactory koraVirtualThreadFactory
     ) {
-        var telemetry = telemetryFactory.get(this.name, httpServerConfig.get().port(), httpServerConfig.get().telemetry());
-        return new KoraVirtualThreadHandler(
+        var config = httpServerConfig.get();
+        var telemetry = telemetryFactory.get(name, config.port(), config.telemetry());
+        return new KoraRequestHandler(
             httpServerConfig,
-            httpServerConfig.get().telemetry().logging().enabled(),
+            config.telemetry().logging().enabled(),
             httpServerRouter,
             telemetry,
             koraVirtualThreadFactory
