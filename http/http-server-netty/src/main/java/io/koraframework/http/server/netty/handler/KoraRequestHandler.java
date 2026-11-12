@@ -156,17 +156,6 @@ public final class KoraRequestHandler implements RequestHandler {
         try {
             response = invocation.proceed(httpServerRequestObserved);
             observation.observeResponse(response);
-            var body = response.body();
-            if (body != null) {
-                var availableContent = body.getFullContentIfAvailable();
-                if (availableContent != null) {
-                    response = HttpServerResponse.of(
-                        response.code(),
-                        response.headers(),
-                        new DefaultFullHttpBody(availableContent, body.contentType())
-                    );
-                }
-            }
         } catch (Throwable e) {
             if (e instanceof HttpServerResponse resp) {
                 response = resp;
@@ -280,7 +269,7 @@ public final class KoraRequestHandler implements RequestHandler {
                 || (HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null)) {
                 continue;
             }
-            nettyHeaders.add(AsciiString.cached(key), header.getValue());
+            nettyHeaders.add(key, header.getValue());
         }
         if (contentType != null) {
             nettyHeaders.set(HttpHeaderNames.CONTENT_TYPE, contentType);

@@ -4,8 +4,8 @@ import io.netty.channel.*;
 import io.netty.util.*;
 import io.netty.util.concurrent.*;
 import io.netty.util.internal.*;
-import org.jctools.queues.*;
 import jdk.jfr.*;
+import org.jctools.queues.*;
 import org.jspecify.annotations.*;
 
 import java.util.*;
@@ -101,7 +101,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                 return new DelegateIoHandler(backingHandler) {
                     @Override
                     public void wakeup() {
-                        if (block) {
+                        if (block || delegate.isShuttingDown()) {
                             block = false;
                             super.wakeup();
                         }
@@ -283,7 +283,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
             }
 
             while (!delegate.isTerminated()) {
-                delegate.runNow(-1);
+                delegate.runNow(TimeUnit.MILLISECONDS.toNanos(10));
                 Thread.yield();
             }
         }
@@ -337,7 +337,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                         continuationsFifo = false;
                     } else {
                         ScheduledTask last = localLoomQueue.peekLast();
-                        continuationsFifo = last != null && last.scheduleTime > now + factory.configuration.taskFifoThreshold().toNanos();
+                        continuationsFifo = last != null && now - last.scheduleTime > factory.configuration.taskFifoThreshold().toNanos();
                     }
                     continuationTime = 0;
                 }
@@ -355,7 +355,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                     LockSupport.unpark(carrier);
                 }
             } else {
-                LoomBranchSupport.runOnDefaultScheduler(command);
+                runOnDefaultScheduler(command);
             }
         }
 
