@@ -5,9 +5,7 @@ import io.koraframework.http.server.netty.handler.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.logging.*;
-import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
-import io.netty.util.*;
 import org.jspecify.annotations.*;
 
 import java.time.*;
@@ -16,9 +14,6 @@ import java.util.concurrent.*;
 import java.util.function.*;
 
 public final class KoraHttpPipelineBuilder {
-    public static final AttributeKey<SslHandler> SSL_HANDLER_ATTRIBUTE = AttributeKey.valueOf("kora-ssl-handler");
-
-    public static final String HANDLER_SSL = "ssl";
     public static final String HANDLER_LOGGING = "logging";
     public static final String HANDLER_IDLE_STATE = "idle-state";
     public static final String HANDLER_HTTP_CODEC = "http-codec";
@@ -27,19 +22,15 @@ public final class KoraHttpPipelineBuilder {
     private final KoraNettyServerConfig config;
     private final RequestHandler requestHandler;
     @Nullable
-    private final SslContext sslContext;
-    @Nullable
     private final Compressor compressor;
     @Nullable
     private final LoggingHandler loggingHandler;
 
     public KoraHttpPipelineBuilder(
         KoraNettyServerConfig config,
-        RequestHandler requestHandler,
-        @Nullable SslContext sslContext) {
+        RequestHandler requestHandler) {
         this.config = Objects.requireNonNull(config, "config");
         this.requestHandler = Objects.requireNonNull(requestHandler, "requestHandler");
-        this.sslContext = sslContext;
 
         var compressionStrategy = new DefaultHttpCompressionStrategy(
             config.compressionThreshold(),
@@ -54,13 +45,6 @@ public final class KoraHttpPipelineBuilder {
 
     public Supplier<CompletionStage<?>> buildPipeline(Channel channel) {
         var pipeline = channel.pipeline();
-
-        if (sslContext != null) {
-            var sslHandler = sslContext.newHandler(channel.alloc());
-            sslHandler.setHandshakeTimeoutMillis(config.sslHandshakeTimeout().toMillis());
-            channel.attr(SSL_HANDLER_ATTRIBUTE).set(sslHandler);
-            pipeline.addLast(HANDLER_SSL, sslHandler);
-        }
 
         if (loggingHandler != null) {
             pipeline.addLast(HANDLER_LOGGING, loggingHandler);

@@ -373,12 +373,8 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         inboundHandler = lingering;
         lingering.scheduleTimeout(LINGER_IDLE_MILLIS);
         channel.closeFuture().addListener(f -> lingering.cancelTimeout());
-        var ssl = context.pipeline().get(SslHandler.class);
-        if (ssl == null) {
-            channel.shutdownOutput();
-        } else {
-            ssl.closeOutbound().addListener(f -> channel.shutdownOutput());
-        }
+
+        channel.shutdownOutput();
         refreshNeedMore();
     }
 

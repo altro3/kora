@@ -69,10 +69,6 @@ public interface KoraNettyServerConfig extends HttpServerConfig {
         return Duration.ofSeconds(60);
     }
 
-    default Duration sslHandshakeTimeout() {
-        return Duration.ofSeconds(10);
-    }
-
     @Nullable
     LogLevel wireLogLevel();
 }

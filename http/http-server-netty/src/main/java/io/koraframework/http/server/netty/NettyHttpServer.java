@@ -9,64 +9,65 @@ import io.koraframework.http.server.netty.NettySystemHttpServerModule.*;
 import io.koraframework.http.server.netty.handler.*;
 import io.koraframework.logging.common.arg.*;
 import io.netty.bootstrap.*;
-import io.netty.buffer.*;
 import io.netty.channel.*;
+import io.netty.util.concurrent.Future;
+import io.netty.util.internal.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
+import java.io.*;
 import java.net.*;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.*;
 
 public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(NettyHttpServer.class);
+    private static final int MAX_RANDOM_PORT_BIND_ATTEMPTS = 10;
+    private static final boolean CHECK_LOOPBACK_PORT_SHADOWING = PlatformDependent.isOsx()
+        || System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("bsd");
 
     private final AtomicReference<HttpServerState> state = new AtomicReference<>(HttpServerState.INIT);
+    private final Set<Supplier<CompletionStage<?>>> activeConnections = ConcurrentHashMap.newKeySet();
+
     private final String name;
-    private final ValueOf<HttpServerConfig> httpServerConfig;
-    private final ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler;
+    private final NettyResources resources;
+    private final ValueOf<KoraNettyServerConfig> httpServerConfig;
+    private final ValueOf<RequestHandler> requestHandler;
     private final @Nullable Configurer<ServerBootstrap> configurer;
-    private final boolean manageResources;
-    private volatile NettyResources resources;
     private volatile @Nullable Channel serverChannel;
 
     public NettyHttpServer(
         String name,
-        @Nullable NettyResources resources,
-        ValueOf<HttpServerConfig> httpServerConfig,
-        ValueOf<KoraVirtualThreadHandler> koraVirtualThreadHandler,
+        NettyResources resources,
+        ValueOf<KoraNettyServerConfig> httpServerConfig,
+        ValueOf<RequestHandler> requestHandler,
         @Nullable Configurer<ServerBootstrap> configurer
     ) {
-        this.name = name;
-        this.httpServerConfig = httpServerConfig;
-        this.koraVirtualThreadHandler = koraVirtualThreadHandler;
+        this.name = Objects.requireNonNull(name, "name");
+        this.resources = Objects.requireNonNull(resources, "resources");
+        this.httpServerConfig = Objects.requireNonNull(httpServerConfig, "httpServerConfig");
+        this.requestHandler = Objects.requireNonNull(requestHandler, "requestHandler");
         this.configurer = configurer;
-        if (resources != null) {
-            this.resources = resources;
-            manageResources = false;
-        } else {
-            manageResources = true;
-        }
     }
 
     @Override
     public void init() {
         try {
             log.debug("HTTP Server {} (Netty) starting...", name);
-            final long started = TimeUtils.started();
-
-            if (manageResources) {
-                throw new IllegalStateException("HTTP Server 'manageResources=true' is not supported. Use external NettyResources from netty-common.");
-            }
+            long started = TimeUtils.started();
 
             var config = httpServerConfig.get();
+            var pipelineBuilder = new KoraHttpPipelineBuilder(config, requestHandler.get());
             var bootstrap = new ServerBootstrap();
             var recvAllocator = new FixedRecvByteBufAllocator(4096);
 
             bootstrap.group(resources.bossGroup(), resources.workerGroup())
                 .channel(resources.channelClass())
-                .option(ChannelOption.SO_BACKLOG, 4096);
+                .option(ChannelOption.SO_BACKLOG, 4096)
+                .option(ChannelOption.SO_REUSEADDR, true);
 
             if (configurer != null) {
                 bootstrap = configurer.configure(bootstrap.clone());
@@ -76,13 +77,32 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
 
             bootstrap.childOption(ChannelOption.SO_KEEPALIVE, config.socketKeepAliveEnabled())
                 .childOption(ChannelOption.TCP_NODELAY, true)
-                .childOption(ChannelOption.ALLOCATOR, new UnpooledByteBufAllocator(false, true))
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, waterMark)
                 .childOption(ChannelOption.RECVBUF_ALLOCATOR, recvAllocator)
-                .childHandler(new NettyServerChannelInitializer(this, config, koraVirtualThreadHandler));
+                .childHandler(new ChannelInitializer<Channel>() {
+                    @Override
+                    protected void initChannel(Channel ch) {
+                        if (state.get() == HttpServerState.SHUTDOWN) {
+                            ch.close();
+                            return;
+                        }
+                        var shutdownHook = pipelineBuilder.buildPipeline(ch);
+                        activeConnections.add(shutdownHook);
+                        ch.closeFuture().addListener(f -> activeConnections.remove(shutdownHook));
+                    }
+                });
 
             int port = config.port();
-            ChannelFuture bindFuture = bootstrap.bind(port).awaitUninterruptibly();
+            var host = config.host();
+            ChannelFuture bindFuture;
+            if (host == null || host.isBlank()) {
+                bindFuture = port == 0 && CHECK_LOOPBACK_PORT_SHADOWING
+                    ? bindRandomWildcardPort(bootstrap)
+                    : bootstrap.bind(port).awaitUninterruptibly();
+            } else {
+                bindFuture = bootstrap.bind(host, port).awaitUninterruptibly();
+            }
+
             if (!bindFuture.isSuccess()) {
                 throw bindFuture.cause();
             }
@@ -99,29 +119,87 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
         }
     }
 
+    private static ChannelFuture bindRandomWildcardPort(ServerBootstrap bootstrap) {
+        for (int attempt = 1; ; attempt++) {
+            var future = bootstrap.bind(0).awaitUninterruptibly();
+            if (!future.isSuccess()
+                || attempt >= MAX_RANDOM_PORT_BIND_ATTEMPTS
+                || !(future.channel().localAddress() instanceof InetSocketAddress address)
+                || !isLoopbackPortTaken(address.getPort())) {
+                return future;
+            }
+            log.debug("Random port {} is already used on loopback address, binding again", address.getPort());
+            future.channel().close().awaitUninterruptibly();
+        }
+    }
+
+    private static boolean isLoopbackPortTaken(int port) {
+        try (var ss = new ServerSocket()) {
+            ss.setReuseAddress(false);
+            ss.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+            return false;
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
     @Override
     public void release() {
         log.debug("HTTP Server {} (Netty) stopping...", name);
         state.set(HttpServerState.SHUTDOWN);
-        final long started = TimeUtils.started();
+        long started = TimeUtils.started();
+        long shutdownWaitMillis = httpServerConfig.get().shutdownWait().toMillis();
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(shutdownWaitMillis);
 
-        var dispatcher = koraVirtualThreadHandler.get();
-
-        try {
-            log.debug("HTTP Server {} (Netty) awaiting graceful shutdown...", name);
-            dispatcher.shutdown();
-        } catch (Throwable e) {
-            log.warn("HTTP Server {} (Netty) graceful shutdown interrupted or failed", name, e);
-        }
         var localChannel = serverChannel;
+        serverChannel = null;
         if (localChannel != null) {
             try {
-                localChannel.close().await(httpServerConfig.get().shutdownWait().toMillis(), TimeUnit.MILLISECONDS);
+                localChannel.close().await(shutdownWaitMillis, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
+
+        drainWorkerRegistrationTasks(deadline);
+
+        if (!activeConnections.isEmpty()) {
+            try {
+                log.debug("HTTP Server {} (Netty) awaiting graceful shutdown for {} active connections...", name, activeConnections.size());
+                var futures = activeConnections.stream()
+                    .map(Supplier::get)
+                    .map(CompletionStage::toCompletableFuture)
+                    .toArray(CompletableFuture[]::new);
+                long remainingMillis = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
+                CompletableFuture.allOf(futures).get(remainingMillis, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("HTTP Server {} (Netty) graceful shutdown interrupted", name, e);
+            } catch (TimeoutException e) {
+                log.warn("HTTP Server {} (Netty) graceful shutdown timed out after {}ms", name, shutdownWaitMillis);
+            } catch (Throwable e) {
+                log.warn("HTTP Server {} (Netty) graceful shutdown failed", name, e);
+            }
+        }
+
         log.info("HTTP Server {} (Netty) stopped in {}", name, TimeUtils.tookForLogging(started));
+    }
+
+    private void drainWorkerRegistrationTasks(long deadlineNanos) {
+        var roundTrips = new ArrayList<Future<?>>();
+        for (var loop : resources.workerGroup()) {
+            if (!loop.inEventLoop() && !loop.isShuttingDown()) {
+                roundTrips.add(loop.submit(() -> {
+                }));
+            }
+        }
+        for (var roundTrip : roundTrips) {
+            long remaining = deadlineNanos - System.nanoTime();
+            if (remaining <= 0) {
+                break;
+            }
+            roundTrip.awaitUninterruptibly(remaining, TimeUnit.NANOSECONDS);
+        }
     }
 
     @Override
@@ -131,8 +209,8 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
             return -1;
         }
         var address = localChannel.localAddress();
-        if (address instanceof InetSocketAddress) {
-            return ((InetSocketAddress) address).getPort();
+        if (address instanceof InetSocketAddress inet) {
+            return inet.getPort();
         }
         return -1;
     }
@@ -140,7 +218,7 @@ public final class NettyHttpServer implements HttpServer, ReadinessProbe, Lifecy
     @Nullable
     @Override
     public ReadinessProbeFailure probe() {
-        HttpServerState currentState = state.get();
+        var currentState = state.get();
         if (currentState == HttpServerState.INIT) {
             return new ReadinessProbeFailure("HTTP Server " + name + " (Netty) init");
         }
