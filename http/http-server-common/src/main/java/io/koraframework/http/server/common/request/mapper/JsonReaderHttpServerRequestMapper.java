@@ -8,9 +8,9 @@ import io.koraframework.json.common.*;
 import java.io.*;
 
 public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerRequestMapper<T> {
-    private final io.koraframework.json.common.JsonReader<T> reader;
+    private final JsonReader<T> reader;
 
-    public JsonReaderHttpServerRequestMapper(io.koraframework.json.common.JsonReader<T> reader) {
+    public JsonReaderHttpServerRequestMapper(JsonReader<T> reader) {
         this.reader = reader;
     }
 
@@ -20,7 +20,7 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
             var fullContent = body.getFullContentIfAvailable();
             if (fullContent != null) {
                 if (fullContent.hasArray()) {
-                    return this.reader.read(fullContent.array(), fullContent.arrayOffset() + fullContent.position(), fullContent.remaining());
+                    return reader.read(fullContent.array(), fullContent.arrayOffset() + fullContent.position(), fullContent.remaining());
                 } else {
                     final byte[] initialBuf = JsonPools.borrowBuffer();
                     byte[] buf = initialBuf;
@@ -30,7 +30,7 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
                             buf = new byte[remaining];
                         }
                         fullContent.get(buf, 0, remaining);
-                        return this.reader.read(buf, 0, remaining);
+                        return reader.read(buf, 0, remaining);
                     } finally {
                         JsonPools.returnBuffer(initialBuf);
                     }
@@ -47,7 +47,7 @@ public final class JsonReaderHttpServerRequestMapper<T> implements HttpServerReq
                     return null;
                 }
 
-                return this.reader.read(finalBuf, 0, result.length());
+                return reader.read(finalBuf, 0, result.length());
             } finally {
                 JsonPools.returnBuffer(initialBuf);
             }

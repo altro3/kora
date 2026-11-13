@@ -2,7 +2,6 @@ package io.koraframework.http.server.netty.handler;
 
 import io.koraframework.application.graph.*;
 import io.koraframework.common.context.*;
-import io.koraframework.http.common.body.*;
 import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
@@ -89,21 +88,17 @@ public final class KoraRequestHandler implements RequestHandler {
 
         var requestBody = new NettyRequestHttpBody(request, body);
         try {
-            var unregisterAbandon = new AtomicReference<Runnable>();
             var thread = virtualThreadFactory.newThread(() -> {
+                var unregisterAbandon = outboundAccess.whenAbandoned(Thread.currentThread()::interrupt);
                 try (requestBody) {
                     dispatch(ctx, request, requestBody, outboundAccess);
                 } catch (Throwable t) {
                     log.error("CRITICAL: Error inside Kora dispatch pipeline (Loom Thread)", t);
                     outboundAccess.abort();
                 } finally {
-                    var cleanup = unregisterAbandon.get();
-                    if (cleanup != null) {
-                        cleanup.run();
-                    }
+                    unregisterAbandon.run();
                 }
             });
-            unregisterAbandon.set(outboundAccess.whenAbandoned(thread::interrupt));
             thread.start();
         } catch (Throwable t) {
             log.error("CRITICAL: Failed to create or start virtual thread", t);
@@ -256,18 +251,9 @@ public final class KoraRequestHandler implements RequestHandler {
             nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
         }
 
-        var os = new BackpressuredOutputStream(ctx.alloc());
-        outboundAccess.write(nettyResp, os);
-        streamOutputBodyToNetty(body, os);
-    }
-
-    private void streamOutputBodyToNetty(HttpBodyOutput body, BackpressuredOutputStream os) {
-        try (body; os) {
+        try (body; var os = new OptimisticBodyOutputStream(ctx.alloc(), nettyResp, outboundAccess)) {
             body.write(os);
-            os.flushCurrent();
-            os.complete();
-        } catch (Throwable t) {
-            os.fail(t);
+            os.finish();
         }
     }
 
@@ -565,6 +551,133 @@ public final class KoraRequestHandler implements RequestHandler {
             if (buf != null) {
                 current = null;
                 buf.release();
+            }
+        }
+    }
+
+    private static final class OptimisticBodyOutputStream extends OutputStream {
+        private static final int INITIAL_CAPACITY = 4096;
+        private static final int OPTIMISTIC_THRESHOLD = 32768;
+
+        private final ByteBufAllocator streamAlloc;
+        private final HttpResponse nettyResp;
+        private final KoraOutboundAccess outboundAccess;
+
+        @Nullable
+        private ByteBuf buffer;
+        @Nullable
+        private BackpressuredOutputStream streaming;
+        private boolean finished;
+
+        OptimisticBodyOutputStream(ByteBufAllocator streamAlloc, HttpResponse nettyResp, KoraOutboundAccess outboundAccess) {
+            this.streamAlloc = streamAlloc;
+            this.nettyResp = nettyResp;
+            this.outboundAccess = outboundAccess;
+            buffer = streamAlloc.buffer(INITIAL_CAPACITY);
+        }
+
+        private BackpressuredOutputStream devolveToStreaming() throws IOException {
+            var current = streaming;
+            if (current != null) {
+                return current;
+            }
+            var stream = new BackpressuredOutputStream(streamAlloc);
+            streaming = stream;
+            outboundAccess.write(nettyResp, stream);
+
+            var buf = buffer;
+            if (buf != null) {
+                buffer = null;
+                try {
+                    if (buf.isReadable()) {
+                        var bytes = new byte[buf.readableBytes()];
+                        buf.readBytes(bytes);
+                        stream.write(bytes);
+                    }
+                } finally {
+                    buf.release();
+                }
+            }
+            return stream;
+        }
+
+        @Override
+        public void write(int b) throws IOException {
+            var stream = streaming;
+            if (stream != null) {
+                stream.write(b);
+                return;
+            }
+            var buf = Objects.requireNonNull(buffer);
+            if (buf.readableBytes() + 1 > OPTIMISTIC_THRESHOLD) {
+                devolveToStreaming().write(b);
+            } else {
+                buf.writeByte(b);
+            }
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) throws IOException {
+            Objects.checkFromIndexSize(off, len, b.length);
+            if (len == 0) {
+                return;
+            }
+            var stream = streaming;
+            if (stream != null) {
+                stream.write(b, off, len);
+                return;
+            }
+            var buf = Objects.requireNonNull(buffer);
+            if (buf.readableBytes() + len > OPTIMISTIC_THRESHOLD) {
+                devolveToStreaming().write(b, off, len);
+            } else {
+                buf.writeBytes(b, off, len);
+            }
+        }
+
+        @Override
+        public void flush() throws IOException {
+            var stream = streaming;
+            if (stream != null) {
+                stream.flush();
+            }
+        }
+
+        void finish() throws IOException {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            var stream = streaming;
+            if (stream != null) {
+                stream.flushCurrent();
+                stream.complete();
+                return;
+            }
+            var buf = Objects.requireNonNull(buffer);
+            buffer = null;
+            if (!buf.isReadable()) {
+                buf.release();
+                outboundAccess.write(nettyResp, (KoraAvailableBody) null);
+            } else {
+                var availableBody = new KoraAvailableBody(new KoraReadBuffer(buf));
+                outboundAccess.write(nettyResp, availableBody);
+            }
+        }
+
+        @Override
+        public void close() {
+            var buf = buffer;
+            if (buf != null) {
+                buffer = null;
+                buf.release();
+            }
+            var stream = streaming;
+            if (stream != null) {
+                if (!finished) {
+                    stream.fail(new IOException("Response stream closed before completion"));
+                }
+                stream.close();
             }
         }
     }

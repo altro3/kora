@@ -1,32 +1,32 @@
 package io.koraframework.http.server.netty.request;
 
 import io.koraframework.http.common.body.*;
-import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.body.*;
 import io.koraframework.http.server.netty.buffer.*;
 import io.netty.handler.codec.http.*;
 import org.jspecify.annotations.*;
 
 import java.io.*;
+import java.nio.*;
 import java.util.*;
 import java.util.concurrent.*;
 
 public final class NettyRequestHttpBody implements HttpBodyInput {
 
+    private static final ByteBuffer EMPTY_BYTE_BUFFER = ByteBuffer.allocate(0);
+
     private final HttpRequest nettyRequest;
     @Nullable
     private final AutoCloseable rawBody;
-    private final InputStream inputStream;
+    @Nullable
+    private InputStream inputStream;
+    @Nullable
+    private ByteBuffer cachedFullContent;
+    private boolean consumed;
 
     public NettyRequestHttpBody(HttpRequest nettyRequest, @Nullable AutoCloseable rawBody) {
         this.nettyRequest = Objects.requireNonNull(nettyRequest, "nettyRequest");
         this.rawBody = rawBody;
-        this.inputStream = switch (rawBody) {
-            case null -> InputStream.nullInputStream();
-            case KoraAvailableBody available -> available.toInputStream();
-            case KoraStreamingNettyBody streaming -> new FlowInputStream(streaming);
-            default -> throw new IllegalArgumentException("Unsupported body type: " + rawBody.getClass());
-        };
     }
 
     @Override
@@ -40,16 +40,93 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
         return nettyRequest.headers().get(HttpHeaderNames.CONTENT_TYPE);
     }
 
+    @Nullable
+    @Override
+    public ByteBuffer getFullContentIfAvailable() {
+        if (cachedFullContent != null) {
+            return cachedFullContent.duplicate();
+        }
+        if (rawBody == null) {
+            consumed = true;
+            cachedFullContent = EMPTY_BYTE_BUFFER;
+            return EMPTY_BYTE_BUFFER;
+        }
+        if (rawBody instanceof KoraAvailableBody available && !consumed) {
+            consumed = true;
+            int len = (int) available.length();
+            if (len == 0) {
+                available.close();
+                cachedFullContent = EMPTY_BYTE_BUFFER;
+                return EMPTY_BYTE_BUFFER;
+            }
+            var buf = available.toByteBuf();
+            try {
+                if (buf.hasArray()) {
+                    var heapBuf = ByteBuffer.wrap(buf.array(), buf.arrayOffset() + buf.readerIndex(), buf.readableBytes());
+                    cachedFullContent = heapBuf;
+                    return heapBuf.duplicate();
+                } else {
+                    var bytes = new byte[len];
+                    buf.getBytes(buf.readerIndex(), bytes);
+                    var heapBuf = ByteBuffer.wrap(bytes);
+                    cachedFullContent = heapBuf;
+                    return heapBuf.duplicate();
+                }
+            } finally {
+                buf.release();
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public ReadResult readAllBytes(byte[] initialBuffer) throws IOException {
+        if (rawBody == null) {
+            consumed = true;
+            return new ReadResult(initialBuffer, 0);
+        }
+        if (rawBody instanceof KoraAvailableBody available && !consumed) {
+            consumed = true;
+            int len = (int) available.length();
+            if (len == 0) {
+                return new ReadResult(initialBuffer, 0);
+            }
+            var target = len <= initialBuffer.length ? initialBuffer : new byte[len];
+            var buf = available.toByteBuf();
+            try {
+                buf.getBytes(buf.readerIndex(), target, 0, len);
+                return new ReadResult(target, len);
+            } finally {
+                buf.release();
+            }
+        }
+        return HttpBodyInput.super.readAllBytes(initialBuffer);
+    }
+
     @Override
     public InputStream asInputStream() {
-        return inputStream;
+        var is = inputStream;
+        if (is != null) {
+            return is;
+        }
+        consumed = true;
+        is = switch (rawBody) {
+            case null -> InputStream.nullInputStream();
+            case KoraAvailableBody available -> available.toInputStream();
+            case KoraStreamingNettyBody streaming -> new FlowInputStream(streaming);
+            default -> throw new IllegalArgumentException("Unsupported body type: " + rawBody.getClass());
+        };
+        inputStream = is;
+        return is;
     }
 
     @Override
     public void close() {
-        try {
-            inputStream.close();
-        } catch (Exception ignored) {
+        if (inputStream != null) {
+            try {
+                inputStream.close();
+            } catch (Exception ignored) {
+            }
         }
         if (rawBody != null) {
             try {

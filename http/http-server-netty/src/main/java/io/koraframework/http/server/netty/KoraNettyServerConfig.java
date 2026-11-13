@@ -25,11 +25,11 @@ public interface KoraNettyServerConfig {
     }
 
     default int initialBufferSize() {
-        return 128;
+        return 1024;
     }
 
     default boolean validateHeaders() {
-        return true;
+        return false;
     }
 
     default boolean chunkedSupported() {
