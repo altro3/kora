@@ -3,11 +3,13 @@ package io.koraframework.json.jackson.module.http;
 import com.alibaba.fastjson2.*;
 import com.alibaba.fastjson2.writer.*;
 import io.koraframework.http.common.body.*;
-import io.koraframework.json.common.JsonPools;
+import io.koraframework.json.common.*;
 
 import java.io.*;
+import java.nio.*;
+import java.util.function.*;
 
-public class FastJsonHttpBodyOutput<T> implements HttpBodyOutput {
+public final class FastJsonHttpBodyOutput<T> implements HttpBodyOutput {
     private final ObjectWriter<T> objectWriter;
     private final T value;
 
@@ -27,11 +29,29 @@ public class FastJsonHttpBodyOutput<T> implements HttpBodyOutput {
     }
 
     @Override
-    public void write(OutputStream os) throws IOException {
-        JSONWriter.Context context = JsonPools.borrowWriterContext();
+    public ByteBuffer writeToByteBuffer(IntFunction<ByteBuffer> allocator) {
+        var context = JsonPools.borrowWriterContext();
         try (var writer = JSONWriter.ofUTF8(context)) {
-            writer.setRootObject(this.value);
-            this.objectWriter.write(writer, this.value, null, null, 0);
+            writer.setRootObject(value);
+            objectWriter.write(writer, value, null, null, 0);
+            int size = writer.size();
+            var target = allocator.apply(size);
+            writer.flushTo(new ByteBufferOutputStream(target));
+            target.flip();
+            return target;
+        } catch (Exception e) {
+            throw new JSONException(e.getMessage(), e);
+        } finally {
+            JsonPools.returnWriterContext(context);
+        }
+    }
+
+    @Override
+    public void write(OutputStream os) throws IOException {
+        var context = JsonPools.borrowWriterContext();
+        try (var writer = JSONWriter.ofUTF8(context)) {
+            writer.setRootObject(value);
+            objectWriter.write(writer, value, null, null, 0);
             writer.flushTo(os);
         } catch (Exception e) {
             throw new JSONException(e.getMessage(), e);
@@ -42,5 +62,23 @@ public class FastJsonHttpBodyOutput<T> implements HttpBodyOutput {
 
     @Override
     public void close() {
+    }
+
+    private static final class ByteBufferOutputStream extends OutputStream {
+        private final ByteBuffer buffer;
+
+        ByteBufferOutputStream(ByteBuffer buffer) {
+            this.buffer = buffer;
+        }
+
+        @Override
+        public void write(int b) {
+            buffer.put((byte) b);
+        }
+
+        @Override
+        public void write(byte[] b, int off, int len) {
+            buffer.put(b, off, len);
+        }
     }
 }

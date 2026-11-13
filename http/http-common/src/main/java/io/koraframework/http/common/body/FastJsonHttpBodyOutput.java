@@ -28,16 +28,18 @@ public final class FastJsonHttpBodyOutput<T> implements HttpBodyOutput {
 
     @Override
     public void write(OutputStream os) throws IOException {
-        try (var jsonWriter = JSONWriter.ofUTF8()) {
-            this.writer.write(jsonWriter, this.value);
+        var context = JsonPools.borrowWriterContext();
+        try (var jsonWriter = JSONWriter.ofUTF8(context)) {
+            writer.write(jsonWriter, value);
             jsonWriter.flushTo(os);
         } catch (JSONException e) {
             throw new IOException("Fastjson2 serialization failed", e);
+        } finally {
+            JsonPools.returnWriterContext(context);
         }
     }
 
     @Override
-    public void close() throws IOException {
-
+    public void close() {
     }
 }

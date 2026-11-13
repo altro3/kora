@@ -14,10 +14,6 @@ import java.nio.charset.*;
  */
 public interface JsonWriter<T> extends Mapping.MappingFunction {
 
-    /**
-     * @param generator jackson generator that will be used for writing object to JSON
-     * @param object    to serialize into JSON
-     */
     void write(JsonGenerator generator, @Nullable T object) throws JacksonException;
 
     default void write(JSONWriter writer, @Nullable T object) {

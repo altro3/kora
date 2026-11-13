@@ -1,11 +1,11 @@
 package io.koraframework.http.common.body;
 
 
-import org.jspecify.annotations.Nullable;
+import org.jspecify.annotations.*;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
+import java.io.*;
+import java.nio.*;
+import java.util.function.*;
 
 /**
  * <b>Русский</b>: Описывает тело HTTP ответа
@@ -21,6 +21,11 @@ import java.io.OutputStream;
  * </pre>
  */
 public interface HttpBodyOutput extends HttpBody {
+
+    @Nullable
+    default ByteBuffer writeToByteBuffer(IntFunction<ByteBuffer> allocator) {
+        return null;
+    }
 
     static HttpBodyOutput of(String contentType, HttpBodyWriter writer) {
         return new StreamingHttpBodyOutput(contentType, -1, writer);

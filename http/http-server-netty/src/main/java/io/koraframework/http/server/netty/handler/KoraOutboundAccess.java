@@ -391,6 +391,34 @@ public final class KoraOutboundAccess {
         }
     }
 
+    public void write(FullHttpResponse response) {
+        var eventLoop = ctx.channel().eventLoop();
+        if (!eventLoop.inEventLoop()) {
+            try {
+                eventLoop.execute(() -> writeClaimedFull(response));
+            } catch (Throwable t) {
+                response.release();
+                throw t;
+            }
+            return;
+        }
+        writeFull(response, false);
+    }
+
+    private void writeClaimedFull(FullHttpResponse response) {
+        if (responseStarted()) {
+            LOG.warn("Only one response per request: a response written from another thread is dropped");
+            response.release();
+            return;
+        }
+        try {
+            writeFull(response, false);
+        } catch (Throwable t) {
+            response.release();
+            giveUpOffLoopWrite(t);
+        }
+    }
+
     public void skipCompression() {
         skipCompression = true;
     }
