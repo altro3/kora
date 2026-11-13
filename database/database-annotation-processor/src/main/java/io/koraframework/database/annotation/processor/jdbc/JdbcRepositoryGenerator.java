@@ -138,82 +138,47 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
                     )""", DbUtils.QUERY_CONTEXT, query.rawQuery(), sql, DbUtils.operationName(method))
                 .build());
 
+        var koraContextClassName = ClassName.get("io.koraframework.common.context", "KoraContext");
+        var observationClassName = ClassName.get("io.koraframework.common.telemetry", "Observation");
+        var opentelemetryStorageClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContextStorage");
+
         mb.addStatement("var _query = $L", queryContextFieldName);
         mb.addStatement("var _observation = this._jdbcExecutor.telemetry().observe(_query)");
+        mb.addStatement("var _ctx = $T.current()", koraContextClassName);
+        mb.addStatement("var _prevObs = _ctx != null ? _ctx.get($T.OBSERVATION_KEY) : null", observationClassName);
+        mb.addStatement("var _prevOtel = _ctx != null ? _ctx.get($T.OPENTELEMETRY_KEY) : null", opentelemetryStorageClassName);
+        mb.addStatement("$T.attach(_ctx, _observation)", observationClassName);
 
-        boolean isVoid = methodType.getReturnType().getKind() == TypeKind.VOID;
-        String invokerClassName = "_" + method.getSimpleName() + "_Invoker_" + methodNumber;
+        mb.addCode(buildExecutionBody(method, returnType, connection, query, parameters, batchParam, parameterMappers, resultMapperName));
 
-        String packageName = elements.getPackageOf(repositoryElement).getQualifiedName().toString();
-        String simpleName = repositoryElement.getSimpleName().toString();
-        ClassName implClassName = ClassName.get(packageName, "$" + simpleName + "_Impl");
+        return mb.build();
+    }
 
+    private CodeBlock buildExecutionBody(
+        ExecutableElement method,
+        TypeMirror returnType,
+        CodeBlock connection,
+        QueryWithParameters query,
+        List<QueryParameter> parameters,
+        @Nullable QueryParameter batchParam,
+        FieldFactory parameterMappers,
+        @Nullable String resultMapperName
+    ) {
         var observationClassName = ClassName.get("io.koraframework.common.telemetry", "Observation");
-        var opentelemetryContextClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContext");
-        var contextClassName = ClassName.get("io.opentelemetry.context", "Context");
+        var opentelemetryStorageClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContextStorage");
+        var uncheckedSqlExceptionClassName = ClassName.get("io.koraframework.database.jdbc.exception", "UncheckedSqlException");
+        var eb = CodeBlock.builder();
 
-        var callableOpInterface = ParameterizedTypeName.get(
-            ClassName.get("java.lang.ScopedValue", "CallableOp"),
-            TypeName.get(returnType).box(),
-            ClassName.get(RuntimeException.class)
-        );
-
-        var invokerTypeBuilder = TypeSpec.classBuilder(invokerClassName)
-            .addModifiers(Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
-            .addSuperinterface(isVoid
-                ? ClassName.get(Runnable.class)
-                : callableOpInterface);
-
-        invokerTypeBuilder.addField(implClassName, "repo", Modifier.PRIVATE, Modifier.FINAL);
-        invokerTypeBuilder.addField(DbUtils.QUERY_CONTEXT, "_query", Modifier.PRIVATE, Modifier.FINAL);
-        invokerTypeBuilder.addField(observationClassName, "_observation", Modifier.PRIVATE, Modifier.FINAL);
-
-        for (var param : method.getParameters()) {
-            invokerTypeBuilder.addField(TypeName.get(param.asType()), param.getSimpleName().toString(), Modifier.PRIVATE, Modifier.FINAL);
+        eb.add("""
+        var _conToUse = $L;
+        $T _conToClose;
+        if (_conToUse == null) {
+            _conToUse = this._jdbcExecutor.acquireConnection();
+            _conToClose = _conToUse;
+        } else {
+            _conToClose = null;
         }
-
-        var constructorInvoker = MethodSpec.constructorBuilder()
-            .addModifiers(Modifier.PUBLIC)
-            .addParameter(implClassName, "repo")
-            .addParameter(DbUtils.QUERY_CONTEXT, "_query")
-            .addParameter(observationClassName, "_observation");
-
-        constructorInvoker.addStatement("this.repo = repo");
-        constructorInvoker.addStatement("this._query = _query");
-        constructorInvoker.addStatement("this._observation = _observation");
-
-        for (var param : method.getParameters()) {
-            String pName = param.getSimpleName().toString();
-            constructorInvoker.addParameter(TypeName.get(param.asType()), pName);
-            constructorInvoker.addStatement("this.$L = $L", pName, pName);
-        }
-        invokerTypeBuilder.addMethod(constructorInvoker.build());
-
-        var execMethodBuilder = MethodSpec.methodBuilder(isVoid ? "run" : "call")
-            .addModifiers(Modifier.PUBLIC)
-            .addAnnotation(Override.class)
-            .returns(isVoid ? TypeName.VOID : TypeName.get(returnType).box());
-
-        if (!isVoid) {
-            execMethodBuilder.addException(RuntimeException.class);
-        }
-
-        var eb = execMethodBuilder;
-
-        String repoConnection = connection.toString().contains("this._jdbcExecutor")
-            ? "this.repo._jdbcExecutor.currentConnection()"
-            : connection.toString();
-
-        eb.addCode("""
-            var _conToUse = $L;
-            $T _conToClose;
-            if (_conToUse == null) {
-                _conToUse = this.repo._jdbcExecutor.acquireConnection();
-                _conToClose = _conToUse;
-            } else {
-                _conToClose = null;
-            }
-            """, repoConnection, JdbcTypes.CONNECTION);
+        """, connection, JdbcTypes.CONNECTION);
 
         var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
         if (generatedKeys) {
@@ -222,9 +187,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             eb.beginControlFlow("try (_conToClose; var _stmt = _conToUse.prepareStatement(_query.sql()))");
         }
 
-        eb.addCode(StatementSetterGenerator.generate(method, query, parameters, batchParam, parameterMappers));
-
-        String repoMapperName = resultMapperName != null ? "this.repo." + resultMapperName : null;
+        eb.add(StatementSetterGenerator.generate(method, query, parameters, batchParam, parameterMappers));
 
         if (MethodUtils.isVoid(method)) {
             if (batchParam != null) {
@@ -249,7 +212,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
 
                 eb.addStatement("var _batchResult = _stmt.executeBatch()");
                 eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                    .addStatement("var _result = $L.apply(_rs)", repoMapperName)
+                    .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
                     .addStatement("return $L", result)
                     .endControlFlow();
             } else {
@@ -265,7 +228,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
 
             eb.addStatement("_stmt.execute()");
             eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                .addStatement("var _result = $L.apply(_rs)", repoMapperName)
+                .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
                 .addStatement("return $L", result)
                 .endControlFlow();
         } else {
@@ -273,47 +236,28 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
                 ? CodeBlock.of("_result")
                 : CodeBlock.of("$T.requireNonNull(_result, $S)", Objects.class, "Result mapping is expected non-null, but was null");
 
-            Objects.requireNonNull(repoMapperName, () -> "Illegal State occurred when expected to get result mapper, but got null in " + method.getEnclosingElement().getSimpleName() + "#" + method.getSimpleName());
+            Objects.requireNonNull(resultMapperName, () -> "Illegal State occurred when expected to get result mapper, but got null in " + method.getEnclosingElement().getSimpleName() + "#" + method.getSimpleName());
 
             eb.beginControlFlow("try (var _rs = _stmt.executeQuery())")
-                .addStatement("var _result = $L.apply(_rs)", repoMapperName)
+                .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
                 .addStatement("return $L", result)
                 .endControlFlow();
         }
 
-        eb.nextControlFlow("catch (java.sql.SQLException e)")
+        eb.nextControlFlow("catch ($T e)", SQLException.class)
             .addStatement("_observation.observeError(e)")
-            .addStatement("throw new io.koraframework.database.jdbc.exception.UncheckedSqlException(e)");
-        eb.nextControlFlow("catch (Exception e)")
+            .addStatement("throw new $T(e)", uncheckedSqlExceptionClassName)
+            .nextControlFlow("catch (Exception e)")
             .addStatement("_observation.observeError(e)")
-            .addStatement("throw e");
-        eb.nextControlFlow("finally")
+            .addStatement("throw e")
+            .nextControlFlow("finally")
+            .addStatement("$T.detach(_ctx, _prevObs, _prevOtel)", observationClassName)
             .addStatement("_observation.end()")
             .endControlFlow();
 
-        invokerTypeBuilder.addMethod(eb.build());
-        type.addType(invokerTypeBuilder.build());
-
-        StringBuilder constructorArgs = new StringBuilder("this, _query, _observation");
-        for (var param : method.getParameters()) {
-            constructorArgs.append(", ").append(param.getSimpleName());
-        }
-
-        if (isVoid) {
-            mb.addStatement("""
-                    $T.where($T.VALUE, _observation)
-                        .where($T.VALUE, $T.current().with(_observation.span()))
-                        .run(new $L($L))""",
-                ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
-        } else {
-            mb.addStatement("""
-                    return $T.where($T.VALUE, _observation)
-                        .where($T.VALUE, $T.current().with(_observation.span()))
-                        .call(new $L($L))""",
-                ScopedValue.class, observationClassName, opentelemetryContextClassName, contextClassName, invokerClassName, constructorArgs.toString());
-        }
-        return mb.build();
+        return eb.build();
     }
+
 
     public void enrichWithExecutor(TypeElement repositoryElement, TypeSpec.Builder builder, MethodSpec.Builder constructorBuilder) {
         builder.addField(JdbcTypes.CONNECTION_FACTORY, "_jdbcExecutor", Modifier.PRIVATE, Modifier.FINAL);

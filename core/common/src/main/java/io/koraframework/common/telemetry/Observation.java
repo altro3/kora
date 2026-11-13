@@ -41,4 +41,15 @@ public interface Observation {
 
         return updated;
     }
+
+    /**
+     * Восстанавливает предыдущую обсервацию и контекст OpenTelemetry в KoraContext.
+     */
+    static void detach(@Nullable KoraContext current, @Nullable Observation prevObs, @Nullable Context prevOtel) {
+        if (current == null) {
+            return;
+        }
+        current.with(OBSERVATION_KEY, prevObs)
+            .with(OpentelemetryContextStorage.OPENTELEMETRY_KEY, prevOtel);
+    }
 }

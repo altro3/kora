@@ -10,15 +10,17 @@ import java.util.function.*;
 public final class KoraContext {
 
     private static final ScopedValue<KoraContext> SCOPED_VALUE = ScopedValue.newInstance();
+    private static final int DEFAULT_INITIAL_CAPACITY = 5;
 
-    private final Object[] values;
+    private Object[] values;
 
     private KoraContext(Object[] values) {
         this.values = values;
     }
 
     public static KoraContext empty() {
-        return new KoraContext(new Object[0]);
+        int size = Math.max(DEFAULT_INITIAL_CAPACITY, Key.INDEX_COUNTER.get());
+        return new KoraContext(new Object[size]);
     }
 
     public static @Nullable KoraContext current() {
@@ -39,7 +41,7 @@ public final class KoraContext {
             try {
                 return action.call();
             } catch (Throwable e) {
-                KoraContext.sneakyThrow(e);
+                sneakyThrow(e);
                 return null;
             }
         });
@@ -59,12 +61,14 @@ public final class KoraContext {
         return null;
     }
 
-    public <T> KoraContext with(Key<T> key, T value) {
+    public <T> KoraContext with(Key<T> key, @Nullable T value) {
         Objects.requireNonNull(key);
         int index = key.index();
-        var newValues = Arrays.copyOf(this.values, Math.max(this.values.length, index + 1));
-        newValues[index] = value;
-        return new KoraContext(newValues);
+        if (index >= values.length) {
+            values = Arrays.copyOf(values, Math.max(index + 1, values.length + 2));
+        }
+        values[index] = value;
+        return this;
     }
 
     public static final class Key<T> {
