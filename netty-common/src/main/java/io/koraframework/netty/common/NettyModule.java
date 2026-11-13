@@ -87,7 +87,7 @@ public interface NettyModule {
         LoomCarrierConfig loomConfig,
         EventLoopGroupFactory eventLoopGroupFactory) {
 
-        int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors() * 2;
+        int nThreads = config.threads() > 0 ? config.threads() : NettyRuntime.availableProcessors();
         var ioHandlerFactory = getIoHandlerFactory(config);
         if (loomConfig.enabled()) {
             return () -> eventLoopGroupFactory.createEventLoopGroup(nThreads, "netty-kora-loom-worker", true, ioHandlerFactory);

@@ -102,8 +102,6 @@ public class UndertowHttpServer implements HttpServer, ReadinessProbe {
         var builder = Undertow.builder()
             .setHandler(gracefulShutdown)
             .addHttpListener(config.port(), "0.0.0.0")
-            .setDirectBuffers(false)
-            .setBufferSize(2048)
             .setWorker(xnioWorker)
             .setServerOption(UndertowOptions.ALLOW_UNKNOWN_PROTOCOLS, true)
             .setIoThreads(undertowConfig.get().ioThreads())
