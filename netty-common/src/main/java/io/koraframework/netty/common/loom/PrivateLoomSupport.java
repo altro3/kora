@@ -20,21 +20,21 @@ public final class PrivateLoomSupport {
 
         try {
             Field defaultSchedulerField = Class.forName("java.lang.VirtualThread")
-                    .getDeclaredField("DEFAULT_SCHEDULER");
+                .getDeclaredField("DEFAULT_SCHEDULER");
             defaultSchedulerField.setAccessible(true);
             defaultScheduler = lookup.unreflectGetter(defaultSchedulerField);
 
             Field schedulerField = Class.forName("java.lang.ThreadBuilders$VirtualThreadBuilder")
-                    .getDeclaredField("scheduler");
+                .getDeclaredField("scheduler");
             schedulerField.setAccessible(true);
             builderScheduler = lookup.unreflectSetter(schedulerField)
-                    .asType(MethodType.methodType(void.class, Object.class, Executor.class));
+                .asType(MethodType.methodType(void.class, Object.class, Executor.class));
 
             Field threadSchedulerField = Class.forName("java.lang.VirtualThread")
-                    .getDeclaredField("scheduler");
+                .getDeclaredField("scheduler");
             threadSchedulerField.setAccessible(true);
             threadScheduler = lookup.unreflectGetter(threadSchedulerField)
-                    .asType(MethodType.methodType(Executor.class, Thread.class));
+                .asType(MethodType.methodType(Executor.class, Thread.class));
 
             failure = null;
         } catch (ReflectiveOperationException | InaccessibleObjectException roe) {
@@ -51,10 +51,10 @@ public final class PrivateLoomSupport {
         MethodHandle carrierThread;
         try {
             Field carrierThreadField = Class.forName("java.lang.VirtualThread")
-                    .getDeclaredField("carrierThread");
+                .getDeclaredField("carrierThread");
             carrierThreadField.setAccessible(true);
             carrierThread = lookup.unreflectGetter(carrierThreadField)
-                    .asType(MethodType.methodType(Thread.class, Thread.class));
+                .asType(MethodType.methodType(Thread.class, Thread.class));
         } catch (Exception e) {
             carrierThread = null;
         }

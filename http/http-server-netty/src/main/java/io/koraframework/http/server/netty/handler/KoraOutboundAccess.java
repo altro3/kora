@@ -11,7 +11,7 @@ import org.slf4j.*;
 
 import java.util.concurrent.*;
 
-public final class KoraOutboundAccess {
+public final class KoraOutboundAccess implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger(KoraOutboundAccess.class);
 
     private final HttpRequest request;
@@ -26,6 +26,8 @@ public final class KoraOutboundAccess {
     private boolean closeAfterWrite;
     private volatile boolean finalWriteIssued;
     private volatile boolean recordFinalWrite;
+    @Nullable
+    private FullHttpResponse pendingFullResponse;
     @Nullable
     private ChannelFuture finalWrite;
 
@@ -394,15 +396,37 @@ public final class KoraOutboundAccess {
     public void write(FullHttpResponse response) {
         var eventLoop = ctx.channel().eventLoop();
         if (!eventLoop.inEventLoop()) {
+            pendingFullResponse = response;
             try {
-                eventLoop.execute(() -> writeClaimedFull(response));
+                eventLoop.execute(this);
             } catch (Throwable t) {
+                pendingFullResponse = null;
                 response.release();
                 throw t;
             }
             return;
         }
         writeFull(response, false);
+    }
+
+    @Override
+    public void run() {
+        var response = pendingFullResponse;
+        if (response == null) {
+            return;
+        }
+        pendingFullResponse = null;
+        if (responseStarted()) {
+            LOG.warn("Only one response per request: a response written from another thread is dropped");
+            response.release();
+            return;
+        }
+        try {
+            writeFull(response, false);
+        } catch (Throwable t) {
+            response.release();
+            giveUpOffLoopWrite(t);
+        }
     }
 
     private void writeClaimedFull(FullHttpResponse response) {

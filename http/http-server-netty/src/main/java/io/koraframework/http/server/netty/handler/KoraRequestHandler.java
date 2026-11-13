@@ -237,7 +237,7 @@ public final class KoraRequestHandler implements RequestHandler {
         ByteBuffer directNio;
         try {
             directNio = body.writeToByteBuffer(size -> {
-                var b = ctx.alloc().buffer(size);
+                var b = UnpooledByteBufAllocator.DEFAULT.buffer(size);
                 bufHolder[0] = b;
                 return b.nioBuffer(0, size);
             });
@@ -684,8 +684,8 @@ public final class KoraRequestHandler implements RequestHandler {
                 if (count == 0) {
                     outboundAccess.write(nettyResp, (KoraAvailableBody) null);
                 } else {
-                    var nettyBuf = streamAlloc.buffer(count);
-                    nettyBuf.writeBytes(buf, 0, count);
+                    var copy = Arrays.copyOf(buf, count);
+                    var nettyBuf = Unpooled.wrappedBuffer(copy);
                     var availableBody = new KoraAvailableBody(new KoraReadBuffer(nettyBuf));
                     outboundAccess.write(nettyResp, availableBody);
                 }

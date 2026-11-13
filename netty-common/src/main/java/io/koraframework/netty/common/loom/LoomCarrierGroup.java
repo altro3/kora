@@ -70,6 +70,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         final int id;
         final Factory factory;
         final ManualIoEventLoop delegate;
+        final StickyScheduler stickyScheduler = new StickyScheduler(this);
         final AttributeMap attributeMap = new DefaultAttributeMap();
         IoHandler backingHandler;
         Thread carrier;
@@ -132,6 +133,9 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
             if (!thread.isVirtual()) {
                 return false;
             }
+            if (PrivateLoomSupport.isCarrierThreadSupported() && PrivateLoomSupport.getCarrierThread(thread) != carrier) {
+                return false;
+            }
             Object scheduler;
             if (LoomBranchSupport.isSupported()) {
                 assert thread == Thread.currentThread();
@@ -139,10 +143,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
             } else {
                 scheduler = PrivateLoomSupport.getScheduler(thread);
             }
-            if (!ownsScheduler(scheduler)) {
-                return false;
-            }
-            return !PrivateLoomSupport.isCarrierThreadSupported() || PrivateLoomSupport.getCarrierThread(thread) == carrier;
+            return ownsScheduler(scheduler);
         }
 
         private boolean ownsScheduler(Object scheduler) {
@@ -197,9 +198,9 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                     }
                 }
                 if (LoomBranchSupport.isSupported()) {
-                    LoomBranchSupport.setScheduler(b, new StickyScheduler(dst));
+                    LoomBranchSupport.setScheduler(b, dst.stickyScheduler);
                 } else {
-                    PrivateLoomSupport.setScheduler(b, new StickyScheduler(dst));
+                    PrivateLoomSupport.setScheduler(b, dst.stickyScheduler);
                 }
             }, r);
         }
@@ -297,12 +298,22 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         }
 
         private void globalToLocal() {
+            int moved = 0;
+            long now = 0L;
             while (true) {
                 Runnable task = globalLoomQueue.poll();
                 if (task == null) {
                     break;
                 }
-                localLoomQueue.addFirst(new ScheduledTask(System.nanoTime(), task));
+                if (moved == 0) {
+                    now = System.nanoTime();
+                }
+                moved++;
+                localLoomQueue.addFirst(new ScheduledTask(now, task));
+            }
+            if (moved > 0) {
+                activeThreadsExternal.addAndGet(-moved);
+                activeThreadsLocal += moved;
             }
         }
 
@@ -345,7 +356,9 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                         continuationsFifo = false;
                     } else {
                         ScheduledTask last = localLoomQueue.peekLast();
-                        continuationsFifo = last != null && now - last.scheduleTime > factory.configuration.taskFifoThreshold().toNanos();
+                        continuationsFifo = last != null
+                            && last.scheduleTime != 0L
+                            && now - last.scheduleTime > factory.configuration.taskFifoThreshold().toNanos();
                     }
                     continuationTime = 0;
                 }
@@ -424,8 +437,8 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
 
             if (Thread.currentThread() == carrier) {
                 activeThreadsLocal++;
-                long time = System.nanoTime();
                 if (idle && !loomNested && !expediteWrite) {
+                    long time = System.nanoTime();
                     if (scheduled != null) {
                         scheduled.scheduleMode = 2;
                         scheduled.queueDepth = -1;
@@ -438,7 +451,8 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
                         scheduled.queueDepth = localLoomQueue.size();
                         scheduled.commit();
                     }
-                    localLoomQueue.addFirst(new ScheduledTask(time, command));
+                    long schedTime = localLoomQueue.isEmpty() ? 0L : System.nanoTime();
+                    localLoomQueue.addFirst(new ScheduledTask(schedTime, command));
                 }
             } else {
                 activeThreadsExternal.incrementAndGet();

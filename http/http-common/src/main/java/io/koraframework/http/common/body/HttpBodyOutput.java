@@ -23,7 +23,7 @@ import java.util.function.*;
 public interface HttpBodyOutput extends HttpBody {
 
     @Nullable
-    default ByteBuffer writeToByteBuffer(IntFunction<ByteBuffer> allocator) {
+    default ByteBuffer writeToByteBuffer(IntFunction<ByteBuffer> allocator) throws IOException {
         return null;
     }
 
