@@ -1,10 +1,7 @@
 package io.koraframework.netty.common.loom;
 
-import io.koraframework.config.common.annotation.*;
-
 import java.time.*;
 
-@ConfigMapper
 public interface LoomCarrierConfig {
 
     default boolean enabled() {
@@ -36,7 +33,7 @@ public interface LoomCarrierConfig {
     }
 
     default int workSpillThreshold() {
-        return 32;
+        return 8;
     }
 
     default Duration workSpillMinQueueAge() {
