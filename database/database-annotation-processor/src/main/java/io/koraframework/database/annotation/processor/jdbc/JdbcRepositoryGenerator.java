@@ -125,7 +125,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var returnType = methodType.getReturnType();
         var connection = parameters.stream().filter(QueryParameter.ConnectionParameter.class::isInstance).findFirst()
             .map(p -> CodeBlock.of("$L", p.variable()))
-            .orElse(CodeBlock.of("this._jdbcExecutor.currentConnection()"));
+            .orElse(CodeBlock.of("_jdbcExecutor.currentConnection()"));
 
         var queryContextFieldName = "QUERY_CONTEXT_" + methodNumber;
         type.addField(
@@ -143,7 +143,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var opentelemetryStorageClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContextStorage");
 
         mb.addStatement("var _query = $L", queryContextFieldName);
-        mb.addStatement("var _observation = this._jdbcExecutor.telemetry().observe(_query)");
+        mb.addStatement("var _observation = _jdbcExecutor.telemetry().observe(_query)");
         mb.addStatement("var _ctx = $T.current()", koraContextClassName);
         mb.addStatement("var _prevObs = _ctx != null ? _ctx.get($T.OBSERVATION_KEY) : null", observationClassName);
         mb.addStatement("var _prevOtel = _ctx != null ? _ctx.get($T.OPENTELEMETRY_KEY) : null", opentelemetryStorageClassName);
@@ -173,7 +173,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var _conToUse = $L;
         $T _conToClose;
         if (_conToUse == null) {
-            _conToUse = this._jdbcExecutor.acquireConnection();
+            _conToUse = _jdbcExecutor.acquireConnection();
             _conToClose = _conToUse;
         } else {
             _conToClose = null;
@@ -212,7 +212,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
 
                 eb.addStatement("var _batchResult = _stmt.executeBatch()");
                 eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                    .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
+                    .addStatement("var _result = $L.apply(_rs)", resultMapperName)
                     .addStatement("return $L", result)
                     .endControlFlow();
             } else {
@@ -228,7 +228,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
 
             eb.addStatement("_stmt.execute()");
             eb.beginControlFlow("try (var _rs = _stmt.getGeneratedKeys())")
-                .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
+                .addStatement("var _result = $L.apply(_rs)", resultMapperName)
                 .addStatement("return $L", result)
                 .endControlFlow();
         } else {
@@ -239,7 +239,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             Objects.requireNonNull(resultMapperName, () -> "Illegal State occurred when expected to get result mapper, but got null in " + method.getEnclosingElement().getSimpleName() + "#" + method.getSimpleName());
 
             eb.beginControlFlow("try (var _rs = _stmt.executeQuery())")
-                .addStatement("var _result = this.$L.apply(_rs)", resultMapperName)
+                .addStatement("var _result = $L.apply(_rs)", resultMapperName)
                 .addStatement("return $L", result)
                 .endControlFlow();
         }
@@ -266,7 +266,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
             .addAnnotation(Override.class)
             .returns(JdbcTypes.CONNECTION_FACTORY)
-            .addCode("return this._jdbcExecutor;")
+            .addCode("return _jdbcExecutor;")
             .build());
 
         var executorTag = DbUtils.getTag(repositoryElement);
