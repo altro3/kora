@@ -13,20 +13,28 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
     protected final HttpRequest nettyRequest;
     private final String method;
     private final String path;
-    private final NettyHttpHeaders headers;
     private final long startTime;
     private final Map<String, List<String>> queryParams;
     @Nullable
     private final HttpBodyInput body;
+    @Nullable
+    private NettyHttpHeaders headers;
 
     public NettyUnroutedHttpRequest(HttpRequest nettyRequest, @Nullable NettyRequestHttpBody streamingBody) {
         this.nettyRequest = nettyRequest;
         this.method = nettyRequest.method().name();
         this.startTime = System.nanoTime();
-        var decoder = new QueryStringDecoder(nettyRequest.uri());
-        this.path = decoder.path();
-        this.queryParams = Collections.unmodifiableMap(decoder.parameters());
-        this.headers = new NettyHttpHeaders(nettyRequest.headers());
+        var uri = nettyRequest.uri();
+        int queryIdx = uri.indexOf('?');
+        if (queryIdx == -1) {
+            this.path = uri.indexOf('%') == -1 ? uri : QueryStringDecoder.decodeComponent(uri);
+            this.queryParams = Map.of();
+        } else {
+            var decoder = new QueryStringDecoder(uri);
+            this.path = decoder.path();
+            var params = decoder.parameters();
+            this.queryParams = params.isEmpty() ? Map.of() : Collections.unmodifiableMap(params);
+        }
         this.body = streamingBody != null ? streamingBody : HttpBody.empty();
     }
 
@@ -54,7 +62,12 @@ public class NettyUnroutedHttpRequest implements UnroutedHttpRequest {
 
     @Override
     public HttpHeaders headers() {
-        return this.headers;
+        var h = this.headers;
+        if (h == null) {
+            h = new NettyHttpHeaders(nettyRequest.headers());
+            this.headers = h;
+        }
+        return h;
     }
 
     @Override

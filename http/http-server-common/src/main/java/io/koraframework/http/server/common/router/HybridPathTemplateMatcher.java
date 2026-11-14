@@ -109,11 +109,17 @@ class HybridPathTemplateMatcher<T> {
 
     @Nullable
     PathTemplateMatch<T> match(String path) {
-        final String normalizedPath = path.isEmpty() ? "/" : path;
         var state = lookupState;
-        var exact = state.exactPaths.get(normalizedPath);
+        var exact = state.exactPaths.get(path);
         if (exact != null) {
             return exact;
+        }
+        final String normalizedPath = path.isEmpty() ? "/" : path;
+        if (normalizedPath != path) {
+            exact = state.exactPaths.get(normalizedPath);
+            if (exact != null) {
+                return exact;
+            }
         }
 
         var trie = state.prefixTrie;

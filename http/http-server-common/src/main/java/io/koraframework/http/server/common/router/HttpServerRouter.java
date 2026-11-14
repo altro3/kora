@@ -5,8 +5,11 @@ import io.koraframework.http.server.common.*;
 import io.koraframework.http.server.common.interceptor.*;
 import io.koraframework.http.server.common.request.*;
 import io.koraframework.http.server.common.response.*;
+import org.jspecify.annotations.*;
 
 import java.util.*;
+
+import static io.koraframework.http.common.HttpMethod.*;
 
 public class HttpServerRouter {
 
@@ -14,6 +17,14 @@ public class HttpServerRouter {
     private static final HttpServerRequestHandler.HandlerFunction NOT_FOUND_HANDLER = new NotFoundHandler();
 
     private final Map<String, HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction>> pathTemplateMatcher;
+    @Nullable
+    private final HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction> getMatcher;
+    @Nullable
+    private final HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction> postMatcher;
+    @Nullable
+    private final HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction> putMatcher;
+    @Nullable
+    private final HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction> deleteMatcher;
     private final HybridPathTemplateMatcher<MethodNotAllowedHandler> allMethodMatchers;
     private final RequestHandler requestHandler;
 
@@ -88,6 +99,11 @@ public class HttpServerRouter {
         } else {
             requestHandler = new AggregatedRequestHandler(interceptorsList);
         }
+
+        getMatcher = pathTemplateMatcher.get(GET);
+        postMatcher = pathTemplateMatcher.get(POST);
+        putMatcher = pathTemplateMatcher.get(PUT);
+        deleteMatcher = pathTemplateMatcher.get(DELETE);
     }
 
     public HttpServerInvocation route(UnroutedHttpRequest unroutedHttpRequest) {
@@ -95,10 +111,29 @@ public class HttpServerRouter {
         Map<String, String> templateParameters;
         String pathTemplate;
 
-        var methodMatchers = this.pathTemplateMatcher.get(unroutedHttpRequest.method());
+        var method = unroutedHttpRequest.method();
+        HybridPathTemplateMatcher<HttpServerRequestHandler.HandlerFunction> methodMatchers;
+        switch (method) {
+            case GET:
+                methodMatchers = getMatcher;
+                break;
+            case POST:
+                methodMatchers = postMatcher;
+                break;
+            case PUT:
+                methodMatchers = putMatcher;
+                break;
+            case DELETE:
+                methodMatchers = deleteMatcher;
+                break;
+            default:
+                methodMatchers = pathTemplateMatcher.get(method);
+                break;
+        }
+
         var pathTemplateMatch = methodMatchers == null ? null : methodMatchers.match(unroutedHttpRequest.path());
         if (pathTemplateMatch == null) {
-            var allMethodMatch = this.allMethodMatchers.match(unroutedHttpRequest.path());
+            var allMethodMatch = allMethodMatchers.match(unroutedHttpRequest.path());
             if (allMethodMatch != null) {
                 handlerFunction = allMethodMatch.value();
                 pathTemplate = allMethodMatch.matchedTemplate();

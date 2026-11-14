@@ -1,7 +1,10 @@
 package io.koraframework.netty.common.loom;
 
+import io.koraframework.config.common.annotation.*;
+
 import java.time.*;
 
+@ConfigMapper
 public interface LoomCarrierConfig {
 
     default boolean enabled() {
