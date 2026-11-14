@@ -83,18 +83,26 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
     }
 
     @Nullable
-    public Connection connectionCurrent() {
+    @Override
+    public Connection currentConnection() {
         KoraContext current = KoraContext.current();
-        if (current != null) {
-            ConnectionContext ctx = current.get(CONNECTION_CONTEXT_KEY);
-            if (ctx != null) {
-                return ctx.connection();
-            }
-        }
-        return null;
+        return current != null ? currentConnection(current) : null;
     }
 
     @Nullable
+    @Override
+    public Connection currentConnection(KoraContext ctx) {
+        ConnectionContext connectionContext = ctx.get(CONNECTION_CONTEXT_KEY);
+        return connectionContext != null ? connectionContext.connection() : null;
+    }
+
+    @Nullable
+    public Connection connectionCurrent() {
+        return currentConnection();
+    }
+
+    @Nullable
+    @Override
     public ConnectionContext currentContext() {
         KoraContext current = KoraContext.current();
         return current != null ? current.get(CONNECTION_CONTEXT_KEY) : null;
@@ -117,9 +125,15 @@ public class JdbcDataSource implements Lifecycle, Wrapped<DataSource>, JdbcExecu
 
         try (var connection = this.acquireConnection()) {
             var context = new ConnectionContext(connection);
-            KoraContext baseContext = current != null ? current : KoraContext.empty();
-            KoraContext updatedContext = baseContext.with(CONNECTION_CONTEXT_KEY, context);
-
+            if (current != null) {
+                current.with(CONNECTION_CONTEXT_KEY, context);
+                try {
+                    return callback.apply(context);
+                } finally {
+                    current.with(CONNECTION_CONTEXT_KEY, null);
+                }
+            }
+            KoraContext updatedContext = KoraContext.empty().with(CONNECTION_CONTEXT_KEY, context);
             return (T) KoraContext.runWith(updatedContext, new KoraContextCallAction(callback, context));
         } catch (SQLException e) {
             throw new UncheckedSqlException(e);

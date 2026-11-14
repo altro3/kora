@@ -7,12 +7,11 @@ import io.koraframework.database.common.telemetry.*;
 import io.koraframework.database.jdbc.ConnectionContext.*;
 import io.koraframework.database.jdbc.exception.*;
 import io.koraframework.database.jdbc.mapper.result.*;
-import io.opentelemetry.context.*;
 import org.jspecify.annotations.*;
 
 import java.sql.*;
 import java.util.*;
-import java.util.function.Supplier;
+import java.util.function.*;
 
 /**
  * <b>Русский</b>: Фабрика соединений JDBC которая позволяет выполнять запросы в ручном режиме и в рамках транзакции.
@@ -23,6 +22,11 @@ import java.util.function.Supplier;
  */
 @SuppressWarnings("overloads")
 public interface JdbcExecutor {
+
+    @Nullable
+    default Connection currentConnection(KoraContext ctx) {
+        return currentConnection();
+    }
 
     /**
      * <b>Русский</b>: Выполняет callback с текущим или новым контекстом соединения.
@@ -71,7 +75,17 @@ public interface JdbcExecutor {
     default <T> T query(QueryContext queryContext, SqlFunction<PreparedStatement, T> callback) {
         var observation = this.telemetry().observe(queryContext);
         KoraContext current = KoraContext.current();
-        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
+        if (current != null) {
+            var prevObs = current.get(Observation.OBSERVATION_KEY);
+            var prevOtel = current.get(OpentelemetryContextStorage.OPENTELEMETRY_KEY);
+            Observation.attach(current, observation);
+            try {
+                return this.withConnection(new QueryContextConnectionCallback<>(queryContext, callback, observation));
+            } finally {
+                Observation.detach(current, prevObs, prevOtel);
+            }
+        }
+        KoraContext updated = Observation.attach(KoraContext.empty(), observation);
         try {
             return KoraContext.runWith(updated, new QueryContextCall<>(this, queryContext, callback, observation));
         } catch (RuntimeException e) {
@@ -80,6 +94,7 @@ public interface JdbcExecutor {
             throw new RuntimeException(e);
         }
     }
+
 
     /**
      * <b>Русский</b>: Выполняет готовый {@link JdbcQuery}, создает {@link PreparedStatement}, проставляет параметры и оборачивает выполнение в телеметрию.
@@ -95,7 +110,17 @@ public interface JdbcExecutor {
         var queryContext = new QueryContext(query.sourceSql(), query.sql());
         var observation = this.telemetry().observe(queryContext);
         KoraContext current = KoraContext.current();
-        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
+        if (current != null) {
+            var prevObs = current.get(Observation.OBSERVATION_KEY);
+            var prevOtel = current.get(OpentelemetryContextStorage.OPENTELEMETRY_KEY);
+            Observation.attach(current, observation);
+            try {
+                return this.withConnection(new JdbcQueryConnectionCallback<>(query, callback, observation));
+            } finally {
+                Observation.detach(current, prevObs, prevOtel);
+            }
+        }
+        KoraContext updated = Observation.attach(KoraContext.empty(), observation);
         try {
             return KoraContext.runWith(updated, new JdbcQueryCall<>(this, query, callback, observation));
         } catch (RuntimeException e) {
@@ -167,7 +192,7 @@ public interface JdbcExecutor {
      * @return количество измененных строк / affected rows count
      */
     default UpdateCount executeUpdate(JdbcQuery query) {
-        return this.query(query, new ExecuteUpdateCallback());
+        return query(query, ExecuteUpdateCallback.INSTANCE);
     }
 
     /**
@@ -180,7 +205,7 @@ public interface JdbcExecutor {
      * @return результат маппера сгенерированных ключей / generated keys mapper result
      */
     default <T> T executeUpdate(JdbcQuery query, JdbcResultSetMapper<T> generatedKeysMapper) {
-        return this.query(query, new ExecuteUpdateMapperCallback<>(generatedKeysMapper));
+        return query(query, new ExecuteUpdateMapperCallback<>(generatedKeysMapper));
     }
 
     /**
@@ -198,7 +223,17 @@ public interface JdbcExecutor {
         var queryContext = new QueryContext(batch.sourceSql(), batch.sql());
         var observation = this.telemetry().observe(queryContext);
         KoraContext current = KoraContext.current();
-        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
+        if (current != null) {
+            var prevObs = current.get(Observation.OBSERVATION_KEY);
+            var prevOtel = current.get(OpentelemetryContextStorage.OPENTELEMETRY_KEY);
+            Observation.attach(current, observation);
+            try {
+                return this.withConnection(new ExecuteUpdateBatchConnectionCallback(batch, observation));
+            } finally {
+                Observation.detach(current, prevObs, prevOtel);
+            }
+        }
+        KoraContext updated = Observation.attach(KoraContext.empty(), observation);
         try {
             return KoraContext.runWith(updated, new ExecuteUpdateBatchCall(this, batch, observation));
         } catch (RuntimeException e) {
@@ -222,7 +257,17 @@ public interface JdbcExecutor {
         var queryContext = new QueryContext(batch.sourceSql(), batch.sql());
         var observation = this.telemetry().observe(queryContext);
         KoraContext current = KoraContext.current();
-        KoraContext updated = Observation.attach(current != null ? current : KoraContext.empty(), observation);
+        if (current != null) {
+            var prevObs = current.get(Observation.OBSERVATION_KEY);
+            var prevOtel = current.get(OpentelemetryContextStorage.OPENTELEMETRY_KEY);
+            Observation.attach(current, observation);
+            try {
+                return this.withConnection(new ExecuteUpdateBatchMapperConnectionCallback<>(batch, generatedKeysMapper, observation));
+            } finally {
+                Observation.detach(current, prevObs, prevOtel);
+            }
+        }
+        KoraContext updated = Observation.attach(KoraContext.empty(), observation);
         try {
             return KoraContext.runWith(updated, new ExecuteUpdateBatchMapperCall<>(this, batch, generatedKeysMapper, observation));
         } catch (RuntimeException e) {
@@ -384,11 +429,12 @@ public interface JdbcExecutor {
                 }
             }
 
-            int previousIsolationLevel = connection.getTransactionIsolation();
+            int previousIsolationLevel = 0;
             boolean isolationLevelChanged = false;
             T result;
             try {
                 if (isolationLevel != null) {
+                    previousIsolationLevel = connection.getTransactionIsolation();
                     connection.setTransactionIsolation(isolationLevel.value());
                     isolationLevelChanged = true;
                 }
@@ -597,6 +643,8 @@ public interface JdbcExecutor {
     }
 
     class ExecuteUpdateCallback implements SqlFunction<PreparedStatement, UpdateCount> {
+        static final ExecuteUpdateCallback INSTANCE = new ExecuteUpdateCallback();
+
         @Override
         public UpdateCount apply(PreparedStatement statement) throws SQLException {
             return new UpdateCount(statement.executeUpdate());

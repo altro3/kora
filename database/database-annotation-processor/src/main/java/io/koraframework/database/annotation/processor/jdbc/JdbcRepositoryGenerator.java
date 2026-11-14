@@ -31,7 +31,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
     public TypeSpec generate(TypeElement repositoryElement, TypeSpec.Builder type, MethodSpec.Builder constructor) {
         var repositoryType = (DeclaredType) repositoryElement.asType();
         var queryMethods = DbUtils.findQueryMethods(this.types, this.elements, repositoryElement);
-        this.enrichWithExecutor(repositoryElement, type, constructor);
+        enrichWithExecutor(repositoryElement, type, constructor);
         var resultMappers = new FieldFactory(this.types, elements, type, constructor, "_result_mapper_");
         var parameterMappers = new FieldFactory(this.types, elements, type, constructor, "_parameter_mapper_");
 
@@ -71,7 +71,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var batchParam = parameters.stream().filter(QueryParameter.BatchParameter.class::isInstance).findFirst().orElse(null);
         var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
         if (batchParam != null && !generatedKeys) {
-            // either void or update count, no way to parse results from db with jdbc api
+// either void or update count, no way to parse results from db with jdbc api
             if (ArrayTypeName.of(int.class).equals(TypeName.get(returnType))) {
                 return Optional.empty();
             } else if (ArrayTypeName.of(long.class).equals(TypeName.get(returnType))) {
@@ -123,19 +123,19 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
 
         var mb = DbUtils.queryMethodBuilder(method, methodType);
         var returnType = methodType.getReturnType();
-        var connection = parameters.stream().filter(QueryParameter.ConnectionParameter.class::isInstance).findFirst()
+        var explicitConnection = parameters.stream().filter(QueryParameter.ConnectionParameter.class::isInstance).findFirst()
             .map(p -> CodeBlock.of("$L", p.variable()))
-            .orElse(CodeBlock.of("_jdbcExecutor.currentConnection()"));
+            .orElse(null);
 
         var queryContextFieldName = "QUERY_CONTEXT_" + methodNumber;
         type.addField(
             FieldSpec.builder(DbUtils.QUERY_CONTEXT, queryContextFieldName, Modifier.PRIVATE, Modifier.STATIC, Modifier.FINAL)
                 .initializer("""
-                    new $T(
-                        $S,
-                        $S,
-                        $S
-                    )""", DbUtils.QUERY_CONTEXT, query.rawQuery(), sql, DbUtils.operationName(method))
+                                new $T(
+                                    $S,
+                                    $S,
+                                    $S
+                                )""", DbUtils.QUERY_CONTEXT, query.rawQuery(), sql, DbUtils.operationName(method))
                 .build());
 
         var koraContextClassName = ClassName.get("io.koraframework.common.context", "KoraContext");
@@ -143,11 +143,15 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var opentelemetryStorageClassName = ClassName.get("io.koraframework.common.telemetry", "OpentelemetryContextStorage");
 
         mb.addStatement("var _query = $L", queryContextFieldName);
-        mb.addStatement("var _observation = _jdbcExecutor.telemetry().observe(_query)");
+        mb.addStatement("var _observation = _telemetry.observe(_query)");
         mb.addStatement("var _ctx = $T.current()", koraContextClassName);
         mb.addStatement("var _prevObs = _ctx != null ? _ctx.get($T.OBSERVATION_KEY) : null", observationClassName);
         mb.addStatement("var _prevOtel = _ctx != null ? _ctx.get($T.OPENTELEMETRY_KEY) : null", opentelemetryStorageClassName);
         mb.addStatement("$T.attach(_ctx, _observation)", observationClassName);
+
+        var connection = explicitConnection != null
+            ? explicitConnection
+            : CodeBlock.of("_ctx != null ? _jdbcExecutor.currentConnection(_ctx) : null");
 
         mb.addCode(buildExecutionBody(method, returnType, connection, query, parameters, batchParam, parameterMappers, resultMapperName));
 
@@ -170,15 +174,15 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         var eb = CodeBlock.builder();
 
         eb.add("""
-        var _conToUse = $L;
-        $T _conToClose;
-        if (_conToUse == null) {
+            var _conToUse = $L;
+            $T _conToClose;
+            if (_conToUse == null) {
             _conToUse = _jdbcExecutor.acquireConnection();
             _conToClose = _conToUse;
-        } else {
+            } else {
             _conToClose = null;
-        }
-        """, connection, JdbcTypes.CONNECTION);
+            }
+            """, connection, JdbcTypes.CONNECTION);
 
         var generatedKeys = AnnotationUtils.isAnnotationPresent(method, DbUtils.ID_ANNOTATION);
         if (generatedKeys) {
@@ -258,9 +262,10 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
         return eb.build();
     }
 
-
     public void enrichWithExecutor(TypeElement repositoryElement, TypeSpec.Builder builder, MethodSpec.Builder constructorBuilder) {
+        var telemetryClassName = ClassName.get("io.koraframework.database.common.telemetry", "DatabaseTelemetry");
         builder.addField(JdbcTypes.CONNECTION_FACTORY, "_jdbcExecutor", Modifier.PRIVATE, Modifier.FINAL);
+        builder.addField(telemetryClassName, "_telemetry", Modifier.PRIVATE, Modifier.FINAL);
         builder.addSuperinterface(JdbcTypes.JDBC_REPOSITORY);
         builder.addMethod(MethodSpec.methodBuilder("executor")
             .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
@@ -276,6 +281,7 @@ public final class JdbcRepositoryGenerator implements RepositoryGenerator {
             constructorBuilder.addParameter(JdbcTypes.CONNECTION_FACTORY, "_jdbcExecutor");
         }
         constructorBuilder.addStatement("this._jdbcExecutor = _jdbcExecutor");
+        constructorBuilder.addStatement("this._telemetry = _jdbcExecutor.telemetry()");
     }
 
     private static String batchReturnTypeError(ExecutableElement method, TypeMirror returnType) {
