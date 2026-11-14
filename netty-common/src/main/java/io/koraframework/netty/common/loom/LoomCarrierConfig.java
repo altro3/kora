@@ -16,7 +16,7 @@ public interface LoomCarrierConfig {
     }
 
     default Duration timeSliceThroughput() {
-        return Duration.ofNanos(500_000);
+        return Duration.ofMillis(1);
     }
 
     default Duration fifoSwitchTime() {
@@ -28,11 +28,11 @@ public interface LoomCarrierConfig {
     }
 
     default Duration blockTime() {
-        return Duration.ofNanos(1_000_000);
+        return Duration.ofMillis(1);
     }
 
     default int throughputModeThreshold() {
-        return 8;
+        return 12;
     }
 
     default int workSpillThreshold() {
@@ -40,7 +40,7 @@ public interface LoomCarrierConfig {
     }
 
     default Duration workSpillMinQueueAge() {
-        return Duration.ofNanos(1_000_0000);
+        return Duration.ofMillis(1);
     }
 
     default int normalWarmupTasks() {
