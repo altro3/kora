@@ -10,7 +10,7 @@ import java.util.function.*;
 public final class KoraContext {
 
     private static final ScopedValue<KoraContext> SCOPED_VALUE = ScopedValue.newInstance();
-    private static final int DEFAULT_INITIAL_CAPACITY = 5;
+    private static final int DEFAULT_INITIAL_CAPACITY = 6;
 
     private Object[] values;
 

@@ -30,6 +30,7 @@ import java.nio.charset.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.function.*;
 
 import static io.koraframework.common.telemetry.Observation.*;
 import static io.koraframework.common.telemetry.OpentelemetryContextStorage.*;
@@ -69,7 +70,6 @@ public final class KoraRequestHandler implements RequestHandler {
 
     @Override
     public void accept(ChannelHandlerContext ctx, HttpRequest request, @Nullable AutoCloseable body, KoraOutboundAccess outboundAccess) {
-        var config = httpServerConfig.get();
         var nettyConfig = nettyServerConfig.get();
         var version = request.protocolVersion();
 
@@ -92,14 +92,15 @@ public final class KoraRequestHandler implements RequestHandler {
         var requestBody = new NettyRequestHttpBody(request, body);
         try {
             var thread = virtualThreadFactory.newThread(() -> {
-                var unregisterAbandon = outboundAccess.whenAbandoned(Thread.currentThread()::interrupt);
+                var current = Thread.currentThread();
+                outboundAccess.attachWorkerThread(current);
                 try (requestBody) {
                     dispatch(ctx, request, requestBody, outboundAccess);
                 } catch (Throwable t) {
                     log.error("CRITICAL: Error inside Kora dispatch pipeline (Loom Thread)", t);
                     outboundAccess.abort();
                 } finally {
-                    unregisterAbandon.run();
+                    outboundAccess.detachWorkerThread();
                 }
             });
             thread.start();
@@ -126,7 +127,9 @@ public final class KoraRequestHandler implements RequestHandler {
         outboundAccess.attachment(observation);
 
         var httpServerRequestObserved = observation.observeRequest(httpServerRequest);
-        var rootCtx = PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE);
+        var rootCtx = contextPropagationEnabled
+            ? PROPAGATOR.extract(Context.root(), nettyReq.headers(), NettyHttpHeaderMapExchange.INSTANCE)
+            : Context.root();
         var activeCtx = rootCtx.with(observation.span());
 
         var finalContext = KoraContext.empty()
@@ -201,7 +204,7 @@ public final class KoraRequestHandler implements RequestHandler {
 
         var body = response.body();
         if (body == null) {
-            var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER);
+            var nettyResp = new DefaultFullHttpResponse(version, status, Unpooled.EMPTY_BUFFER, FAST_HEADERS_FACTORY, FAST_TRAILERS_FACTORY);
             writeHeaders(nettyResp.headers(), response, null);
             outboundAccess.write(nettyResp);
             return;
@@ -212,7 +215,7 @@ public final class KoraRequestHandler implements RequestHandler {
 
         if (isHead) {
             try (body) {
-                var nettyResp = new DefaultHttpResponse(version, status);
+                var nettyResp = new DefaultHttpResponse(version, status, FAST_HEADERS_FACTORY);
                 writeHeaders(nettyResp.headers(), response, contentType);
                 if (declaredLength >= 0) {
                     nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
@@ -226,31 +229,6 @@ public final class KoraRequestHandler implements RequestHandler {
         if (content != null) {
             try (body) {
                 var buf = content.hasRemaining() ? Unpooled.wrappedBuffer(content) : Unpooled.EMPTY_BUFFER;
-                var nettyResp = new DefaultFullHttpResponse(version, status, buf);
-                writeHeaders(nettyResp.headers(), response, contentType);
-                outboundAccess.write(nettyResp);
-            }
-            return;
-        }
-
-        var bufHolder = new ByteBuf[1];
-        ByteBuffer directNio;
-        try {
-            directNio = body.writeToByteBuffer(size -> {
-                var b = UnpooledByteBufAllocator.DEFAULT.buffer(size);
-                bufHolder[0] = b;
-                return b.nioBuffer(0, size);
-            });
-        } catch (Throwable t) {
-            if (bufHolder[0] != null) {
-                bufHolder[0].release();
-            }
-            throw t;
-        }
-        if (directNio != null && bufHolder[0] != null) {
-            try (body) {
-                var buf = bufHolder[0];
-                buf.writerIndex(directNio.remaining());
                 var nettyResp = new DefaultFullHttpResponse(version, status, buf, FAST_HEADERS_FACTORY, FAST_TRAILERS_FACTORY);
                 writeHeaders(nettyResp.headers(), response, contentType);
                 outboundAccess.write(nettyResp);
@@ -258,7 +236,26 @@ public final class KoraRequestHandler implements RequestHandler {
             return;
         }
 
-        var nettyResp = new DefaultHttpResponse(version, status);
+        var allocator = new SingleBufferAllocator();
+        ByteBuffer directNio;
+        try {
+            directNio = body.writeToByteBuffer(allocator);
+        } catch (Throwable t) {
+            allocator.releaseIfAllocated();
+            throw t;
+        }
+        var allocatedBuf = allocator.buf;
+        if (directNio != null && allocatedBuf != null) {
+            try (body) {
+                allocatedBuf.writerIndex(directNio.remaining());
+                var nettyResp = new DefaultFullHttpResponse(version, status, allocatedBuf, FAST_HEADERS_FACTORY, FAST_TRAILERS_FACTORY);
+                writeHeaders(nettyResp.headers(), response, contentType);
+                outboundAccess.write(nettyResp);
+            }
+            return;
+        }
+
+        var nettyResp = new DefaultHttpResponse(version, status, FAST_HEADERS_FACTORY);
         writeHeaders(nettyResp.headers(), response, contentType);
         if (declaredLength >= 0) {
             nettyResp.headers().set(HttpHeaderNames.CONTENT_LENGTH, declaredLength);
@@ -274,15 +271,18 @@ public final class KoraRequestHandler implements RequestHandler {
         if (httpServerConfig.get().headerServerNameEnabled()) {
             nettyHeaders.set(HttpHeaderNames.SERVER, HEADER_SERVER_VALUE);
         }
-        for (var header : response.headers()) {
-            var key = header.getKey();
-            if (HttpHeaderNames.SERVER.contentEqualsIgnoreCase(key)
-                || HttpHeaderNames.CONTENT_LENGTH.contentEqualsIgnoreCase(key)
-                || HttpHeaderNames.TRANSFER_ENCODING.contentEqualsIgnoreCase(key)
-                || (HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null)) {
-                continue;
+        var respHeaders = response.headers();
+        if (!respHeaders.isEmpty()) {
+            for (var header : respHeaders) {
+                var key = header.getKey();
+                if (HttpHeaderNames.SERVER.contentEqualsIgnoreCase(key)
+                    || HttpHeaderNames.CONTENT_LENGTH.contentEqualsIgnoreCase(key)
+                    || HttpHeaderNames.TRANSFER_ENCODING.contentEqualsIgnoreCase(key)
+                    || (HttpHeaderNames.CONTENT_TYPE.contentEqualsIgnoreCase(key) && contentType != null)) {
+                    continue;
+                }
+                nettyHeaders.add(key, header.getValue());
             }
-            nettyHeaders.add(key, header.getValue());
         }
         if (contentType != null) {
             nettyHeaders.set(HttpHeaderNames.CONTENT_TYPE, contentType);
@@ -572,6 +572,7 @@ public final class KoraRequestHandler implements RequestHandler {
         private static final int BUFFER_SIZE = 8192;
         private static final int MAX_POOL_SIZE = 1024;
         private static final ConcurrentLinkedQueue<byte[]> BUFFER_POOL = new ConcurrentLinkedQueue<>();
+        private static final AtomicInteger POOL_SIZE = new AtomicInteger();
 
         private final ByteBufAllocator streamAlloc;
         private final HttpResponse nettyResp;
@@ -592,11 +593,16 @@ public final class KoraRequestHandler implements RequestHandler {
 
         private static byte[] borrowBuffer() {
             var buf = BUFFER_POOL.poll();
-            return buf != null ? buf : new byte[BUFFER_SIZE];
+            if (buf != null) {
+                POOL_SIZE.decrementAndGet();
+                return buf;
+            }
+            return new byte[BUFFER_SIZE];
         }
 
         private static void returnBuffer(byte[] buf) {
-            if (buf.length == BUFFER_SIZE && BUFFER_POOL.size() < MAX_POOL_SIZE) {
+            if (buf.length == BUFFER_SIZE && POOL_SIZE.get() < MAX_POOL_SIZE) {
+                POOL_SIZE.incrementAndGet();
                 BUFFER_POOL.offer(buf);
             }
         }
@@ -707,6 +713,25 @@ public final class KoraRequestHandler implements RequestHandler {
                     stream.fail(new IOException("Response stream closed before completion"));
                 }
                 stream.close();
+            }
+        }
+    }
+
+    private static final class SingleBufferAllocator implements IntFunction<ByteBuffer> {
+        @Nullable
+        ByteBuf buf;
+
+        @Override
+        public ByteBuffer apply(int size) {
+            var b = UnpooledByteBufAllocator.DEFAULT.heapBuffer(size);
+            buf = b;
+            return b.nioBuffer(0, size);
+        }
+
+        void releaseIfAllocated() {
+            if (buf != null) {
+                buf.release();
+                buf = null;
             }
         }
     }

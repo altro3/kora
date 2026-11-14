@@ -1,11 +1,11 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.body.*;
 import io.koraframework.http.server.netty.buffer.*;
 import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.*;
+import io.netty.util.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
 
@@ -13,6 +13,15 @@ import java.util.concurrent.*;
 
 public final class KoraOutboundAccess implements Runnable {
     private static final Logger LOG = LoggerFactory.getLogger(KoraOutboundAccess.class);
+
+    private static final int MAX_CACHED_CONTENT_LENGTH = 4096;
+    private static final AsciiString[] CACHED_CONTENT_LENGTHS = new AsciiString[MAX_CACHED_CONTENT_LENGTH + 1];
+
+    static {
+        for (int i = 0; i <= MAX_CACHED_CONTENT_LENGTH; i++) {
+            CACHED_CONTENT_LENGTHS[i] = AsciiString.cached(Integer.toString(i));
+        }
+    }
 
     private final HttpRequest request;
     private final ChannelHandlerContext ctx;
@@ -30,11 +39,31 @@ public final class KoraOutboundAccess implements Runnable {
     private FullHttpResponse pendingFullResponse;
     @Nullable
     private ChannelFuture finalWrite;
+    @Nullable
+    private volatile Thread workerThread;
 
     public KoraOutboundAccess(HttpRequest request, ChannelHandlerContext ctx, PipeliningServerHandler parent) {
         this.request = request;
         this.ctx = ctx;
         this.parent = parent;
+    }
+
+    public void attachWorkerThread(Thread thread) {
+        this.workerThread = thread;
+        if (!ctx.channel().isActive() && finalWritePending()) {
+            thread.interrupt();
+        }
+    }
+
+    public void detachWorkerThread() {
+        this.workerThread = null;
+    }
+
+    public void onChannelInactive() {
+        var t = workerThread;
+        if (t != null && finalWritePending()) {
+            t.interrupt();
+        }
     }
 
     public HttpRequest request() {
@@ -103,7 +132,7 @@ public final class KoraOutboundAccess implements Runnable {
         }
     }
 
-    private void preprocess(HttpResponse message) {
+    private void preprocess(HttpResponse message, boolean knownFixedOrEmptyBody) {
         var requestVersion = request.protocolVersion();
         var responseVersion = parent.rejectUnsupportedHttpVersions && !HttpVersion.HTTP_1_0.equals(requestVersion)
             ? HttpVersion.HTTP_1_1 : requestVersion;
@@ -112,39 +141,46 @@ public final class KoraOutboundAccess implements Runnable {
             message.setProtocolVersion(responseVersion);
         }
 
-        if (request.protocolVersion().isKeepAliveDefault()) {
-            if (request.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+        var reqHeaders = request.headers();
+        if (requestVersion.isKeepAliveDefault()) {
+            if (reqHeaders.contains(HttpHeaderNames.CONNECTION)
+                && reqHeaders.contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
                 closeAfterWrite();
             }
-        } else {
-            if (!requestsKeepAlive()) {
-                closeAfterWrite();
-            }
+        } else if (!requestsKeepAlive()) {
+            closeAfterWrite();
         }
 
+        var respHeaders = message.headers();
+        boolean hasRespConnection = respHeaders.contains(HttpHeaderNames.CONNECTION);
         boolean http10KeptAlive = false;
-        if (message.protocolVersion().isKeepAliveDefault()) {
-            if (message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+        if (responseVersion.isKeepAliveDefault()) {
+            if (hasRespConnection && respHeaders.contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
                 closeAfterWrite();
             } else if (closeAfterWrite) {
-                message.headers().add(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
+                respHeaders.add(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE);
             }
         } else {
-            if (!message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true)) {
+            if (!hasRespConnection || !respHeaders.contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE, true)) {
                 if (parent.http10KeepAlive && !closeAfterWrite
-                    && (HttpUtil.isContentLengthSet(message) || !parent.canHaveBody(message.status()) || HttpMethod.HEAD.equals(request.method()))
-                    && !message.headers().contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true)) {
+                    && (knownFixedOrEmptyBody || HttpUtil.isContentLengthSet(message) || !parent.canHaveBody(message.status()) || HttpMethod.HEAD.equals(request.method()))
+                    && (!hasRespConnection || !respHeaders.contains(HttpHeaderNames.CONNECTION, HttpHeaderValues.CLOSE, true))) {
                     http10KeptAlive = true;
-                    message.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                    respHeaders.set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
                 } else {
                     closeAfterWrite();
                 }
             } else if (closeAfterWrite) {
-                message.headers().remove(HttpHeaderNames.CONNECTION);
+                respHeaders.remove(HttpHeaderNames.CONNECTION);
             }
         }
 
-        if (!http10KeptAlive && !HttpMethod.HEAD.equals(request.method()) && !HttpUtil.isContentLengthSet(message) && !HttpUtil.isTransferEncodingChunked(message) && parent.canHaveBody(message.status())) {
+        if (!knownFixedOrEmptyBody
+            && !http10KeptAlive
+            && !HttpMethod.HEAD.equals(request.method())
+            && !HttpUtil.isContentLengthSet(message)
+            && !HttpUtil.isTransferEncodingChunked(message)
+            && parent.canHaveBody(message.status())) {
             HttpUtil.setKeepAlive(message, false);
             closeAfterWrite();
         }
@@ -187,32 +223,7 @@ public final class KoraOutboundAccess implements Runnable {
             return;
         }
 
-        if (parent.removed) {
-            handler.discardOutbound();
-            return;
-        }
-
-        if (closeAfterWrite) {
-            boolean marked = false;
-            try {
-                handler.markCloseAfterWrite();
-                marked = true;
-            } finally {
-                if (!marked) {
-                    handler.discardRefused();
-                }
-            }
-        }
-
-        if (this.handler instanceof ContinueOutboundHandler cont) {
-            cont.next = handler;
-            parent.writeSome();
-        } else {
-            this.handler = handler;
-            if (parent.outboundQueue.peek() == this) {
-                parent.writeSome();
-            }
-        }
+        writeInEventLoop(handler);
     }
 
     private void writeMoved(OutboundHandler handler) {
@@ -258,25 +269,62 @@ public final class KoraOutboundAccess implements Runnable {
     private void writeFull(FullHttpResponse response, boolean headResponse) {
         FullOutboundHandler oh = null;
         try {
-            response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
+            var headers = response.headers();
+            if (headers.contains(HttpHeaderNames.TRANSFER_ENCODING)) {
+                headers.remove(HttpHeaderNames.TRANSFER_ENCODING);
+            }
+            int readableBytes = response.content().readableBytes();
             if (parent.canHaveBody(response.status())) {
                 if (!headResponse) {
-                    HttpUtil.setContentLength(response, response.content().readableBytes());
+                    if (readableBytes >= 0 && readableBytes <= MAX_CACHED_CONTENT_LENGTH) {
+                        headers.set(HttpHeaderNames.CONTENT_LENGTH, CACHED_CONTENT_LENGTHS[readableBytes]);
+                    } else {
+                        HttpUtil.setContentLength(response, readableBytes);
+                    }
                 }
-            } else {
-                response.headers().remove(HttpHeaderNames.CONTENT_LENGTH);
+            } else if (headers.contains(HttpHeaderNames.CONTENT_LENGTH)) {
+                headers.remove(HttpHeaderNames.CONTENT_LENGTH);
             }
-            preprocess(response);
+            preprocess(response, true);
             oh = new FullOutboundHandler(this, response, parent);
-            if (response.content().isReadable()) {
-                prepareCompression(response, oh, response.content().readableBytes());
+            if (parent.compressor != null && !skipCompression && readableBytes > 0) {
+                prepareCompression(response, oh, readableBytes);
             }
         } catch (Throwable t) {
             response.release();
             discardCompression(oh);
             throw t;
         }
-        write(oh);
+        writeInEventLoop(oh);
+    }
+
+    private void writeInEventLoop(OutboundHandler handler) {
+        if (parent.removed) {
+            handler.discardOutbound();
+            return;
+        }
+
+        if (closeAfterWrite) {
+            boolean marked = false;
+            try {
+                handler.markCloseAfterWrite();
+                marked = true;
+            } finally {
+                if (!marked) {
+                    handler.discardRefused();
+                }
+            }
+        }
+
+        if (this.handler instanceof ContinueOutboundHandler cont) {
+            cont.next = handler;
+            parent.writeSome();
+        } else {
+            this.handler = handler;
+            if (parent.outboundQueue.peek() == this) {
+                parent.writeSome();
+            }
+        }
     }
 
     private static void discardCompression(@Nullable OutboundHandler handler) {
@@ -324,7 +372,7 @@ public final class KoraOutboundAccess implements Runnable {
             response.headers().remove(HttpHeaderNames.TRANSFER_ENCODING);
         }
 
-        preprocess(response);
+        preprocess(response, false);
         var oh = new KoraStreamingOutboundHandler(this, response, parent);
         try {
             prepareCompression(response, oh, -1);

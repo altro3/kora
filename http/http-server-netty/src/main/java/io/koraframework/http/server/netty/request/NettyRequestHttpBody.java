@@ -31,6 +31,9 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
 
     @Override
     public long contentLength() {
+        if (rawBody instanceof KoraAvailableBody available) {
+            return available.length();
+        }
         return HttpUtil.getContentLength(nettyRequest, -1L);
     }
 
@@ -61,17 +64,16 @@ public final class NettyRequestHttpBody implements HttpBodyInput {
             }
             var buf = available.toByteBuf();
             try {
+                ByteBuffer heapBuf;
                 if (buf.hasArray()) {
-                    var heapBuf = ByteBuffer.wrap(buf.array(), buf.arrayOffset() + buf.readerIndex(), buf.readableBytes());
-                    cachedFullContent = heapBuf;
-                    return heapBuf.duplicate();
+                    heapBuf = ByteBuffer.wrap(buf.array(), buf.arrayOffset() + buf.readerIndex(), buf.readableBytes());
                 } else {
                     var bytes = new byte[len];
                     buf.getBytes(buf.readerIndex(), bytes);
-                    var heapBuf = ByteBuffer.wrap(bytes);
-                    cachedFullContent = heapBuf;
-                    return heapBuf.duplicate();
+                    heapBuf = ByteBuffer.wrap(bytes);
                 }
+                cachedFullContent = heapBuf;
+                return heapBuf;
             } finally {
                 buf.release();
             }

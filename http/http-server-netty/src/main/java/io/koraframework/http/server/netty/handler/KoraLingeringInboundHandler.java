@@ -14,7 +14,6 @@ public final class KoraLingeringInboundHandler extends InboundHandler {
     private static final long LINGER_MAX_BYTES = 2L * 1024 * 1024;
 
     private final ChannelHandlerContext context;
-    private final PipeliningServerHandler parent;
     private final long start = System.nanoTime();
     private long lastRead = start;
     private long dropped;
@@ -22,9 +21,8 @@ public final class KoraLingeringInboundHandler extends InboundHandler {
     private ScheduledFuture<?> timeout;
     private boolean closed;
 
-    public KoraLingeringInboundHandler(ChannelHandlerContext context, PipeliningServerHandler parent) {
+    public KoraLingeringInboundHandler(ChannelHandlerContext context) {
         this.context = context;
-        this.parent = parent;
     }
 
     public void scheduleTimeout(long delayMillis) {
@@ -37,14 +35,19 @@ public final class KoraLingeringInboundHandler extends InboundHandler {
         closed = true;
         if (timeout != null) {
             timeout.cancel(false);
+            timeout = null;
         }
     }
 
     private void checkTimeout() {
+        if (closed) {
+            return;
+        }
         long now = System.nanoTime();
         long idleLeft = LINGER_IDLE_MILLIS - TimeUnit.NANOSECONDS.toMillis(now - lastRead);
         long totalLeft = LINGER_MAX_MILLIS - TimeUnit.NANOSECONDS.toMillis(now - start);
         if (idleLeft <= 0 || totalLeft <= 0) {
+            cancelTimeout();
             context.close();
         } else {
             scheduleTimeout(Math.min(idleLeft, totalLeft));
@@ -60,12 +63,14 @@ public final class KoraLingeringInboundHandler extends InboundHandler {
         boolean last = message instanceof LastHttpContent;
         ReferenceCountUtil.release(message);
         if (last || dropped > LINGER_MAX_BYTES) {
-            parent.requiredCtx().close();
+            cancelTimeout();
+            context.close();
         }
     }
 
     @Override
     void handleUpstreamError(Throwable cause) {
-        parent.requiredCtx().close();
+        cancelTimeout();
+        context.close();
     }
 }

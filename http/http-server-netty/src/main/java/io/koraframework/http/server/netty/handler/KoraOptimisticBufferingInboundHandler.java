@@ -1,6 +1,5 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.body.*;
 import io.netty.buffer.*;
 import io.netty.handler.codec.http.*;
@@ -10,7 +9,10 @@ import java.util.*;
 
 public final class KoraOptimisticBufferingInboundHandler extends InboundHandler {
     private final PipeliningServerHandler parent;
-    private final List<HttpContent> buffer = new ArrayList<>();
+    @Nullable
+    private HttpContent singleContent;
+    @Nullable
+    private List<HttpContent> buffer;
 
     @Nullable
     private HttpRequest request;
@@ -24,7 +26,8 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
     }
 
     public void init(HttpRequest request, KoraOutboundAccess outboundAccess) {
-        assert buffer.isEmpty();
+        assert singleContent == null;
+        assert buffer == null || buffer.isEmpty();
         assert receivedLength == 0;
         assert !failed;
         this.request = request;
@@ -39,46 +42,62 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
             parent.handleContentDecoderFailure(content);
             return;
         }
-        if (content.content().isReadable()) {
+        var buf = content.content();
+        int readableBytes = buf.readableBytes();
+        if (readableBytes > 0) {
             if (failed) {
                 content.release();
                 return;
             }
-            int readableBytes = content.content().readableBytes();
-            if (parent.bodySizeLimits.maxBodySize() != Long.MAX_VALUE && readableBytes > parent.bodySizeLimits.maxBodySize() - receivedLength) {
+            long maxBodySize = parent.bodySizeLimits.maxBodySize();
+            if (maxBodySize != Long.MAX_VALUE && readableBytes > maxBodySize - receivedLength) {
                 long actualLength = receivedLength > Long.MAX_VALUE - readableBytes ? Long.MAX_VALUE : receivedLength + readableBytes;
                 failed = true;
                 content.release();
                 if (parent.inboundHandler() instanceof KoraDecompressingInboundHandler decompressing) {
                     decompressing.dispose();
                 }
-                handleUpstreamError(new IllegalStateException("Content length exceeded limit: " + parent.bodySizeLimits.maxBodySize() + ", actual: " + actualLength));
+                handleUpstreamError(new IllegalStateException("Content length exceeded limit: " + maxBodySize + ", actual: " + actualLength));
                 if (last) {
                     parent.inboundHandler().read(LastHttpContent.EMPTY_LAST_CONTENT);
                 }
                 return;
             }
             receivedLength += readableBytes;
-            buffer.add(content);
+            if (singleContent == null && (buffer == null || buffer.isEmpty())) {
+                singleContent = content;
+            } else {
+                var list = buffer;
+                if (list == null) {
+                    list = new ArrayList<>(4);
+                    buffer = list;
+                }
+                if (singleContent != null) {
+                    list.add(singleContent);
+                    singleContent = null;
+                }
+                list.add(content);
+            }
         } else {
             content.release();
         }
 
         if (last) {
             ByteBuf fullBody;
-            if (buffer.isEmpty()) {
+            if (singleContent != null) {
+                fullBody = singleContent.content();
+                singleContent = null;
+            } else if (buffer == null || buffer.isEmpty()) {
                 fullBody = Unpooled.EMPTY_BUFFER;
-            } else if (buffer.size() == 1) {
-                fullBody = buffer.getFirst().content();
             } else {
-                var pieces = new ArrayList<ByteBuf>(buffer.size());
-                for (var c : buffer) {
+                var list = buffer;
+                var pieces = new ArrayList<ByteBuf>(list.size());
+                for (var c : list) {
                     pieces.add(c.content());
                 }
-                buffer.clear();
+                list.clear();
                 fullBody = PipeliningServerHandler.composeBody(parent.requiredCtx().alloc(), pieces);
             }
-            buffer.clear();
             receivedLength = 0;
             var req = Objects.requireNonNull(request);
             request = null;
@@ -127,10 +146,17 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
             ((KoraDecompressingInboundHandler) parent.inboundHandler()).setDelegate(streamingInboundHandler);
         }
 
-        for (var content : buffer) {
-            streamingInboundHandler.read(content);
+        if (singleContent != null) {
+            var c = singleContent;
+            singleContent = null;
+            streamingInboundHandler.read(c);
         }
-        buffer.clear();
+        if (buffer != null && !buffer.isEmpty()) {
+            for (var content : buffer) {
+                streamingInboundHandler.read(content);
+            }
+            buffer.clear();
+        }
         receivedLength = 0;
         failed = false;
 
@@ -139,10 +165,16 @@ public final class KoraOptimisticBufferingInboundHandler extends InboundHandler 
 
     @Override
     void discard() {
-        for (var content : buffer) {
-            content.release();
+        if (singleContent != null) {
+            singleContent.release();
+            singleContent = null;
         }
-        buffer.clear();
+        if (buffer != null && !buffer.isEmpty()) {
+            for (var content : buffer) {
+                content.release();
+            }
+            buffer.clear();
+        }
         receivedLength = 0;
         failed = false;
     }

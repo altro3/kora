@@ -33,26 +33,22 @@ public abstract class OutboundHandler {
 
     protected final void writeCompressing(HttpContent content, boolean flush, boolean last) {
         if (compressionSession == null) {
-            writePotentialEnd(content, flush, shouldCloseAfterContent(last));
+            writePotentialEnd(content, flush, shouldCloseAfterContent(last), last);
         } else {
             writeCompressing0(content, flush, last);
         }
     }
 
-    void writePotentialEnd(Object content, boolean flush, boolean close) {
-        boolean last = content instanceof LastHttpContent;
-        if (last) {
-            outboundAccess.setFinalWriteIssued(true);
-        }
-        boolean keep = last && outboundAccess.isRecordFinalWrite();
-        ChannelPromise recorded = null;
-        if (keep) {
-            recorded = parent.requiredCtx().newPromise();
-            outboundAccess.setFinalWrite(recorded);
-        }
+    void writePotentialEnd(Object content, boolean flush, boolean close, boolean last) {
         if (!last) {
             writeIntermediate(content, flush, close);
             return;
+        }
+        outboundAccess.setFinalWriteIssued(true);
+        ChannelPromise recorded = null;
+        if (outboundAccess.isRecordFinalWrite()) {
+            recorded = parent.requiredCtx().newPromise();
+            outboundAccess.setFinalWrite(recorded);
         }
         parent.write0(content, flush, close, false, recorded);
     }
@@ -85,13 +81,13 @@ public abstract class OutboundHandler {
         if (toSend == null) {
             if (last) {
                 var trailingHeaders = ((LastHttpContent) content).trailingHeaders();
-                writePotentialEnd(trailingHeaders.isEmpty() ? LastHttpContent.EMPTY_LAST_CONTENT : new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, trailingHeaders), flush, close);
+                writePotentialEnd(trailingHeaders.isEmpty() ? LastHttpContent.EMPTY_LAST_CONTENT : new DefaultLastHttpContent(Unpooled.EMPTY_BUFFER, trailingHeaders), flush, close, true);
             } else if (flush || close) {
                 writeIntermediate(new DefaultHttpContent(Unpooled.EMPTY_BUFFER), flush, close);
             }
         } else {
             if (last) {
-                writePotentialEnd(new DefaultLastHttpContent(toSend, ((LastHttpContent) content).trailingHeaders()), flush, close);
+                writePotentialEnd(new DefaultLastHttpContent(toSend, ((LastHttpContent) content).trailingHeaders()), flush, close, true);
             } else {
                 writeIntermediate(new DefaultHttpContent(toSend), flush, close);
             }

@@ -36,7 +36,6 @@ final class FullOutboundHandler extends OutboundHandler {
         }
         parent.setOutboundHandler(null);
         markResponseWritten();
-        parent.writeSome();
     }
 
     @Override

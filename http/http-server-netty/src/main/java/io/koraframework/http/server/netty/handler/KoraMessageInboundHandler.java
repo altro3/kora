@@ -1,6 +1,5 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.body.*;
 import io.netty.channel.*;
 import io.netty.channel.embedded.*;
@@ -26,7 +25,8 @@ public final class KoraMessageInboundHandler extends InboundHandler {
             return;
         }
 
-        var outboundAccess = new KoraOutboundAccess(request, parent.requiredCtx(), parent);
+        var ctx = parent.requiredCtx();
+        var outboundAccess = new KoraOutboundAccess(request, ctx, parent);
         parent.outboundQueue.add(outboundAccess);
 
         EmbeddedChannel decompressionChannel = null;
@@ -35,9 +35,9 @@ public final class KoraMessageInboundHandler extends InboundHandler {
             var contentEncoding = getContentEncoding(headers);
             if (contentEncoding != null) {
                 if (HttpHeaderValues.GZIP.contentEqualsIgnoreCase(contentEncoding) || HttpHeaderValues.X_GZIP.contentEqualsIgnoreCase(contentEncoding)) {
-                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP, maxZlibAllocation()));
+                    decompressionChannel = newDecompressionChannel(ctx, ZlibCodecFactory.newZlibDecoder(ZlibWrapper.GZIP, maxZlibAllocation()));
                 } else if (HttpHeaderValues.DEFLATE.contentEqualsIgnoreCase(contentEncoding) || HttpHeaderValues.X_DEFLATE.contentEqualsIgnoreCase(contentEncoding)) {
-                    decompressionChannel = newDecompressionChannel(ZlibCodecFactory.newZlibDecoder(ZlibWrapper.ZLIB_OR_NONE, maxZlibAllocation()));
+                    decompressionChannel = newDecompressionChannel(ctx, ZlibCodecFactory.newZlibDecoder(ZlibWrapper.ZLIB_OR_NONE, maxZlibAllocation()));
                 }
                 if (decompressionChannel != null) {
                     headers.remove(HttpHeaderNames.CONTENT_LENGTH);
@@ -62,11 +62,12 @@ public final class KoraMessageInboundHandler extends InboundHandler {
             }
             parent.accept(request, null, outboundAccess);
         } else {
-            parent.optimisticBufferingInboundHandler().init(request, outboundAccess);
+            var bufferingHandler = parent.optimisticBufferingInboundHandler();
+            bufferingHandler.init(request, outboundAccess);
             if (decompressionChannel == null) {
-                parent.setInboundHandler(parent.optimisticBufferingInboundHandler());
+                parent.setInboundHandler(bufferingHandler);
             } else {
-                parent.setInboundHandler(new KoraDecompressingInboundHandler(parent, decompressionChannel, parent.optimisticBufferingInboundHandler()));
+                parent.setInboundHandler(new KoraDecompressingInboundHandler(parent, decompressionChannel, bufferingHandler));
             }
             if (full) {
                 var fullRequest = (FullHttpRequest) request;
@@ -75,11 +76,12 @@ public final class KoraMessageInboundHandler extends InboundHandler {
         }
     }
 
-    private EmbeddedChannel newDecompressionChannel(ChannelHandler decompressor) {
+    private EmbeddedChannel newDecompressionChannel(ChannelHandlerContext ctx, ChannelHandler decompressor) {
+        var ch = ctx.channel();
         var channel = new EmbeddedChannel(
-            parent.requiredCtx().channel().id(),
-            parent.requiredCtx().channel().metadata().hasDisconnect(),
-            parent.requiredCtx().channel().config()
+            ch.id(),
+            ch.metadata().hasDisconnect(),
+            ch.config()
         );
         channel.pipeline().addLast("decompressor", decompressor);
         return channel;
@@ -95,6 +97,9 @@ public final class KoraMessageInboundHandler extends InboundHandler {
 
     @Nullable
     private static String getContentEncoding(HttpHeaders headers) {
+        if (headers.isEmpty()) {
+            return null;
+        }
         var contentEncoding = headers.get(HttpHeaderNames.CONTENT_ENCODING);
         if (contentEncoding != null) {
             return contentEncoding.trim();

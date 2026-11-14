@@ -10,9 +10,11 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 public final class KoraAvailableBody implements AutoCloseable {
+    private static final AtomicIntegerFieldUpdater<KoraAvailableBody> CONSUMED_UPDATER =
+        AtomicIntegerFieldUpdater.newUpdater(KoraAvailableBody.class, "consumed");
 
     private final KoraReadBuffer buffer;
-    private final AtomicBoolean consumed = new AtomicBoolean(false);
+    private volatile int consumed;
 
     public KoraAvailableBody(KoraReadBuffer buffer) {
         this.buffer = Objects.requireNonNull(buffer, "buffer");
@@ -23,42 +25,42 @@ public final class KoraAvailableBody implements AutoCloseable {
     }
 
     public KoraAvailableBody split() {
-        if (consumed.get()) {
+        if (consumed != 0) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return new KoraAvailableBody(buffer.duplicate());
     }
 
     public byte[] toArray() {
-        if (!consumed.compareAndSet(false, true)) {
+        if (!CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return buffer.toArray();
     }
 
     public String toString(Charset charset) {
-        if (!consumed.compareAndSet(false, true)) {
+        if (!CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return buffer.toString(charset);
     }
 
     public InputStream toInputStream() {
-        if (!consumed.compareAndSet(false, true)) {
+        if (!CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return buffer.toInputStream();
     }
 
     public Flow.Publisher<KoraReadBuffer> toPublisher() {
-        if (!consumed.compareAndSet(false, true)) {
+        if (!CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return new AvailableBodyPublisher(buffer);
     }
 
     public ByteBuf toByteBuf() {
-        if (!consumed.compareAndSet(false, true)) {
+        if (!CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             throw new IllegalStateException("Body has already been consumed");
         }
         return buffer.toByteBuf();
@@ -66,7 +68,7 @@ public final class KoraAvailableBody implements AutoCloseable {
 
     @Override
     public void close() {
-        if (consumed.compareAndSet(false, true)) {
+        if (CONSUMED_UPDATER.compareAndSet(this, 0, 1)) {
             buffer.close();
         }
     }

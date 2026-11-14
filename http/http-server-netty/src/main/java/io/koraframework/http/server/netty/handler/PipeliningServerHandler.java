@@ -1,6 +1,5 @@
 package io.koraframework.http.server.netty.handler;
 
-import io.koraframework.http.server.netty.*;
 import io.koraframework.http.server.netty.body.*;
 import io.koraframework.http.server.netty.buffer.*;
 import io.koraframework.http.server.netty.compression.*;
@@ -8,7 +7,6 @@ import io.netty.buffer.*;
 import io.netty.channel.*;
 import io.netty.channel.socket.*;
 import io.netty.handler.codec.http.*;
-import io.netty.handler.ssl.*;
 import io.netty.handler.timeout.*;
 import org.jspecify.annotations.*;
 import org.slf4j.*;
@@ -157,13 +155,16 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
         if (request.decoderResult().isFailure()) {
             return false;
         }
-        int contentLength;
-        try {
-            contentLength = HttpUtil.getContentLength(request, 0);
-        } catch (NumberFormatException e) {
-            contentLength = 0;
+        var headers = request.headers();
+        var contentLengthValue = headers.get(HttpHeaderNames.CONTENT_LENGTH);
+        if (contentLengthValue != null) {
+            try {
+                return Long.parseLong(contentLengthValue) != 0L;
+            } catch (NumberFormatException e) {
+                return HttpUtil.isTransferEncodingChunked(request);
+            }
         }
-        return contentLength != 0 || HttpUtil.isTransferEncodingChunked(request);
+        return headers.contains(HttpHeaderNames.TRANSFER_ENCODING) && HttpUtil.isTransferEncodingChunked(request);
     }
 
     void refreshNeedMore() {
@@ -172,6 +173,17 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             readCalled = true;
             requiredCtx().read();
         }
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        if (outboundHandler != null) {
+            outboundHandler.outboundAccess.onChannelInactive();
+        }
+        for (var queued : outboundQueue) {
+            queued.onChannelInactive();
+        }
+        super.channelInactive(ctx);
     }
 
     @Override
@@ -260,9 +272,10 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
     }
 
     public ChannelFuture write0(Object message, boolean flush, boolean close, boolean needsPromise, @Nullable ChannelPromise given) {
+        var context = requiredCtx();
         if (close) {
-            var promise = given == null ? requiredCtx().newPromise() : given;
-            return requiredCtx().writeAndFlush(message, promise)
+            var promise = given == null ? context.newPromise() : given;
+            return context.writeAndFlush(message, promise)
                 .addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE)
                 .addListener((ChannelFutureListener) future -> {
                     if (future.isSuccess()) {
@@ -271,35 +284,34 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
                         future.channel().close();
                     }
                 });
-        } else {
-            ChannelPromise promise;
-            if (given != null) {
-                promise = given.addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE);
-            } else {
-                promise = needsPromise
-                    ? requiredCtx().newPromise().addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE)
-                    : requiredCtx().voidPromise();
-            }
-            var future = requiredCtx().write(message, promise);
-            if (flush) {
-                if (reading) {
-                    flushPending = true;
-                } else {
-                    requiredCtx().flush();
-                }
-            }
-            return future;
         }
+        ChannelPromise promise;
+        if (given != null) {
+            promise = given.addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE);
+        } else {
+            promise = needsPromise
+                ? context.newPromise().addListener(ChannelFutureListener.FIRE_EXCEPTION_ON_FAILURE)
+                : context.voidPromise();
+        }
+        if (flush) {
+            if (reading) {
+                flushPending = true;
+                return context.write(message, promise);
+            }
+            return context.writeAndFlush(message, promise);
+        }
+        return context.write(message, promise);
     }
 
     void writeSome() {
-        assert ctx != null;
+        var context = ctx;
+        assert context != null;
         if (writing) {
             return;
         }
         writing = true;
         try {
-            while (requiredCtx().channel().isWritable()) {
+            while (context.channel().isWritable()) {
                 if (outboundHandler == null) {
                     var next = outboundQueue.peek();
                     if (next != null && next.handler() != null) {
@@ -313,6 +325,9 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
                 var oldHandler = outboundHandler;
                 oldHandler.writeSome();
                 if (outboundHandler == oldHandler) {
+                    break;
+                }
+                if (outboundHandler == null && outboundQueue.isEmpty()) {
                     break;
                 }
             }
@@ -370,7 +385,7 @@ public final class PipeliningServerHandler extends ChannelInboundHandlerAdapter 
             return;
         }
         inboundHandler.discard();
-        var lingering = new KoraLingeringInboundHandler(context, this);
+        var lingering = new KoraLingeringInboundHandler(context);
         inboundHandler = lingering;
         lingering.scheduleTimeout(LINGER_IDLE_MILLIS);
         channel.closeFuture().addListener(f -> lingering.cancelTimeout());

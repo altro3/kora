@@ -86,7 +86,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         final IoScheduler ioScheduler = new IoScheduler(this);
         final AttributeMap attributeMap = new DefaultAttributeMap();
 
-        final String workerThreadPrefix;
+        final String workerThreadName;
         final long timeSliceLatencyNanos;
         final long timeSliceThroughputNanos;
         final long fifoSwitchTimeNanos;
@@ -116,13 +116,12 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
         final AtomicInteger enqueuing = new AtomicInteger();
 
         int warmupTasks;
-        long threadSeq;
 
         Runner(int id, Factory factory, IoHandlerFactory ioHandlerFactory) {
             this.id = id;
             this.factory = factory;
             var cfg = factory.configuration;
-            this.workerThreadPrefix = "loom-on-netty-" + id + "-";
+            this.workerThreadName = "loom-on-netty-" + id;
             this.timeSliceLatencyNanos = cfg.timeSliceLatency().toNanos();
             this.timeSliceThroughputNanos = cfg.timeSliceThroughput().toNanos();
             this.fifoSwitchTimeNanos = cfg.fifoSwitchTime().toNanos();
@@ -208,8 +207,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
 
         @Override
         public Thread newThread(Runnable r) {
-            String name = workerThreadPrefix + (++threadSeq);
-            return unstartedVirtualThread(name, b -> {
+            return unstartedVirtualThread(workerThreadName, b -> {
                 boolean branchSupported = LoomBranchSupport.isSupported();
                 if (!branchSupported && !PrivateLoomSupport.isSupported()) {
                     return;
@@ -246,7 +244,7 @@ public final class LoomCarrierGroup extends MultiThreadIoEventLoopGroup {
             carrier = Thread.currentThread();
 
             ioThread = unstartedVirtualThread(
-                workerThreadPrefix + "io",
+                "loom-on-netty-" + id + "-io",
                 b -> {
                     if (LoomBranchSupport.isSupported()) {
                         LoomBranchSupport.setScheduler(b, ioScheduler);
